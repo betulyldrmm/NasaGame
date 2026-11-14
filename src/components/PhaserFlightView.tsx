@@ -71,6 +71,13 @@ const PhaserFlightView = forwardRef<PhaserFlightHandle, PhaserFlightViewProps>(f
       antialias: false,
       roundPixels: true,
       render: { roundPixels: true },
+      physics: {
+        default: 'matter',
+        matter: {
+          gravity: { x: 0, y: 0.45 },
+          enableSleeping: false,
+        },
+      },
       scale: { mode: Phaser.Scale.RESIZE, autoCenter: Phaser.Scale.CENTER_BOTH },
       callbacks: {
         preBoot: (instance) => {
