@@ -15,26 +15,26 @@ NASA Space Apps Challenge 2026 için geliştirilmiş, tarayıcıda çalışan **
 
 ```sh
 npm install
-npm run dev      # geliştirme (http://localhost:5173)
+npm run dev      # oyun + hesap API sunucusu (http://localhost:5173)
 npm test         # fizik ve yörünge testleri
 npm run build    # üretim derlemesi
-npm run server   # Node.js sunucusu: derlemeyi sunar, kaydı saklar (http://localhost:8787)
+npm run server   # üretim: derlemeyi sunar ve kayıtları saklar (http://localhost:8787)
 ```
 
-Kayıt tarayıcıda (localStorage) tutulur; Node.js sunucusu çalışıyorsa oraya da yazılır.
+Geliştirmede `npm run dev` hesap API sunucusunu otomatik başlatır ve boş bir port seçer; oyunu ve kayıt API'sini ayrı komutlarla açmanız gerekmez. Üretim için önce `npm run build`, sonra `npm run server` çalıştırın. Hesaplar ve oyun kayıtları sunucunun `server/data/` klasöründe saklanır.
 
 ## Kontroller
 
 | Tuş | İşlev |
 |---|---|
-| W / S, Z, X | Gaz artır / azalt, tam gaz, motoru kes |
+| W / S, Z, X | İtkiyi artır / azalt, tam itki, motoru kes |
 | A / D | Döndür |
 | T | Yön kilidi: ileri / geri / radyal |
 | Boşluk | Sıradaki kademeyi ayır |
 | M | Uzay haritası |
 | , / . | Zamanı yavaşlat / hızlandır |
 | P, G, O | Paraşüt, iniş ayakları, güneş panelleri |
-| R, sonra I J K L | RCS öteleme |
+| R, sonra Q / E | RCS ile sola / sağa öteleme (RCS parçası gerekir; yukarı-aşağı hareket yok) |
 | Tab | Sonraki araca geç |
 
 Parçaya tıklamak da çalışır: adaptör ayrılır, panel açılır, motor açılıp kapanır.

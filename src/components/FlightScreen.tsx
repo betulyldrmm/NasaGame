@@ -414,8 +414,8 @@ export default function FlightScreen({ onBuilder }: Props) {
       const v = activeVessel(sim.gs)
       const ctrl: Controls = {
         rotate: (k.has('d') || k.has('ArrowRight') ? 1 : 0) - (k.has('a') || k.has('ArrowLeft') ? 1 : 0),
-        tx: (k.has('l') ? 1 : 0) - (k.has('j') ? 1 : 0),
-        ty: (k.has('i') ? 1 : 0) - (k.has('k') ? 1 : 0),
+        tx: (k.has('e') ? 1 : 0) - (k.has('q') ? 1 : 0),
+        ty: 0,
       }
       if (v) {
         if (k.has('w') || k.has('ArrowUp') || k.has('Shift')) {
@@ -427,6 +427,7 @@ export default function FlightScreen({ onBuilder }: Props) {
           v.throttle = Math.max(0, v.throttle - dt * 0.8)
         }
       }
+      view.rcsTx = v?.rcsOn ? ctrl.tx : 0
       const events = stepWorld(sim, dt, ctrl)
       if (events.length) handle(events)
       const cur = activeVessel(sim.gs)
@@ -769,7 +770,7 @@ export default function FlightScreen({ onBuilder }: Props) {
             <li><kbd>M</kbd> uzay haritası · tekerlek: yakınlaş/uzaklaş · sürükle: kaydır</li>
             <li><kbd>,</kbd>/<kbd>.</kbd> zamanı yavaşlat / hızlandır (fizikte 25×, yörüngede 100.000×)</li>
             <li><kbd>P</kbd> paraşüt · <kbd>G</kbd> iniş ayakları · <kbd>O</kbd> güneş panelleri</li>
-            <li><kbd>R</kbd> RCS, sonra <kbd>I</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd> ile öteleme</li>
+            <li><kbd>R</kbd> RCS'yi aç · <kbd>Q</kbd>/<kbd>E</kbd> ile sola/sağa kay (RCS parçası gerekir)</li>
             <li><kbd>Tab</kbd> ya da araca tıkla: başka gemiye geç</li>
           </ul>
           <p className="base-note">Gezegen ipucu: Haritada hedef seç (Venüs, Merkür, Mars, Ceres, Ganimed, Titan), transfer penceresinde yak ve iniş öncesi Oto-İniş veya paraşüt/ayakları aç!</p>

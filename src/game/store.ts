@@ -175,6 +175,9 @@ export async function loginAccount(username: string, password: string): Promise<
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password }),
     })
+    if (!res.headers.get('content-type')?.includes('application/json')) {
+      return `Hesap sunucusu geçersiz yanıt verdi (HTTP ${res.status}). Geliştirme sunucusunu yeniden başlatın: npm run dev.`
+    }
     const data = (await res.json().catch(() => ({}))) as { user?: AuthUser; save?: unknown; error?: string }
     if (!res.ok || !data.user) return data.error ?? 'Giriş başarısız.'
     authUser = data.user
@@ -194,6 +197,9 @@ export async function registerAccount(username: string, password: string): Promi
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password }),
     })
+    if (!res.headers.get('content-type')?.includes('application/json')) {
+      return `Hesap sunucusu geçersiz yanıt verdi (HTTP ${res.status}). Geliştirme sunucusunu yeniden başlatın: npm run dev.`
+    }
     const data = (await res.json().catch(() => ({}))) as { user?: AuthUser; error?: string }
     if (!res.ok || !data.user) return data.error ?? 'Hesap oluşturulamadı.'
     authUser = data.user

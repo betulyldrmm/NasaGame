@@ -25,10 +25,12 @@ export interface View {
   mapPan: Vec
   /** animasyon saati (gerçek saniye) */
   clock: number
+  /** aktif roket için yanal RCS girdisi; yalnızca görsel jetleri tetikler */
+  rcsTx: number
 }
 
 export function createView(): View {
-  return { w: 800, h: 600, zoom: 7, camRot: 0, map: false, mapZoom: 2.2e-5, mapFocus: 'earth', mapPan: { x: 0, y: 0 }, clock: 0 }
+  return { w: 800, h: 600, zoom: 7, camRot: 0, map: false, mapZoom: 2.2e-5, mapFocus: 'earth', mapPan: { x: 0, y: 0 }, clock: 0, rcsTx: 0 }
 }
 
 const hash = (n: number) => {
@@ -437,11 +439,11 @@ function vesselCell(st: ReturnType<typeof vesselStats>, z: number, minPx: number
   return Math.max(z, minPx / Math.max(1, st.maxY - st.minY))
 }
 
-function drawVesselAt(ctx: Ctx, sim: Sim, v: Vessel, p: Vec, rot: number, cell: number, clock: number, vac: number) {
+function drawVesselAt(ctx: Ctx, sim: Sim, v: Vessel, p: Vec, rot: number, cell: number, clock: number, vac: number, rcsTx: number) {
   ctx.save()
   ctx.translate(p.x, p.y)
   ctx.rotate(Math.PI / 2 - (v.angle + rot))
-  drawVesselParts(ctx, v.parts, cell, { firing: sim.firing.get(v.id), time: clock, vacuum: vac })
+  drawVesselParts(ctx, v.parts, cell, { firing: sim.firing.get(v.id), time: clock, vacuum: vac, rcsTx })
   ctx.restore()
 }
 
@@ -546,7 +548,7 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
         })
       }
     }
-    drawVesselAt(ctx, sim, o, p, cam.rot, cell, view.clock, vac)
+    drawVesselAt(ctx, sim, o, p, cam.rot, cell, view.clock, vac, isActive ? view.rcsTx : 0)
     frame.hits.push({ id: o.id, x: p.x, y: p.y, cell, rot: Math.PI / 2 - (o.angle + cam.rot) })
     if (!isActive) {
       ctx.fillStyle = 'rgba(255,255,255,.75)'

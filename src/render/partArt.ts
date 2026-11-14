@@ -325,7 +325,7 @@ function drawRtg(ctx: Ctx, w: number, h: number, c: number) {
   ctx.fill()
 }
 
-function drawRcs(ctx: Ctx, w: number, h: number, c: number) {
+function drawRcs(ctx: Ctx, w: number, h: number, c: number, pulse: boolean, time: number, flip: boolean) {
   rr(ctx, 0, h * 0.3, w * 0.5, h * 0.4, c * 0.06)
   ctx.fillStyle = metal(ctx, 0, w * 0.5, STEEL)
   ctx.fill()
@@ -342,6 +342,27 @@ function drawRcs(ctx: Ctx, w: number, h: number, c: number) {
   noz(w * 0.3, h * 0.32, 0, -1)
   noz(w * 0.3, h * 0.68, 0, 1)
   noz(w * 0.48, h * 0.5, 1, 0)
+  if (pulse) {
+    const flicker = 0.72 + 0.28 * Math.sin(time * 34 + (flip ? 1.3 : 0))
+    // Mirroring the left module also mirrors its local axis; +x points outward on both sides.
+    const dir = 1
+    const nozzleX = w * 0.92
+    const length = c * (0.42 + 0.24 * flicker)
+    const plume = ctx.createLinearGradient(nozzleX, 0, nozzleX + dir * length, 0)
+    plume.addColorStop(0, `rgba(225,251,255,${0.9 * flicker})`)
+    plume.addColorStop(0.25, `rgba(56,217,232,${0.62 * flicker})`)
+    plume.addColorStop(1, 'rgba(56,217,232,0)')
+    ctx.save()
+    ctx.globalCompositeOperation = 'lighter'
+    ctx.fillStyle = plume
+    ctx.beginPath()
+    ctx.moveTo(nozzleX, h * 0.34)
+    ctx.quadraticCurveTo(nozzleX + dir * length * 0.45, h * 0.24, nozzleX + dir * length, h * 0.5)
+    ctx.quadraticCurveTo(nozzleX + dir * length * 0.45, h * 0.76, nozzleX, h * 0.66)
+    ctx.closePath()
+    ctx.fill()
+    ctx.restore()
+  }
 }
 
 function drawSolar(ctx: Ctx, w: number, h: number, c: number, open: boolean) {
@@ -445,6 +466,7 @@ export interface PartDrawOpts {
   /** parça gövdenin solunda mı (yan parçalar aynalanır) */
   flip?: boolean
   time?: number
+  rcsPulse?: boolean
 }
 
 export function drawPart(ctx: Ctx, p: PartInst, c: number, opts: PartDrawOpts = {}) {
@@ -466,7 +488,7 @@ export function drawPart(ctx: Ctx, p: PartInst, c: number, opts: PartDrawOpts = 
     case 'radialDecoupler': drawRadial(ctx, w, h, c); break
     case 'chute': drawChute(ctx, w, h, c, !!p.deployed, opts.time ?? 0); break
     case 'leg': drawLeg(ctx, d, w, h, c, !!p.deployed); break
-    case 'rcs': drawRcs(ctx, w, h, c); break
+    case 'rcs': drawRcs(ctx, w, h, c, !!opts.rcsPulse, opts.time ?? 0, !!opts.flip); break
     case 'solar': drawSolar(ctx, w, h, c, !!p.deployed); break
     case 'rtg': drawRtg(ctx, w, h, c); break
     case 'battery': drawBattery(ctx, w, h, c); break
@@ -515,6 +537,8 @@ export interface VesselDrawOpts {
   time?: number
   /** 0 deniz seviyesi … 1 vakum (alev genişliği) */
   vacuum?: number
+  /** yanal hareket varken hava akışı görselini tetikler */
+  rcsTx?: number
 }
 
 /** Aracı kütle merkezine göre, burun yukarı çizer. c = 1 grid karesinin piksel boyu. */
@@ -543,7 +567,8 @@ export function drawVesselParts(ctx: Ctx, parts: PartInst[], c: number, opts: Ve
     const d = partDef(p.def)
     ctx.save()
     ctx.translate((p.x - st.comX) * c, (p.y - st.comY) * c)
-    drawPart(ctx, p, c, { flip: p.x + d.w / 2 < mid, time: opts.time })
+    const flip = p.x + d.w / 2 < mid
+    drawPart(ctx, p, c, { flip, time: opts.time, rcsPulse: d.kind === 'rcs' && !!opts.rcsTx })
     ctx.restore()
   }
 }
