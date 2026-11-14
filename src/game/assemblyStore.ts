@@ -5,6 +5,16 @@ import type { FuelTank, Payload, PayloadId, RocketBody, RocketConfiguration, Roc
 
 export type ColonyTileType = 'empty' | 'hull' | 'solar' | 'rtg' | 'greenhouse' | 'habitat' | 'drill'
 
+export const COLONY_TILE_COSTS: Record<ColonyTileType, number> = {
+  empty: 0,
+  hull: 20,
+  solar: 60,
+  rtg: 140,
+  greenhouse: 90,
+  habitat: 110,
+  drill: 100,
+}
+
 export interface RocketAssemblyState {
   bodyId: RocketBody['id']
   engineId: RocketEngine['id']
@@ -26,14 +36,28 @@ export interface RocketAssemblyState {
   toggleFins: () => void
   setDestinationId: (id: 'moon' | 'mars') => void
   toggleEquipment: (key: 'parachute' | 'heatShield' | 'poweredDescent') => void
-  placeColonyTile: (planetId: 'moon' | 'mars', row: number, col: number, tile: ColonyTileType, cost: number) => boolean
+  placeColonyTile: (
+    planetId: 'moon' | 'mars',
+    row: number,
+    col: number,
+    tile: ColonyTileType,
+    cost?: number,
+  ) => { ok: boolean; message?: string }
   rewardMission: (credits: number, science: number, landedPayloads: PayloadId[], planetId: 'moon' | 'mars') => void
   spendFuelAbort: (cost: number) => void
   claimEmergencyGrant: () => void
 }
 
 function createInitialGrid(): ColonyTileType[][] {
-  return Array.from({ length: 6 }, () => Array.from({ length: 10 }, () => 'empty' as ColonyTileType))
+  const grid = Array.from({ length: 6 }, () => Array.from({ length: 10 }, () => 'empty' as ColonyTileType))
+  // Starter surface outpost on row 2 (Surface Horizon) next to Rocket Pad at [2][1]:
+  // Solar (+100W Moon / +43W Mars) + Pressurized Corridor + Habitat (-25W) -> net positive even on Mars!
+  grid[2]![2] = 'solar'
+  grid[2]![3] = 'hull'
+  grid[2]![4] = 'habitat'
+  // Starter vertical elevator shaft on row 3 toward underground ore veins
+  grid[3]![3] = 'hull'
+  return grid
 }
 
 export const useRocketAssembly = create<RocketAssemblyState>((set, get) => ({
@@ -77,16 +101,60 @@ export const useRocketAssembly = create<RocketAssemblyState>((set, get) => ({
       poweredDescent: true,
     }),
   toggleEquipment: (key) => set((state) => ({ [key]: !state[key] })),
-  placeColonyTile: (planetId, row, col, tile, cost) => {
+  placeColonyTile: (planetId, row, col, tile, costOverride) => {
     const state = get()
-    if (tile !== 'empty' && state.budgetCredits < cost) return false
+    const currentCell = state.colonyGrids[planetId][row]?.[col]
+    if (currentCell === undefined) return { ok: false, message: 'Geçersiz karo konumu.' }
+
+    // Protect landed rocket pad at (row 2, col 1)
+    if (row === 2 && col === 1) {
+      return { ok: false, message: '🚀 Komuta roketi iniş pistinin üzeri kapatılamaz!' }
+    }
+
+    // Demolish / salvage existing module for 50% credit refund
+    if (tile === 'empty') {
+      if (currentCell === 'empty') {
+        return { ok: false, message: 'Bu alan zaten boş!' }
+      }
+      const refund = Math.round(COLONY_TILE_COSTS[currentCell] * 0.5)
+      const grid = state.colonyGrids[planetId].map((r) => [...r])
+      grid[row]![col] = 'empty'
+      set({
+        budgetCredits: state.budgetCredits + refund,
+        colonyGrids: { ...state.colonyGrids, [planetId]: grid },
+      })
+      return { ok: true, message: `Modül söküldü (+${refund} cr hurda iadesi).` }
+    }
+
+    if (currentCell === tile) {
+      return { ok: false, message: 'Bu karoda zaten aynı modül kurulu.' }
+    }
+
+    // Layer placement physics rules:
+    if (tile === 'solar' && row >= 3) {
+      return { ok: false, message: '⚠ Güneş Paneli yeraltına kurulamaz! Yüzeye veya üst güverteye (Satır 1-3) yerleştirin.' }
+    }
+    if (tile === 'greenhouse' && row >= 3) {
+      return { ok: false, message: '⚠ Biyo-Sera güneş ışığı için yüzey katmanına (Satır 1-3) kurulmalıdır!' }
+    }
+    if (tile === 'drill' && row < 2) {
+      return { ok: false, message: '⚠ Lazer Sondaj gökyüzüne kurulamaz! Yüzey veya yeraltı cevher damarlarına (Satır 3-6) kurun.' }
+    }
+
+    const buildCost = costOverride ?? COLONY_TILE_COSTS[tile]
+    if (state.budgetCredits < buildCost) {
+      return { ok: false, message: `⚠ Yetersiz bütçe! (${buildCost} cr gerekli)` }
+    }
+
+    // Refund 50% if replacing another non-empty module cleanly
+    const salvageBonus = currentCell !== 'empty' ? Math.round(COLONY_TILE_COSTS[currentCell] * 0.5) : 0
     const grid = state.colonyGrids[planetId].map((r) => [...r])
     grid[row]![col] = tile
     set({
-      budgetCredits: tile === 'empty' ? state.budgetCredits + 15 : state.budgetCredits - cost,
+      budgetCredits: state.budgetCredits - buildCost + salvageBonus,
       colonyGrids: { ...state.colonyGrids, [planetId]: grid },
     })
-    return true
+    return { ok: true }
   },
   rewardMission: (credits, science, landedPayloads, planetId) =>
     set((state) => {
@@ -99,9 +167,16 @@ export const useRocketAssembly = create<RocketAssemblyState>((set, get) => ({
       }
       landedPayloads.forEach((pid) => {
         const targetTile = mapPayloadToTile[pid]
-        const targetRow = pid === 'rover' ? 4 : pid === 'solar-panel' ? 1 : 2
-        const emptyCol = grid[targetRow]!.findIndex((cell) => cell === 'empty')
-        if (emptyCol !== -1) grid[targetRow]![emptyCol] = targetTile
+        const targetRow = pid === 'rover' ? 3 : 2
+        let emptyCol = grid[targetRow]!.findIndex((cell, cIdx) => cell === 'empty' && cIdx >= 2)
+        if (emptyCol === -1) {
+          emptyCol = grid[targetRow]!.findIndex(
+            (cell, cIdx) => cell === 'empty' && !(targetRow === 2 && cIdx === 1),
+          )
+        }
+        if (emptyCol !== -1) {
+          grid[targetRow]![emptyCol] = targetTile
+        }
       })
       return {
         budgetCredits: Math.max(0, state.budgetCredits + credits),

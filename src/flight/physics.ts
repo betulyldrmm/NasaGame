@@ -69,6 +69,7 @@ export interface RigidBodyStepControls {
   parachuteDeployed?: boolean
   poweredDescentEnabled?: boolean
   sasEnabled?: boolean
+  autoLevel?: boolean
 }
 
 export interface TrajectoryPoint2D {
@@ -89,7 +90,7 @@ export const FLIGHT_GAME_ASSUMPTIONS = {
 
 export function createFlightParameters(
   rocket: RocketConfiguration,
-  options?: { hasFins?: boolean; planetId?: 'earth' | 'moon' | 'mars' },
+  options?: { hasFins?: boolean; planetId?: 'earth' | 'moon' | 'mars'; landingMode?: boolean },
 ): FlightParameters {
   const fuelKg = rocket.fuelTank?.fuelMassKg ?? 0
   const hasFins = options?.hasFins ?? true
@@ -113,9 +114,20 @@ export function createFlightParameters(
     mars: 11_100,
   }
 
+  // In planetary landing mode, calibrate retro-thruster max authority to ~2.5x local weight
+  // so ~40% throttle is the natural hover point and manual SFS throttling is smooth & controllable.
+  const calibratedLandingThrust =
+    options?.landingMode && planetId !== 'earth'
+      ? Math.min(rocket.engine.thrustN, rocket.totalMassKg * planet.gravityMps2 * 2.6)
+      : rocket.engine.thrustN
+  const calibratedFuelFlow =
+    options?.landingMode && planetId !== 'earth'
+      ? rocket.engine.fuelConsumptionKgPerSecond * 0.35
+      : rocket.engine.fuelConsumptionKgPerSecond
+
   return {
-    thrustN: rocket.engine.thrustN,
-    fuelFlowKgPerSecond: rocket.engine.fuelConsumptionKgPerSecond,
+    thrustN: calibratedLandingThrust,
+    fuelFlowKgPerSecond: calibratedFuelFlow,
     dryMassKg: rocket.totalMassKg - fuelKg,
     initialFuelKg: fuelKg,
     gravityMps2: planet.gravityMps2,
@@ -278,19 +290,27 @@ export function stepRigidBody2D(
     }
   }
 
-  // Rotational dynamics (RCS + Gimbal control torque + critical SAS angular velocity damping)
+  // Rotational dynamics (RCS + Gimbal control torque + SAS damping + optional auto-leveling)
   const controlTorqueNm = steer * inertia * 2.8
-  const dampingTorqueNm = -state.angularVelocityRadPs * inertia * 3.4
-  const totalTorqueNm = controlTorqueNm + aeroTorqueNm + dampingTorqueNm
+  const dampingTorqueNm = -state.angularVelocityRadPs * inertia * (controls.sasEnabled ?? true ? 4.0 : 2.2)
+  const autoLevelTorqueNm =
+    controls.autoLevel && parameters.staticMargin >= 0 && Math.abs(steer) < 0.05
+      ? -state.angleRad * inertia * 4.2
+      : 0
+  const totalTorqueNm = controlTorqueNm + aeroTorqueNm + dampingTorqueNm + autoLevelTorqueNm
   const angularAccelRadPs2 = totalTorqueNm / inertia
   const angularVelocityRadPs = Math.max(
     -4.5,
     Math.min(4.5, state.angularVelocityRadPs + angularAccelRadPs2 * dtSeconds),
   )
-  const angleRad = wrapAngleRad(state.angleRad + angularVelocityRadPs * dtSeconds)
+  let angleRad = wrapAngleRad(state.angleRad + angularVelocityRadPs * dtSeconds)
+  // Prevent accidental flips when SAS auto-leveling is engaged on planetary landing
+  if (controls.autoLevel && parameters.staticMargin >= 0) {
+    angleRad = Math.max(-0.58, Math.min(0.58, angleRad))
+  }
 
   // Linear accelerations
-  const axMps2 = (thrustFx + dragFx) / massKg
+  const axMps2 = (thrustFx + dragFx) / massKg - (controls.autoLevel && Math.abs(steer) < 0.05 ? state.vxMps * 0.06 : 0)
   const ayMps2 = (thrustFy + dragFy) / massKg - parameters.gravityMps2
   const gLoad = Math.hypot(thrustFx + dragFx, thrustFy + dragFy) / (massKg * 9.81)
 
@@ -300,9 +320,9 @@ export function stepRigidBody2D(
   const rawYM = state.yM + vyMps * dtSeconds
   const yM = Math.max(0, rawYM)
 
-  // Smooth landing gear deployment below 180m when descending
-  const gearTarget = yM < 180 && vyMps < 2 ? 1 : 0
-  const landingGearDeploy = state.landingGearDeploy + (gearTarget - state.landingGearDeploy) * Math.min(1, dtSeconds * 4)
+  // Smooth landing gear deployment below 220m when descending
+  const gearTarget = yM < 220 && vyMps < 4 ? 1 : 0
+  const landingGearDeploy = state.landingGearDeploy + (gearTarget - state.landingGearDeploy) * Math.min(1, dtSeconds * 4.5)
 
   // Check aerodynamic structural breakup (high dynamic pressure + extreme angle of attack when fins are missing)
   if (parameters.staticMargin < 0 && dynamicPressurePa > 180 && Math.abs(angleRad) > 0.95 && yM > 40) {

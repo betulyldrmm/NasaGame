@@ -71,10 +71,12 @@ export default function RocketPreview2D({
         </defs>
 
         {/* Engine Exhaust Pixel Flame */}
-        <rect x="132" y="232" width="12" height="12" fill={engineColor} />
-        <rect x="144" y="244" width="12" height="14" fill="#FB7185" />
-        <rect x="156" y="232" width="12" height="12" fill={engineColor} />
-        <rect x={150 - engineWidth / 4} y="224" width={engineWidth / 2} height="10" fill={engineColor} />
+        <g className="pixel-flame-flicker">
+          <rect x="132" y="232" width="12" height="12" fill={engineColor} />
+          <rect x="144" y="244" width="12" height="14" fill="#FB7185" />
+          <rect x="156" y="232" width="12" height="12" fill={engineColor} />
+          <rect x={150 - engineWidth / 4} y="224" width={engineWidth / 2} height="10" fill={engineColor} />
+        </g>
 
         {/* Stabilizer Fins (Click to toggle) */}
         {hasFins && (

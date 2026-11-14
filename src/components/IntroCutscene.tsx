@@ -74,6 +74,12 @@ export default function IntroCutscene({ onFinish }: IntroCutsceneProps) {
               <rect x="248" y="64" width="8" height="8" fill="#64748B" />
               <rect x="296" y="102" width="40" height="40" fill="#EA580C" />
               <rect x="304" y="110" width="12" height="10" fill="#9A3412" />
+              {/* Animated Mini Pixel Rocket flying across trajectory */}
+              <g className="cutscene-ship-glide">
+                <rect x="170" y="72" width="16" height="8" fill="#F3F7FF" />
+                <polygon points="186,72 194,76 186,80" fill="#FFAD57" />
+                <rect x="162" y="74" width="8" height="4" fill="#38D9E8" />
+              </g>
             </svg>
           )}
 
@@ -118,9 +124,12 @@ export default function IntroCutscene({ onFinish }: IntroCutsceneProps) {
               <rect x="76" y="168" width="6" height="6" fill="#38D9E8" />
               <rect x="280" y="160" width="8" height="8" fill="#FACC15" />
               {/* Landed Rocket with Retro Flame */}
-              <polygon points="110,44 126,64 94,64" fill="#FFAD57" />
-              <rect x="94" y="64" width="32" height="44" fill="#E2E8F0" />
-              <rect x="102" y="108" width="16" height="18" fill="#38D9E8" />
+              <g className="cutscene-lander-hover">
+                <polygon points="110,44 126,64 94,64" fill="#FFAD57" />
+                <rect x="94" y="64" width="32" height="44" fill="#E2E8F0" />
+                <rect x="102" y="108" width="16" height="10" fill="#38D9E8" />
+                <polygon points="103,118 117,118 110,130" fill="#FFAD57" className="pixel-flame-flicker" />
+              </g>
               {/* Pixel Colony Blocks on Right */}
               <rect x="176" y="96" width="44" height="32" fill="#1E293B" stroke="#4ADE80" strokeWidth="2" />
               <rect x="184" y="108" width="28" height="12" fill="#4ADE80" />

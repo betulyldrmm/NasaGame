@@ -208,49 +208,111 @@ h1 span { color: var(--color-orange); }
 .sfs-controls-box { margin-top: 16px; padding: 12px; background: #0c172a; border: 1px solid #38d9e833; border-radius: 7px; }
 .sfs-throttle-head { display: flex; justify-content: space-between; font: 700 10px 'DM Mono', monospace; color: var(--color-orange); margin-bottom: 6px; }
 .sfs-slider { width: 100%; accent-color: var(--color-orange); cursor: pointer; }
-.sfs-steer-row { display: grid; grid-template-columns: 1fr 1.2fr 1fr; gap: 6px; margin-top: 8px; }
+.sfs-preset-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; margin-top: 6px; }
+.sfs-preset-btn { background: #101e36; border: 1px solid #8ba1c233; border-radius: 4px; padding: 5px 2px; font: 700 8.5px 'DM Mono', monospace; color: #cbd5e1; cursor: pointer; }
+.sfs-preset-btn:hover { border-color: var(--color-turquoise); color: var(--color-turquoise); }
+.sfs-preset-btn.hover-preset { border-color: #4ade8066; color: var(--color-success); background: #4ade8012; }
+.sfs-steer-row { display: grid; grid-template-columns: 1fr 1.25fr 1fr; gap: 6px; margin-top: 8px; }
 .sfs-steer-btn, .sfs-autopilot-btn { background: #16253F; border: 1px solid #8ba1c233; border-radius: 5px; padding: 7px 4px; font: 700 9.5px 'DM Mono', monospace; cursor: pointer; }
 .sfs-steer-btn:hover { border-color: var(--color-turquoise); }
 .sfs-autopilot-btn.active { background: #4ade8022; border-color: var(--color-success); color: var(--color-success); }
 
+.sfs-deck-bar { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin-top: 10px; }
+.sfs-deck-btn { background: #12213a; border: 1px solid #38d9e844; border-radius: 5px; padding: 8px 6px; font: 700 9.5px 'DM Mono', monospace; color: #e2e8f0; cursor: pointer; transition: background .15s, border-color .15s; }
+.sfs-deck-btn:hover { background: #17364a; border-color: var(--color-turquoise); }
+.sfs-deck-btn.hover-btn { border-color: #4ade8066; color: var(--color-success); background: #4ade8015; }
+
+.learning-cards-strip { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+.learning-card-mini { background: #0c172a; border: 1px solid #38d9e833; border-radius: 6px; padding: 9px 10px; }
+.learning-card-mini strong { display: block; font-size: 10px; color: var(--color-turquoise); margin-bottom: 4px; }
+.learning-card-mini p { margin: 0; font-size: 9.5px; color: #9caecc; line-height: 1.45; }
+
 .launch-button, .launch-from-assembly { width: 100%; margin-top: 16px; }
 .mission-verdict { margin-top: 14px; padding: 12px; border: 1px solid; border-radius: 6px; }.mission-verdict.success { color: #a8f0bd; background: #4ade800d; border-color: #4ade8036; }.mission-verdict.failure { color: #ffc2cc; background: #fb71850d; border-color: #fb718536; }.mission-verdict b { font-size: 11px; }.mission-verdict p, .mission-verdict li { font-size: 10px; line-height: 1.5; }.mission-verdict ul { margin: 8px 0 0; padding-left: 17px; }
 .result-actions { display: grid; gap: 8px; margin-top: 14px; }.result-actions .button { min-height: 42px; padding: 10px; font-size: 11px; justify-content: center; }
-.phaser-flight-canvas { width: 100%; height: clamp(300px, 40vw, 430px); min-height: 300px; margin-top: 12px; overflow: hidden; background: #0a1223; border: 1px solid #91a8cd22; border-radius: 6px; box-shadow: inset 0 0 32px #080f2066; }.phaser-flight-canvas canvas { display: block; width: 100% !important; height: 100% !important; image-rendering: pixelated; }
-.phaser-loading, .flight-loading { min-height: 300px; display: grid; place-items: center; color: var(--color-muted); font-size: 13px; }
-.flight-hud { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; margin-top: 12px; background: #91a8cd25; border: 1px solid #91a8cd25; border-radius: 5px; overflow: hidden; }.flight-hud > div { min-height: 56px; display: flex; flex-direction: column; justify-content: center; gap: 5px; padding: 8px 10px; background: #0c172a; }.flight-hud span { color: #8295b2; font-size: 9px; }.flight-hud b { color: #e6eef9; font: 600 12px 'DM Mono', monospace; }
+.phaser-flight-canvas { width: 100%; height: clamp(320px, 42vw, 450px); min-height: 320px; margin-top: 12px; overflow: hidden; background: #0a1223; border: 1px solid #91a8cd22; border-radius: 6px; box-shadow: inset 0 0 32px #080f2066; }.phaser-flight-canvas canvas { display: block; width: 100% !important; height: 100% !important; image-rendering: pixelated; }
+.phaser-loading, .flight-loading { min-height: 320px; display: grid; place-items: center; color: var(--color-muted); font-size: 13px; }
+.flight-hud { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; margin-top: 10px; background: #91a8cd25; border: 1px solid #91a8cd25; border-radius: 5px; overflow: hidden; }.flight-hud > div { min-height: 52px; display: flex; flex-direction: column; justify-content: center; gap: 4px; padding: 7px 10px; background: #0c172a; }.flight-hud span { color: #8295b2; font-size: 9px; }.flight-hud b { color: #e6eef9; font: 600 12px 'DM Mono', monospace; }
 
 /* Phase 4: Dynamic Space Engineers / Terraria 2D Pixel Colony Sandbox */
-.colony-top-strip { padding: 14px 18px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
-.colony-meters { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.colony-stat-pill { background: #0c172a; border: 1px solid #8ba1c22b; border-radius: 6px; padding: 6px 12px; display: flex; flex-direction: column; }
+.colony-top-strip { padding: 14px 18px; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+.colony-meters { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.colony-stat-pill { background: #0c172a; border: 1px solid #8ba1c22b; border-radius: 6px; padding: 6px 11px; display: flex; flex-direction: column; }
 .colony-stat-pill span { font: 8.5px 'DM Mono', monospace; color: #8295b2; }
-.colony-stat-pill b { font: 700 13px 'DM Mono', monospace; }
+.colony-stat-pill b { font: 700 12.5px 'DM Mono', monospace; }
 .colony-stat-pill.ok b { color: var(--color-turquoise); }
 .colony-stat-pill.danger { border-color: var(--color-error); background: #fb71851a; }
 .colony-stat-pill.danger b { color: var(--color-error); }
 .harvest-btn { min-height: 40px; padding: 8px 14px; font-size: 11.5px; }
 
+.colony-toast-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 14px; margin-bottom: 12px; background: #0d1b32; border: 1px solid #38d9e844; border-radius: 7px; font: 600 11px 'DM Mono', monospace; color: #bfe8f7; }
+.colony-toast-bar.toast-danger { background: #2c0b16; border-color: var(--color-error); color: #fecdd3; }
+.colony-toast-right { display: flex; align-items: center; gap: 10px; }
+.sol-timer-pill { background: #16253f; border: 1px solid #8ba1c233; padding: 4px 8px; border-radius: 4px; font-size: 9.5px; color: var(--color-orange); }
+
 .pixel-sandbox-frame { padding: 16px; }
 .pixel-sandbox-frame.frame-blackout { border-color: var(--color-error); box-shadow: 0 0 28px #fb718533; }
 .sandbox-sky-label { display: flex; justify-content: space-between; font: 9.5px 'DM Mono', monospace; color: var(--color-muted); margin-bottom: 10px; }
 .pixel-grid-wrapper { display: flex; flex-direction: column; border: 2px solid #2b4266; border-radius: 6px; overflow: hidden; image-rendering: pixelated; }
-.pixel-grid-row { display: grid; grid-template-columns: repeat(10, 1fr); }
-.row-sky { background: #091326; }
-.row-surface { background: #334155; border-top: 3px solid #64748B; }
-.row-underground { background: #1E1B24; border-top: 1px solid #2D2638; }
+.pixel-grid-row { display: grid; grid-template-columns: 118px repeat(10, 1fr); align-items: stretch; }
+.row-depth-tag { display: flex; align-items: center; padding: 0 8px; font: 700 8.5px 'DM Mono', monospace; color: #94a3b8; background: rgba(8, 15, 32, 0.72); border-right: 1px solid rgba(145, 168, 205, 0.18); border-bottom: 1px solid rgba(145, 168, 205, 0.12); }
+.row-sky { background: linear-gradient(180deg, #060d1d 0%, #0b1730 100%); }
+.row-surface.planet-moon { background: linear-gradient(180deg, #334155 0%, #1e293b 100%); border-top: 3px solid #94a3b8; }
+.row-surface.planet-mars { background: linear-gradient(180deg, #7c2d12 0%, #431407 100%); border-top: 3px solid #ea580c; }
+.row-underground.planet-moon { background: #131926; border-top: 1px solid #263147; }
+.row-underground.planet-mars { background: #27120b; border-top: 1px solid #451a03; }
+.row-buildable .row-depth-tag { border-left: 3px solid var(--color-turquoise); color: #e2e8f0; }
+.row-restricted .row-depth-tag { border-left: 3px solid transparent; opacity: 0.7; }
 .pixel-tile { aspect-ratio: 1.35 / 1; border: 1px solid rgba(145, 168, 205, 0.12); background: transparent; padding: 2px; cursor: pointer; display: grid; place-items: center; position: relative; }
-.pixel-tile:hover { border-color: var(--color-turquoise); background: rgba(56, 217, 232, 0.12); }
-.tile-svg { width: 100%; height: 100%; display: block; image-rendering: pixelated; }
-.pixel-rocket-marker { font-size: 22px; }
+.pixel-tile.has-ore { background: radial-gradient(circle, rgba(250, 204, 21, 0.18) 0%, transparent 72%); }
+.pixel-tile.rocket-pad-tile { background: rgba(56, 217, 232, 0.12); border-color: rgba(56, 217, 232, 0.45); cursor: default; }
+.pixel-tile:hover { border-color: var(--color-turquoise); background: rgba(56, 217, 232, 0.18); }
+.pixel-tile.tile-restricted:hover { border-color: var(--color-error); background: rgba(251, 113, 133, 0.14); cursor: not-allowed; }
+.tile-svg { width: 100%; height: 100%; display: block; image-rendering: pixelated; position: relative; z-index: 2; }
+
+/* Interconnected Space Engineers Conduits Between Adjacent Colony Blocks */
+.conduit-overlay { position: absolute; inset: 0; pointer-events: none; z-index: 1; }
+.conduit-overlay i { position: absolute; background: var(--c-color, #38D9E8); opacity: 0.72; }
+.conduit-overlay .conn-r { right: -1px; top: 50%; width: 7px; height: 4px; transform: translateY(-50%); }
+.conduit-overlay .conn-l { left: -1px; top: 50%; width: 7px; height: 4px; transform: translateY(-50%); }
+.conduit-overlay .conn-d { bottom: -1px; left: 50%; width: 4px; height: 7px; transform: translateX(-50%); }
+.conduit-overlay .conn-u { top: -1px; left: 50%; width: 4px; height: 7px; transform: translateX(-50%); }
+
+/* Pixel Animations */
+@keyframes pixelFlicker {
+  0%, 100% { opacity: 1; transform: scaleY(1); }
+  50% { opacity: 0.78; transform: scaleY(0.88); }
+}
+@keyframes shipGlide {
+  0%, 100% { transform: translate(0px, 2px); }
+  50% { transform: translate(12px, -3px); }
+}
+@keyframes landerHover {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-5px); }
+}
+@keyframes orePulse {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.35); }
+}
+.pixel-flame-flicker { transform-origin: 150px 232px; animation: pixelFlicker .22s steps(2) infinite; }
+.cutscene-ship-glide { animation: shipGlide 2.2s ease-in-out infinite; }
+.cutscene-lander-hover { animation: landerHover 1.8s ease-in-out infinite; }
+.ore-crystal { animation: orePulse 2s ease-in-out infinite; }
 
 .sandbox-hotbar { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 7px; margin-top: 14px; }
-.hotbar-slot { background: #0e1b30; border: 1.5px solid #8ba1c229; border-radius: 6px; padding: 9px 8px; text-align: left; cursor: pointer; display: flex; flex-direction: column; gap: 4px; }
+.hotbar-slot { background: #0e1b30; border: 1.5px solid #8ba1c229; border-radius: 6px; padding: 9px 8px; text-align: left; cursor: pointer; display: flex; flex-direction: column; gap: 3px; }
 .hotbar-slot:hover { border-color: var(--slot-color, var(--color-turquoise)); }
 .hotbar-slot.selected { background: #17364a99; border-color: var(--slot-color, var(--color-turquoise)); box-shadow: inset 0 0 0 1px var(--slot-color, var(--color-turquoise)); }
 .hotbar-slot strong { font-size: 10.5px; color: #e6edf8; }
-.hotbar-slot small { font: 9px 'DM Mono', monospace; color: #8fa1bc; }
+.hotbar-slot small { font: 8.5px 'DM Mono', monospace; color: #8fa1bc; }
 
+@media (max-width: 960px) {
+  .pixel-grid-row { grid-template-columns: 82px repeat(10, 1fr); }
+  .row-depth-tag { font-size: 7.5px; padding: 0 4px; }
+  .sfs-deck-bar { grid-template-columns: repeat(3, 1fr); }
+  .learning-cards-strip { grid-template-columns: 1fr; }
+}
 @media (max-width: 860px) {
   .assembly-columns, .flight-columns { grid-template-columns: 1fr; }
   .sandbox-hotbar { grid-template-columns: repeat(2, 1fr); }

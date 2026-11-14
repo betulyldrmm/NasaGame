@@ -16,18 +16,24 @@ interface PhaserFlightViewProps {
   configuration: RocketConfiguration
   options: FlightSceneOptions
   onReady: () => void
-  onUpdate: (state: FlightState, phase: 'launch' | 'space' | 'landing', landingSpeedMps: number) => void
+  onUpdate: (
+    state: FlightState,
+    phase: 'launch' | 'space' | 'landing',
+    landingSpeedMps: number,
+    activeThrottlePct: number,
+  ) => void
+  onManualOverride?: () => void
   onComplete: (state: FlightState, landedSafely: boolean, crashReason?: string) => void
 }
 
 const PhaserFlightView = forwardRef<PhaserFlightHandle, PhaserFlightViewProps>(function PhaserFlightView(
-  { configuration, options, onReady, onUpdate, onComplete },
+  { configuration, options, onReady, onUpdate, onManualOverride, onComplete },
   ref,
 ) {
   const mountRef = useRef<HTMLDivElement>(null)
   const sceneRef = useRef<FlightScene | null>(null)
-  const callbacksRef = useRef({ onReady, onUpdate, onComplete })
-  callbacksRef.current = { onReady, onUpdate, onComplete }
+  const callbacksRef = useRef({ onReady, onUpdate, onManualOverride, onComplete })
+  callbacksRef.current = { onReady, onUpdate, onManualOverride, onComplete }
 
   useImperativeHandle(
     ref,
@@ -43,7 +49,14 @@ const PhaserFlightView = forwardRef<PhaserFlightHandle, PhaserFlightViewProps>(f
 
   useEffect(() => {
     sceneRef.current?.setOptions(options)
-  }, [options])
+  }, [
+    options.destinationId,
+    options.hasFins,
+    options.parachute,
+    options.heatShield,
+    options.poweredDescent,
+    options.autoPilot,
+  ])
 
   useEffect(() => {
     if (!mountRef.current) return
@@ -54,7 +67,9 @@ const PhaserFlightView = forwardRef<PhaserFlightHandle, PhaserFlightViewProps>(f
       const activeScene = bootGame.scene.getScene('FlightScene') as FlightScene
       sceneRef.current = activeScene
       const callbacks: FlightSceneCallbacks = {
-        onUpdate: (state, phase, landingSpeed) => callbacksRef.current.onUpdate(state, phase, landingSpeed),
+        onUpdate: (state, phase, landingSpeed, activeThrottlePct) =>
+          callbacksRef.current.onUpdate(state, phase, landingSpeed, activeThrottlePct),
+        onManualOverride: () => callbacksRef.current.onManualOverride?.(),
         onComplete: (state, landedSafely, crashReason) =>
           callbacksRef.current.onComplete(state, landedSafely, crashReason),
       }

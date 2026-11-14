@@ -1,6 +1,7 @@
 import Phaser from 'phaser'
 import type { RocketConfiguration } from '../game/types'
 import {
+  calculateDeltaVCapacityMps,
   computeLandingGuidance,
   createFlightParameters,
   createFlightState,
@@ -13,7 +14,13 @@ import {
 } from './physics'
 
 export interface FlightSceneCallbacks {
-  onUpdate: (state: FlightState, phase: 'launch' | 'space' | 'landing', landingSpeedMps: number) => void
+  onUpdate: (
+    state: FlightState,
+    phase: 'launch' | 'space' | 'landing',
+    landingSpeedMps: number,
+    activeThrottlePct: number,
+  ) => void
+  onManualOverride?: () => void
   onComplete: (state: FlightState, landedSafely: boolean, crashReason?: string) => void
 }
 
@@ -34,7 +41,6 @@ interface ExhaustParticle {
   vy: number
   life: number
   maxLife: number
-  baseSize: number
 }
 
 /**
@@ -50,7 +56,7 @@ export class FlightScene extends Phaser.Scene {
     parachute: false,
     heatShield: false,
     poweredDescent: true,
-    autoPilot: true,
+    autoPilot: false,
   }
   private flightState: FlightState | null = null
   private rbState: RigidBody2DState | null = null
@@ -68,8 +74,9 @@ export class FlightScene extends Phaser.Scene {
   private chuteGraphic: Phaser.GameObjects.Graphics | null = null
   private shieldGraphic: Phaser.GameObjects.Graphics | null = null
   private rcsGraphic: Phaser.GameObjects.Graphics | null = null
+  private separatedStageGraphic: Phaser.GameObjects.Graphics | null = null
 
-  // Environment & HUD Layers
+  // Environment & SFS HUD Layers
   private stars: Phaser.GameObjects.Graphics | null = null
   private atmosphereOverlay: Phaser.GameObjects.Rectangle | null = null
   private farHills: Phaser.GameObjects.Graphics | null = null
@@ -78,8 +85,10 @@ export class FlightScene extends Phaser.Scene {
   private launchPad: Phaser.GameObjects.Graphics | null = null
   private planetSurface: Phaser.GameObjects.Graphics | null = null
   private trajectoryGraphic: Phaser.GameObjects.Graphics | null = null
+  private hudGaugesGraphic: Phaser.GameObjects.Graphics | null = null
   private telemetryText: Phaser.GameObjects.Text | null = null
   private statusText: Phaser.GameObjects.Text | null = null
+  private checklistText: Phaser.GameObjects.Text | null = null
 
   // Physical Particle Pool & Matter.js Crash Debris
   private exhaustPool: ExhaustParticle[] = []
@@ -89,13 +98,17 @@ export class FlightScene extends Phaser.Scene {
 
   private fixedAccumulator = 0
   private hudAccumulator = 0
+  private spacePhaseTimer = 0
+  private suspensionBounce = 0
   private flightActive = false
   private phase: 'launch' | 'space' | 'landing' = 'launch'
   private engineHeight = 22
   private bodyHeight = 110
   private bodyWidth = 48
+  private legLength = 38
   private throttle = 1.0
   private steerInput = 0
+  private throttleKeyDir = 0
   private readonly fixedStepSeconds = 1 / 60
 
   constructor() {
@@ -107,43 +120,66 @@ export class FlightScene extends Phaser.Scene {
     this.drawLaunchPad()
     this.drawPlanetSurface()
     this.trajectoryGraphic = this.add.graphics().setDepth(2)
+    this.hudGaugesGraphic = this.add.graphics().setDepth(11)
     this.drawVehicle()
     this.createParticlePool()
     this.setupMatterGroundCollider()
 
     this.statusText = this.add
-      .text(this.scale.width * 0.5, 28, '', {
+      .text(this.scale.width * 0.5, 22, '', {
         fontFamily: '"DM Mono", monospace',
-        fontSize: '13px',
+        fontSize: '12px',
         color: '#38D9E8',
-        backgroundColor: '#080F20DD',
+        backgroundColor: '#080F20EE',
         padding: { x: 12, y: 5 },
       })
       .setOrigin(0.5)
       .setDepth(12)
 
     this.telemetryText = this.add
-      .text(16, 16, '', {
+      .text(this.scale.width * 0.5, 48, '', {
         fontFamily: '"DM Mono", monospace',
         fontSize: '11px',
-        color: '#93A8C7',
-        backgroundColor: '#080F20CC',
-        padding: { x: 8, y: 6 },
+        color: '#E2E8F0',
+        backgroundColor: '#0C172ACC',
+        padding: { x: 10, y: 4 },
       })
+      .setOrigin(0.5)
       .setDepth(12)
 
-    this.input.keyboard?.on('keydown-A', () => {
-      this.steerInput = -1
-    })
-    this.input.keyboard?.on('keydown-LEFT', () => {
-      this.steerInput = -1
-    })
-    this.input.keyboard?.on('keydown-D', () => {
-      this.steerInput = 1
-    })
-    this.input.keyboard?.on('keydown-RIGHT', () => {
-      this.steerInput = 1
-    })
+    this.checklistText = this.add
+      .text(this.scale.width - 48, 84, '', {
+        fontFamily: '"DM Mono", monospace',
+        fontSize: '10px',
+        color: '#CBD5E1',
+        backgroundColor: '#080F20DD',
+        padding: { x: 9, y: 7 },
+        lineSpacing: 4,
+      })
+      .setOrigin(1, 0)
+      .setDepth(12)
+      .setVisible(false)
+
+    const triggerManualSteer = (dir: -1 | 1) => {
+      this.steerInput = dir
+      if (this.phase === 'landing' && this.options.autoPilot) {
+        this.options.autoPilot = false
+        this.callbacks?.onManualOverride?.()
+      }
+    }
+
+    const triggerManualThrottle = (dir: -1 | 1) => {
+      this.throttleKeyDir = dir
+      if (this.phase === 'landing' && this.options.autoPilot) {
+        this.options.autoPilot = false
+        this.callbacks?.onManualOverride?.()
+      }
+    }
+
+    this.input.keyboard?.on('keydown-A', () => triggerManualSteer(-1))
+    this.input.keyboard?.on('keydown-LEFT', () => triggerManualSteer(-1))
+    this.input.keyboard?.on('keydown-D', () => triggerManualSteer(1))
+    this.input.keyboard?.on('keydown-RIGHT', () => triggerManualSteer(1))
     this.input.keyboard?.on('keyup-A', () => {
       if (this.steerInput < 0) this.steerInput = 0
     })
@@ -156,11 +192,40 @@ export class FlightScene extends Phaser.Scene {
     this.input.keyboard?.on('keyup-RIGHT', () => {
       if (this.steerInput > 0) this.steerInput = 0
     })
-    this.input.keyboard?.on('keydown-W', () => {
-      this.throttle = Math.min(1, this.throttle + 0.1)
+
+    this.input.keyboard?.on('keydown-W', () => triggerManualThrottle(1))
+    this.input.keyboard?.on('keydown-UP', () => triggerManualThrottle(1))
+    this.input.keyboard?.on('keydown-S', () => triggerManualThrottle(-1))
+    this.input.keyboard?.on('keydown-DOWN', () => triggerManualThrottle(-1))
+    this.input.keyboard?.on('keyup-W', () => {
+      if (this.throttleKeyDir > 0) this.throttleKeyDir = 0
     })
-    this.input.keyboard?.on('keydown-S', () => {
-      this.throttle = Math.max(0, this.throttle - 0.1)
+    this.input.keyboard?.on('keyup-UP', () => {
+      if (this.throttleKeyDir > 0) this.throttleKeyDir = 0
+    })
+    this.input.keyboard?.on('keyup-S', () => {
+      if (this.throttleKeyDir < 0) this.throttleKeyDir = 0
+    })
+    this.input.keyboard?.on('keyup-DOWN', () => {
+      if (this.throttleKeyDir < 0) this.throttleKeyDir = 0
+    })
+
+    // Classic SFS / KSP Throttle Snap Keys: Z = 100%, X = 0%, SPACE = Full retro / 38% toggle
+    this.input.keyboard?.on('keydown-Z', () => {
+      if (!this.flightActive) return
+      if (this.phase === 'landing' && this.options.autoPilot) {
+        this.options.autoPilot = false
+        this.callbacks?.onManualOverride?.()
+      }
+      this.throttle = 1.0
+    })
+    this.input.keyboard?.on('keydown-X', () => {
+      if (!this.flightActive) return
+      if (this.phase === 'landing' && this.options.autoPilot) {
+        this.options.autoPilot = false
+        this.callbacks?.onManualOverride?.()
+      }
+      this.throttle = 0.0
     })
 
     this.scale.on(Phaser.Scale.Events.RESIZE, this.handleResize, this)
@@ -192,7 +257,7 @@ export class FlightScene extends Phaser.Scene {
     this.clearDebris()
     this.drawVehicle()
     this.positionVehicle()
-    this.callbacks.onUpdate(this.flightState, this.phase, 0)
+    this.callbacks.onUpdate(this.flightState, this.phase, 0, Math.round(this.throttle * 100))
   }
 
   private rebuildPhysicsParameters() {
@@ -200,10 +265,12 @@ export class FlightScene extends Phaser.Scene {
     this.launchParams = createFlightParameters(this.configuration, {
       hasFins: this.options.hasFins,
       planetId: 'earth',
+      landingMode: false,
     })
     this.landingParams = createFlightParameters(this.configuration, {
       hasFins: this.options.hasFins,
       planetId: this.options.destinationId,
+      landingMode: true,
     })
   }
 
@@ -214,6 +281,7 @@ export class FlightScene extends Phaser.Scene {
     if (prevFins !== this.options.hasFins || prevDest !== this.options.destinationId) {
       this.rebuildPhysicsParameters()
       if (!this.flightActive) {
+        this.drawPlanetSurface()
         this.drawVehicle()
         this.positionVehicle()
       }
@@ -226,12 +294,19 @@ export class FlightScene extends Phaser.Scene {
 
   setSteer(dir: -1 | 0 | 1) {
     this.steerInput = dir
+    if (dir !== 0 && this.phase === 'landing' && this.options.autoPilot) {
+      this.options.autoPilot = false
+      this.callbacks?.onManualOverride?.()
+    }
   }
 
   startFlight(): boolean {
     if (!this.configuration || this.flightActive) return false
     this.rebuildPhysicsParameters()
     this.clearDebris()
+    this.throttle = 1.0
+    this.suspensionBounce = 0
+    this.spacePhaseTimer = 0
     this.flightState = createFlightState(this.configuration)
     this.rbState = createRigidBody2DState(this.configuration)
     this.fixedAccumulator = 0
@@ -239,14 +314,16 @@ export class FlightScene extends Phaser.Scene {
     this.flightActive = true
     this.phase = 'launch'
     this.planetSurface?.setVisible(false)
+    this.separatedStageGraphic?.setVisible(false)
+    this.checklistText?.setVisible(false)
     this.launchPad?.setVisible(true).setY(0)
     this.farHills?.setVisible(true).setY(0)
     this.nearHills?.setVisible(true).setY(0)
     this.cloudLayer?.setVisible(true).setY(0)
     this.atmosphereOverlay?.setAlpha(0.55)
     this.rocket?.setVisible(true).setRotation(0)
-    this.statusText?.setText('AŞAMA 1: DÜNYA KALKIŞI — 2D RİJİT FİZİK SİMÜLASYONU')
-    this.callbacks?.onUpdate(this.flightState, this.phase, 0)
+    this.statusText?.setText('AŞAMA 1: DÜNYA KALKIŞI — HEDEF YÖRÜNGEYE TIRMANIŞ')
+    this.callbacks?.onUpdate(this.flightState, this.phase, 0, 100)
     return true
   }
 
@@ -254,6 +331,9 @@ export class FlightScene extends Phaser.Scene {
     this.flightActive = false
     this.fixedAccumulator = 0
     this.phase = 'launch'
+    this.throttle = 1.0
+    this.suspensionBounce = 0
+    this.spacePhaseTimer = 0
     this.clearDebris()
     if (this.configuration) {
       this.rebuildPhysicsParameters()
@@ -263,8 +343,11 @@ export class FlightScene extends Phaser.Scene {
     this.flameGraphic?.setVisible(false)
     this.chuteGraphic?.setVisible(false)
     this.shieldGraphic?.setVisible(false)
+    this.separatedStageGraphic?.setVisible(false)
+    this.checklistText?.setVisible(false)
     this.rcsGraphic?.clear()
     this.trajectoryGraphic?.clear()
+    this.hudGaugesGraphic?.clear()
     this.planetSurface?.setVisible(false)
     this.launchPad?.setVisible(true).setY(0)
     this.farHills?.setVisible(true).setY(0)
@@ -281,17 +364,35 @@ export class FlightScene extends Phaser.Scene {
     this.statusText?.setText('')
     this.telemetryText?.setText('')
     this.positionVehicle()
-    if (this.flightState) this.callbacks?.onUpdate(this.flightState, this.phase, 0)
+    if (this.flightState) this.callbacks?.onUpdate(this.flightState, this.phase, 0, 100)
   }
 
   update(_time: number, deltaMs: number) {
     const realDt = Math.min(deltaMs, 50) / 1000
     this.updateParticles(realDt)
 
+    // Smooth landing leg compression settle after touchdown
+    if (!this.flightActive && this.suspensionBounce > 0) {
+      this.suspensionBounce = Math.max(0, this.suspensionBounce - realDt * 4)
+      if (this.rocket && this.rbState?.status === 'landed') {
+        const groundLineY = this.scale.height * 0.82
+        const restRocketY = groundLineY - (this.bodyHeight * 0.42 + this.legLength * 0.84)
+        this.rocket.setY(restRocketY + Math.sin(this.suspensionBounce * Math.PI) * 5)
+      }
+    }
+
+    if (this.throttleKeyDir !== 0 && this.flightActive && this.phase !== 'space') {
+      this.throttle = Math.max(0, Math.min(1, this.throttle + this.throttleKeyDir * 0.55 * realDt))
+    }
+
     if (!this.flightActive || !this.rbState || !this.launchParams || !this.landingParams) return
 
-    // Launch runs at 3.2x sim speed to reach orbit smoothly; landing runs at 1.35x for responsive SFS piloting
-    const simScale = this.phase === 'launch' ? 3.2 : 1.35
+    if (this.phase === 'space') {
+      this.stepSpaceTransferPhase(realDt)
+      return
+    }
+
+    const simScale = this.phase === 'launch' ? 3.5 : 1.15
     this.fixedAccumulator += realDt * simScale
 
     while (this.fixedAccumulator >= this.fixedStepSeconds && this.flightActive) {
@@ -308,30 +409,31 @@ export class FlightScene extends Phaser.Scene {
   }
 
   private stepLaunchPhase(dt: number) {
-    if (!this.rbState || !this.launchParams) return
+    if (!this.rbState || !this.launchParams || !this.configuration) return
 
     this.rbState = stepRigidBody2D(
       this.rbState,
       this.launchParams,
       {
-        throttle: Math.max(0.25, this.throttle),
+        throttle: Math.max(0.35, this.throttle),
         steerInput: this.steerInput,
         poweredDescentEnabled: true,
         sasEnabled: this.options.hasFins,
+        autoLevel: false,
       },
       dt,
     )
 
     this.syncLegacyFlightState()
 
-    if (!this.options.hasFins && this.rbState.yM > 40) {
-      this.statusText?.setText('⚠ KANATÇIK YOK (CoP ÖNDE) — AERODİNAMİK TORK ROKETİ SAVURUYOR!')
+    if (!this.options.hasFins && this.rbState.yM > 35) {
+      this.statusText?.setText('⚠ KANATÇIK YOK (CoP ÖNDE) — AERODİNAMİK TORK ROKETİ TAKLA ATTIRIYOR!')
     }
 
     if (this.rbState.status === 'liftoff-failed') {
       this.flightActive = false
       this.statusText?.setText('⚠ TWR < 1.0 — MOTOR İTKİSİ YERÇEKİMİNİ YENEMEDİ!')
-      this.callbacks?.onUpdate(this.flightState!, this.phase, 0)
+      this.callbacks?.onUpdate(this.flightState!, this.phase, 0, Math.round(this.throttle * 100))
       this.callbacks?.onComplete(this.flightState!, false)
       return
     }
@@ -342,7 +444,7 @@ export class FlightScene extends Phaser.Scene {
       const ry = this.rocket?.y ?? this.scale.height * 0.45
       this.spawnMatterBreakupDebris(rx, ry, this.rbState.vxMps, -this.rbState.vyMps)
       this.statusText?.setText('💥 AERODİNAMİK PARÇALANMA (MAX-Q TAKLASI)!')
-      this.callbacks?.onUpdate(this.flightState!, this.phase, 0)
+      this.callbacks?.onUpdate(this.flightState!, this.phase, 0, Math.round(this.throttle * 100))
       this.callbacks?.onComplete(
         this.flightState!,
         false,
@@ -351,9 +453,27 @@ export class FlightScene extends Phaser.Scene {
       return
     }
 
-    // Transition smoothly to SFS Planetary Landing once altitude reaches 2,200m
-    if (this.rbState.yM >= 2_200) {
-      this.transitionToLandingPhase()
+    // Check orbital transfer Delta-V threshold before leaving Earth atmosphere
+    const requiredDv = this.options.destinationId === 'mars' ? 1_000 : 600
+    const totalDvCapacity = calculateDeltaVCapacityMps(this.configuration)
+    if (totalDvCapacity < requiredDv && this.rbState.yM >= 1_100) {
+      this.flightActive = false
+      this.flameGraphic?.setVisible(false)
+      this.statusText?.setText(
+        `⚠ YETERSİZ DELTA-V (${Math.round(totalDvCapacity)} / ${requiredDv} m/s) — YÖRÜNGEYE ULAŞILAMADI!`,
+      )
+      this.callbacks?.onUpdate(this.flightState!, this.phase, 0, 0)
+      this.callbacks?.onComplete(
+        this.flightState!,
+        false,
+        `Mevcut yakıt tankı ve motor yalnızca ${Math.round(totalDvCapacity)} m/s Delta-V üretebildi (Hedef için gereken: ${requiredDv} m/s). Daha büyük yakıt tankı veya daha verimli motor seçin!`,
+      )
+      return
+    }
+
+    // Enter Space Stage Separation & Orbital Transfer Beat at 2,000m altitude
+    if (this.rbState.yM >= 2_000) {
+      this.beginSpaceTransferPhase()
       return
     }
 
@@ -362,7 +482,7 @@ export class FlightScene extends Phaser.Scene {
       const rx = this.rocket?.x ?? this.scale.width * 0.5
       const ry = this.rocket?.y ?? this.scale.height * 0.6
       this.spawnMatterBreakupDebris(rx, ry, this.rbState.vxMps, 12)
-      this.callbacks?.onUpdate(this.flightState!, this.phase, 0)
+      this.callbacks?.onUpdate(this.flightState!, this.phase, 0, 0)
       this.callbacks?.onComplete(this.flightState!, false)
       return
     }
@@ -370,44 +490,107 @@ export class FlightScene extends Phaser.Scene {
     this.hudAccumulator += dt
     if (this.hudAccumulator >= 0.08) {
       this.hudAccumulator = 0
-      this.callbacks?.onUpdate(this.flightState!, this.phase, 0)
+      this.callbacks?.onUpdate(this.flightState!, this.phase, 0, Math.round(this.throttle * 100))
     }
   }
 
-  private transitionToLandingPhase() {
-    if (!this.rbState || !this.configuration) return
-    this.phase = 'landing'
+  /**
+   * 1.35s smooth Stage Separation & Planetary Approach Cutscene Beat ('space' phase)
+   * so transitioning from Earth Ascent to Moon/Mars descent feels seamless.
+   */
+  private beginSpaceTransferPhase() {
+    this.phase = 'space'
+    this.spacePhaseTimer = 0
     this.launchPad?.setVisible(false)
     this.farHills?.setVisible(false)
     this.nearHills?.setVisible(false)
     this.cloudLayer?.setVisible(false)
-    this.atmosphereOverlay?.setAlpha(this.options.destinationId === 'mars' ? 0.22 : 0.0)
+    this.atmosphereOverlay?.setAlpha(0)
+    this.flameGraphic?.setVisible(false)
+
+    // Spawn separating lower booster visual right behind the rocket
+    if (this.separatedStageGraphic) this.separatedStageGraphic.destroy()
+    const rx = this.rocket?.x ?? this.scale.width * 0.5
+    const ry = this.rocket?.y ?? this.scale.height * 0.45
+    this.separatedStageGraphic = this.add.graphics().setPosition(rx, ry + this.bodyHeight * 0.35).setDepth(3)
+    this.separatedStageGraphic.fillStyle(0x475569, 1).fillRect(-this.bodyWidth * 0.45, 0, this.bodyWidth * 0.9, 36)
+    this.separatedStageGraphic.fillStyle(0xe45b69, 1).fillRect(-this.bodyWidth * 0.7, 16, 12, 18)
+    this.separatedStageGraphic.fillStyle(0xe45b69, 1).fillRect(this.bodyWidth * 0.7 - 12, 16, 12, 18)
+
+    const destLabel = this.options.destinationId === 'moon' ? 'AY YÖRÜNGESİNE' : 'MARS ATMOSFERİNE'
+    this.statusText?.setText(`✦ KADEME AYRILDI — ${destLabel} İNİŞ ROTASINA GİRİLİYOR...`)
+    if (this.flightState) this.callbacks?.onUpdate(this.flightState, 'space', 0, 0)
+  }
+
+  private stepSpaceTransferPhase(dt: number) {
+    this.spacePhaseTimer += dt
+    const progress = Math.min(1, this.spacePhaseTimer / 1.35)
+
+    // Separated booster drifts smoothly downward & spins away
+    if (this.separatedStageGraphic) {
+      this.separatedStageGraphic.y += 120 * dt
+      this.separatedStageGraphic.rotation += 0.9 * dt
+      this.separatedStageGraphic.alpha = Math.max(0, 1 - progress * 1.1)
+    }
+
+    // Upper lander glides to the top of the approach corridor while extending landing legs
+    if (this.rocket) {
+      const targetX = this.scale.width * 0.5
+      const targetY = 92
+      this.rocket.x += (targetX - this.rocket.x) * Math.min(1, dt * 4)
+      this.rocket.y += (targetY - this.rocket.y) * Math.min(1, dt * 3.5)
+      this.rocket.rotation += (0 - this.rocket.rotation) * Math.min(1, dt * 6)
+    }
+    this.updateLandingLegs(progress * 0.7)
     this.drawPlanetSurface()
     this.planetSurface?.setVisible(true)
+    if (this.planetSurface) {
+      this.planetSurface.setY((1 - progress) * 140)
+    }
 
-    // Place vehicle on planetary approach vector (340m altitude, slight horizontal offset & inward drift)
+    if (this.spacePhaseTimer >= 1.35) {
+      this.separatedStageGraphic?.destroy()
+      this.separatedStageGraphic = null
+      this.planetSurface?.setY(0)
+      this.enterLandingPhase()
+    }
+  }
+
+  private enterLandingPhase() {
+    if (!this.rbState || !this.configuration) return
+    this.phase = 'landing'
+    this.atmosphereOverlay?.setAlpha(this.options.destinationId === 'mars' ? 0.2 : 0.0)
+    this.planetSurface?.setVisible(true).setY(0)
+    this.checklistText?.setVisible(true)
+
+    // Set initial throttle near hover (40%) so player has clean control immediately without plummeting
+    this.throttle = 0.42
+
     const startSign = Math.random() > 0.5 ? 1 : -1
-    const remainingFuel = Math.max(
-      this.rbState.fuelRemainingKg,
-      (this.configuration.fuelTank?.fuelMassKg ?? 180) * 0.45,
-    )
+    const fullTankFuel = Math.max(240, this.configuration.fuelTank?.fuelMassKg ?? 260)
+    const landingFuel = Math.max(this.rbState.fuelRemainingKg, fullTankFuel * 0.75)
+
     this.rbState = {
       ...this.rbState,
       status: 'flying',
-      xM: startSign * 46,
-      yM: 340,
-      vxMps: -startSign * 4.2,
-      vyMps: -21,
-      angleRad: startSign * 0.12,
+      xM: startSign * 30,
+      yM: 250,
+      vxMps: -startSign * 2.2,
+      vyMps: -9.5,
+      angleRad: startSign * 0.05,
       angularVelocityRadPs: 0,
       gimbalAngleRad: 0,
-      fuelRemainingKg: remainingFuel,
-      massKg: (this.landingParams?.dryMassKg ?? 500) + remainingFuel,
-      landingGearDeploy: 0,
+      throttle: this.throttle,
+      fuelRemainingKg: landingFuel,
+      massKg: (this.landingParams?.dryMassKg ?? 500) + landingFuel,
+      landingGearDeploy: 0.7,
     }
 
-    const targetName = this.options.destinationId === 'moon' ? 'AY (VAKUM · 1.62 m/s²)' : 'MARS (İNCE ATMOSFER · 3.71 m/s²)'
-    this.statusText?.setText(`AŞAMA 2: ${targetName} — YÖRÜNGE İNİŞİ (< 8 m/s İLE PİSTE İN!)`)
+    const targetName =
+      this.options.destinationId === 'moon' ? 'AY YÜZEYİ (1.62 m/s²)' : 'MARS YÜZEYİ (3.71 m/s²)'
+    this.statusText?.setText(`AŞAMA 2: ${targetName} — [W/S] GAZ · [A/D] YÖN · PİSTE YUMUŞAK İN!`)
+    this.syncLegacyFlightState()
+    this.callbacks?.onUpdate(this.flightState!, 'landing', 9.8, Math.round(this.throttle * 100))
   }
 
   private stepLandingPhase(dt: number) {
@@ -420,6 +603,7 @@ export class FlightScene extends Phaser.Scene {
       const guidance = computeLandingGuidance(this.rbState, this.landingParams)
       activeThrottle = guidance.throttle
       activeSteer = guidance.steerInput
+      this.throttle = activeThrottle
     }
 
     const prevVy = this.rbState.vyMps
@@ -435,9 +619,15 @@ export class FlightScene extends Phaser.Scene {
         parachuteDeployed: this.options.parachute,
         poweredDescentEnabled: this.options.poweredDescent,
         sasEnabled: true,
+        autoLevel: true,
       },
       dt,
     )
+
+    if (Math.abs(this.rbState.xM) > 135) {
+      this.rbState.xM = Math.sign(this.rbState.xM) * 135
+      this.rbState.vxMps *= -0.3
+    }
 
     const currentDescentSpeed = Math.hypot(this.rbState.vxMps, this.rbState.vyMps)
     this.syncLegacyFlightState()
@@ -446,14 +636,13 @@ export class FlightScene extends Phaser.Scene {
       this.statusText?.setText('⚠ AY’DA ATMOSFER YOK — PARAŞÜT SÜRTÜNME ÜRETMİYOR!')
     }
 
-    // Check Touchdown or Surface Impact!
     if (this.rbState.status === 'landed' || this.rbState.status === 'impact') {
       this.flightActive = false
       const touchdownSpeed = Math.hypot(prevVx, prevVy)
       const touchdownTiltDeg = Math.round((Math.abs(prevAngle) * 180) / Math.PI)
       const marsMissingShield = this.options.destinationId === 'mars' && !this.options.heatShield
       const noRetro = !this.options.poweredDescent
-      const offPad = Math.abs(this.rbState.xM) > 55
+      const offPad = Math.abs(this.rbState.xM) > 48
       const hardImpact = this.rbState.status === 'impact' || touchdownSpeed > 8.5
 
       this.flameGraphic?.setVisible(false)
@@ -461,10 +650,11 @@ export class FlightScene extends Phaser.Scene {
       this.shieldGraphic?.setVisible(false)
       this.rcsGraphic?.clear()
       this.trajectoryGraphic?.clear()
+      this.updateLandingChecklist(touchdownSpeed, touchdownTiltDeg, offPad)
 
       if (marsMissingShield || noRetro || hardImpact) {
         const rx = this.rocket?.x ?? this.scale.width * 0.5
-        const ry = this.rocket?.y ?? this.scale.height * 0.78
+        const ry = this.rocket?.y ?? this.scale.height * 0.76
         this.spawnMatterBreakupDebris(rx, ry, prevVx * 2, Math.abs(prevVy) * 1.5)
         const crashDetail = marsMissingShield
           ? 'Mars atmosferine ısı kalkanı olmadan girildiği için gövde aşırı ısınarak parçalandı!'
@@ -472,18 +662,20 @@ export class FlightScene extends Phaser.Scene {
             ? 'Ters itici motorlar aktif olmadığı için roket yüzeye yüksek hızla çakıldı!'
             : Math.abs(prevAngle) > 0.38
               ? `Roket yüzeye ${touchdownTiltDeg}° eğimle çarparak devrildi (Maksimum güvenli açı: 22°)!`
-              : `Yüzeye çok yüksek hızla (${touchdownSpeed.toFixed(1)} m/s > 8.5 m/s) çarpıldı!`
+              : `Yüzeye çok yüksek hızla (${touchdownSpeed.toFixed(1)} m/s > 8.5 m/s) çarpıldı! İnişte gazı %40-%70 arasında tutarak frenleme yapın.`
         this.statusText?.setText(`💥 SERT ÇARPMA (${touchdownSpeed.toFixed(1)} m/s · ${touchdownTiltDeg}°)!`)
-        this.callbacks?.onUpdate(this.flightState!, 'landing', touchdownSpeed)
+        this.callbacks?.onUpdate(this.flightState!, 'landing', touchdownSpeed, Math.round(activeThrottle * 100))
         this.callbacks?.onComplete(this.flightState!, false, crashDetail)
       } else {
         this.positionVehicle()
         if (this.rocket) this.rocket.rotation = 0
         this.nozzleContainer?.setRotation(0)
         this.updateLandingLegs(1)
-        const padNote = offPad ? ' (Pistin dışına indi)' : ' (Tam hedef pistte!)'
+        this.suspensionBounce = 1.0
+        this.spawnSurfaceDustBurst(this.rocket?.x ?? this.scale.width * 0.5)
+        const padNote = offPad ? ' (Yüzeye Güvenli İniş!)' : ' (Tam Hedef Pistte!)'
         this.statusText?.setText(`✓ YUMUŞAK İNİŞ BAŞARILI (${touchdownSpeed.toFixed(1)} m/s)${padNote}`)
-        this.callbacks?.onUpdate(this.flightState!, 'landing', touchdownSpeed)
+        this.callbacks?.onUpdate(this.flightState!, 'landing', touchdownSpeed, 0)
         this.callbacks?.onComplete(this.flightState!, true)
       }
       return
@@ -492,7 +684,12 @@ export class FlightScene extends Phaser.Scene {
     this.hudAccumulator += dt
     if (this.hudAccumulator >= 0.05) {
       this.hudAccumulator = 0
-      this.callbacks?.onUpdate(this.flightState!, 'landing', currentDescentSpeed)
+      this.callbacks?.onUpdate(
+        this.flightState!,
+        'landing',
+        currentDescentSpeed,
+        Math.round(activeThrottle * 100),
+      )
     }
   }
 
@@ -520,11 +717,10 @@ export class FlightScene extends Phaser.Scene {
     if (!this.rbState || !this.rocket) return
     this.positionVehicle()
 
-    // Determine active thrust state for visuals & exhaust particles
     const isThrusting =
       this.flightActive &&
       this.rbState.fuelRemainingKg > 0 &&
-      this.rbState.throttle > 0.04 &&
+      this.rbState.throttle > 0.03 &&
       (this.phase === 'launch' || this.options.poweredDescent)
 
     this.updateFlameAndNozzle(isThrusting, this.rbState.throttle, this.rbState.gimbalAngleRad)
@@ -532,7 +728,13 @@ export class FlightScene extends Phaser.Scene {
     this.updateRcsPuffs()
     this.updateParachuteAndHeatShield()
     this.drawTrajectoryAndVectors()
+    this.drawOnCanvasSfsGauges()
     this.updateTelemetryOverlay()
+    if (this.phase === 'landing') {
+      const spd = Math.hypot(this.rbState.vxMps, this.rbState.vyMps)
+      const tilt = Math.round((Math.abs(this.rbState.angleRad) * 180) / Math.PI)
+      this.updateLandingChecklist(spd, tilt, Math.abs(this.rbState.xM) > 48)
+    }
 
     if (isThrusting) {
       this.particleSpawnTimer += 1
@@ -551,29 +753,30 @@ export class FlightScene extends Phaser.Scene {
     if (this.phase === 'launch') {
       const groundLineY = height * 0.84
       const restRocketY = groundLineY - (this.bodyHeight * 0.5 + this.engineHeight)
-      // Smooth asymptotic camera elevation (no modulo jumping!)
       const climbProgress = 1 - Math.exp(-this.rbState.yM / 140)
       const rocketScreenY = restRocketY - climbProgress * (height * 0.36)
       const rocketScreenX = width * 0.5 + this.rbState.xM * 2.2
       this.rocket.setPosition(rocketScreenX, rocketScreenY)
       this.rocket.setRotation(this.rbState.angleRad)
 
-      // Smooth downward world translation (hills, clouds, and launchpad smoothly recede below camera)
       const alt = this.rbState.yM
       this.launchPad?.setY(Math.min(height, alt * 2.4))
       this.nearHills?.setY(Math.min(height, alt * 0.42))
       this.farHills?.setY(Math.min(height, alt * 0.18))
       this.cloudLayer?.setY(Math.min(height * 1.2, alt * 0.75))
 
-      // Smooth atmospheric thinning into deep space
       const atmoAlpha = Math.max(0, 0.55 * Math.exp(-alt / 900))
       this.atmosphereOverlay?.setAlpha(atmoAlpha)
-    } else {
+    } else if (this.phase === 'landing') {
       const groundLineY = height * 0.82
-      const restRocketY = groundLineY - (this.bodyHeight * 0.5 + this.engineHeight + 6)
-      const pxPerMeter = Math.max(0.5, (restRocketY - 68) / 350)
-      const rocketScreenX = Math.max(60, Math.min(width - 60, width * 0.5 + this.rbState.xM * 2.6))
-      const rocketScreenY = Math.max(54, restRocketY - this.rbState.yM * pxPerMeter)
+      // Extended landing leg footpads sit flush on top of the landing pad at yM === 0!
+      const footOffset = this.bodyHeight * 0.42 + this.legLength * Math.cos(0.55) + 2
+      const restRocketY = groundLineY - footOffset
+      const effectiveAlt =
+        this.rbState.yM <= 260 ? this.rbState.yM : 260 + Math.log1p(this.rbState.yM - 260) * 16
+      const pxPerMeter = Math.max(0.55, (restRocketY - 82) / 270)
+      const rocketScreenX = Math.max(74, Math.min(width - 74, width * 0.5 + this.rbState.xM * 2.6))
+      const rocketScreenY = Math.max(72, restRocketY - effectiveAlt * pxPerMeter)
       this.rocket.setPosition(rocketScreenX, rocketScreenY)
       this.rocket.setRotation(this.rbState.angleRad)
     }
@@ -582,17 +785,23 @@ export class FlightScene extends Phaser.Scene {
   private drawTrajectoryAndVectors() {
     if (!this.trajectoryGraphic || !this.rbState || !this.rocket) return
     this.trajectoryGraphic.clear()
-    if (!this.flightActive) return
+    if (!this.flightActive || this.phase === 'space') return
 
     const width = this.scale.width
     const height = this.scale.height
 
     if (this.phase === 'landing' && this.landingParams) {
       const groundLineY = height * 0.82
-      const restRocketY = groundLineY - (this.bodyHeight * 0.5 + this.engineHeight + 6)
-      const pxPerMeter = Math.max(0.5, (restRocketY - 68) / 350)
+      const footOffset = this.bodyHeight * 0.42 + this.legLength * Math.cos(0.55) + 2
+      const restRocketY = groundLineY - footOffset
+      const pxPerMeter = Math.max(0.55, (restRocketY - 82) / 270)
 
-      // Draw live SFS Ballistic Trajectory Prediction Curve
+      // Vertical Radar Altimeter Laser Beam under the rocket
+      this.trajectoryGraphic
+        .lineStyle(1, 0x38d9e8, 0.32)
+        .lineBetween(this.rocket.x, this.rocket.y + this.bodyHeight * 0.45, this.rocket.x, groundLineY)
+
+      // Live SFS Ballistic Trajectory Prediction Curve
       const arcPoints = predictBallisticArc2D(this.rbState, this.landingParams.gravityMps2, 22)
       if (arcPoints.length > 1) {
         const impactX = arcPoints[arcPoints.length - 1]!.xM
@@ -600,58 +809,120 @@ export class FlightScene extends Phaser.Scene {
         const lineColor = onPad ? 0x38d9e8 : 0xffad57
 
         for (let i = 0; i < arcPoints.length - 1; i += 1) {
-          if (i % 2 === 1) continue // Dotted pixel trajectory line
+          if (i % 2 === 1) continue
           const p1 = arcPoints[i]!
           const p2 = arcPoints[i + 1]!
           const sx1 = width * 0.5 + p1.xM * 2.6
-          const sy1 = groundLineY - p1.yM * pxPerMeter
+          const sy1 = groundLineY - Math.min(280, p1.yM) * pxPerMeter
           const sx2 = width * 0.5 + p2.xM * 2.6
-          const sy2 = groundLineY - p2.yM * pxPerMeter
+          const sy2 = groundLineY - Math.min(280, p2.yM) * pxPerMeter
           this.trajectoryGraphic.lineStyle(2, lineColor, 0.72).lineBetween(sx1, sy1, sx2, sy2)
         }
 
-        // Draw predicted impact reticule on surface
-        const targetScreenX = Math.max(30, Math.min(width - 30, width * 0.5 + impactX * 2.6))
+        const targetScreenX = Math.max(40, Math.min(width - 40, width * 0.5 + impactX * 2.6))
         this.trajectoryGraphic.lineStyle(2, onPad ? 0x4ade80 : 0xfb7185, 0.95)
         this.trajectoryGraphic.strokeCircle(targetScreenX, groundLineY - 2, 7)
         this.trajectoryGraphic.lineBetween(targetScreenX - 11, groundLineY - 2, targetScreenX + 11, groundLineY - 2)
       }
     }
 
-    // Draw Prograde Velocity Vector Indicator around rocket
     const speed = Math.hypot(this.rbState.vxMps, this.rbState.vyMps)
-    if (speed > 1.2) {
+    if (speed > 0.8) {
       const vxScreen = this.rbState.vxMps
-      const vyScreen = -this.rbState.vyMps // Screen +Y is down
-      const len = Math.min(58, 22 + speed * 1.1)
+      const vyScreen = -this.rbState.vyMps
+      const len = Math.min(54, 20 + speed * 1.2)
       const ux = (vxScreen / speed) * len
       const uy = (vyScreen / speed) * len
       const rx = this.rocket.x
       const ry = this.rocket.y
-      this.trajectoryGraphic.lineStyle(2, 0x4ade80, 0.8)
+      const safeSpeed = speed <= 8.5
+      const vecColor = this.phase === 'landing' ? (safeSpeed ? 0x4ade80 : 0xffad57) : 0x38d9e8
+      this.trajectoryGraphic.lineStyle(2, vecColor, 0.85)
       this.trajectoryGraphic.lineBetween(rx, ry, rx + ux, ry + uy)
-      this.trajectoryGraphic.fillStyle(0x4ade80, 1).fillRect(rx + ux - 3, ry + uy - 3, 6, 6)
+      this.trajectoryGraphic.fillStyle(vecColor, 1).fillRect(rx + ux - 3, ry + uy - 3, 6, 6)
     }
+  }
+
+  private drawOnCanvasSfsGauges() {
+    if (!this.hudGaugesGraphic || !this.rbState) return
+    this.hudGaugesGraphic.clear()
+
+    const width = this.scale.width
+    const height = this.scale.height
+    const barTop = 86
+    const barH = Math.min(260, height - 160)
+    if (barH < 80) return
+
+    // 1. Left SFS Vertical Throttle Gauge (with HOVER marker at 38.5%)
+    const leftX = 18
+    const barW = 14
+    this.hudGaugesGraphic.fillStyle(0x080f20, 0.82).fillRect(leftX - 4, barTop - 16, barW + 38, barH + 28)
+    this.hudGaugesGraphic.lineStyle(1, 0x38d9e8, 0.4).strokeRect(leftX, barTop, barW, barH)
+
+    const fillH = Math.round(barH * this.rbState.throttle)
+    const throttleColor = this.rbState.throttle > 0.75 ? 0xffad57 : 0x38d9e8
+    this.hudGaugesGraphic
+      .fillStyle(throttleColor, 0.9)
+      .fillRect(leftX + 2, barTop + barH - fillH, barW - 4, fillH)
+
+    if (this.phase === 'landing') {
+      const hoverY = barTop + barH * (1 - 0.385)
+      this.hudGaugesGraphic.fillStyle(0x4ade80, 1).fillRect(leftX - 2, hoverY - 1, barW + 12, 3)
+    }
+
+    // 2. Right SFS Radar Altimeter Bar
+    const rightX = width - 32
+    const maxScaleAlt = this.phase === 'landing' ? 260 : 2_000
+    const altRatio = Math.max(0, Math.min(1, this.rbState.yM / maxScaleAlt))
+    const altFillH = Math.round(barH * altRatio)
+    this.hudGaugesGraphic.fillStyle(0x080f20, 0.82).fillRect(rightX - 8, barTop - 16, barW + 16, barH + 28)
+    this.hudGaugesGraphic.lineStyle(1, 0x8197b5, 0.4).strokeRect(rightX, barTop, barW, barH)
+    this.hudGaugesGraphic
+      .fillStyle(0x4ade80, 0.85)
+      .fillRect(rightX + 2, barTop + barH - altFillH, barW - 4, altFillH)
+  }
+
+  private updateLandingChecklist(speed: number, tiltDeg: number, offPad: boolean) {
+    if (!this.checklistText || !this.rbState) return
+    this.checklistText.setPosition(this.scale.width - 48, 84)
+    const spdOk = speed <= 8.5
+    const tiltOk = tiltDeg <= 20
+    const padOk = !offPad
+    const equipOk =
+      this.options.poweredDescent && (this.options.destinationId === 'moon' || this.options.heatShield)
+    this.checklistText.setText(
+      `İNİŞ KONTROL LİSTESİ\n` +
+        `${spdOk ? '✓' : '⚠'} HIZ < 8.5 (${speed.toFixed(1)} m/s)\n` +
+        `${tiltOk ? '✓' : '⚠'} DİK AÇI < 20° (${tiltDeg}°)\n` +
+        `${padOk ? '✓' : '·'} PİST HİZASI (${Math.round(this.rbState.xM)}m)\n` +
+        `${equipOk ? '✓' : '✗'} İNİŞ DONANIMI`,
+    )
+    this.checklistText.setColor(spdOk && tiltOk && equipOk ? '#4ADE80' : '#FFAD57')
   }
 
   private updateTelemetryOverlay() {
     if (!this.telemetryText || !this.rbState) return
-    const pitchDeg = ((this.rbState.angleRad * 180) / Math.PI).toFixed(1)
+    this.telemetryText.setX(this.scale.width * 0.5)
+    const pitchDeg = ((this.rbState.angleRad * 180) / Math.PI).toFixed(0)
     const speed = Math.hypot(this.rbState.vxMps, this.rbState.vyMps).toFixed(1)
     const vx = this.rbState.vxMps.toFixed(1)
     const vy = this.rbState.vyMps.toFixed(1)
-    const gLoad = this.rbState.gLoad.toFixed(1)
-    const qPa = Math.round(this.rbState.dynamicPressurePa)
-    const modeLabel = this.options.autoPilot && this.phase === 'landing' ? 'PD OTO-PİLOT' : 'MANUEL SFS'
+    const thrPct = Math.round(this.rbState.throttle * 100)
+    const modeLabel =
+      this.phase === 'landing'
+        ? this.options.autoPilot
+          ? '🤖 OTO-İNİŞ'
+          : '🕹️ MANUEL SFS'
+        : '🚀 KALKIŞ'
     this.telemetryText.setText(
-      `MOD: ${modeLabel}  |  EĞİM: ${pitchDeg}°  |  VX: ${vx} m/s  |  VY: ${vy} m/s\n` +
-        `TOPLAM HIZ: ${speed} m/s  |  G-YÜKÜ: ${gLoad}G  |  DİNAMİK BASINÇ (Q): ${qPa} Pa`,
+      `${modeLabel}  ·  GAZ: %${thrPct} (ASKI: %38)  ·  HIZ: ${speed} m/s (DY: ${vy} | DX: ${vx})  ·  EĞİM: ${pitchDeg}°`,
     )
   }
 
   private updateFlameAndNozzle(active: boolean, throttle: number, gimbalRad: number) {
     if (!this.nozzleContainer || !this.flameGraphic || !this.rbState) return
-    this.nozzleContainer.setRotation(gimbalRad)
+    // Negative rotation Visually tilts the nozzle opposite pitch torque for physically accurate gimbal
+    this.nozzleContainer.setRotation(-gimbalRad)
 
     if (!active) {
       this.flameGraphic.setVisible(false)
@@ -660,23 +931,20 @@ export class FlightScene extends Phaser.Scene {
 
     const scale = 0.45 + throttle * 0.75
     const flicker = (18 + Math.sin(this.rbState.elapsedTimeS * 44) * 5) * scale
-    const w = (8 + throttle * 6)
+    const w = 8 + throttle * 6
     this.flameGraphic.clear().setVisible(true)
-    // Outer plasma plume (attached inside nozzleContainer so it rotates with rocket + nozzle!)
     this.flameGraphic
       .fillStyle(0xffad57, 0.92)
       .fillTriangle(-w, this.engineHeight - 2, w, this.engineHeight - 2, 0, this.engineHeight + flicker + 12)
-    // Inner Mach shock core
     this.flameGraphic
       .fillStyle(0x38d9e8, 0.9)
       .fillTriangle(-w * 0.52, this.engineHeight, w * 0.52, this.engineHeight, 0, this.engineHeight + flicker)
-    // White-hot nozzle throat
     this.flameGraphic.fillStyle(0xf3f7ff, 0.95).fillRect(-w * 0.35, this.engineHeight - 1, w * 0.7, 5)
   }
 
   private updateLandingLegs(deployRatio: number) {
     if (!this.leftLegGraphic || !this.rightLegGraphic) return
-    const angle = deployRatio * 0.68 // Swings out from 0 deg to ~39 deg
+    const angle = deployRatio * 0.55
     this.leftLegGraphic.setRotation(angle)
     this.rightLegGraphic.setRotation(-angle)
   }
@@ -686,7 +954,7 @@ export class FlightScene extends Phaser.Scene {
     this.rcsGraphic.clear()
     const angularCmd =
       this.phase === 'landing' && this.options.autoPilot
-        ? -this.rbState.gimbalAngleRad * 4
+        ? this.rbState.gimbalAngleRad * 4
         : this.steerInput
     if (Math.abs(angularCmd) < 0.08) return
 
@@ -694,10 +962,8 @@ export class FlightScene extends Phaser.Scene {
     const sideX = this.bodyWidth * 0.52
     this.rcsGraphic.fillStyle(0xf3f7ff, 0.9)
     if (angularCmd > 0) {
-      // Firing left nose thruster to pitch right
       this.rcsGraphic.fillTriangle(-sideX, topY, -sideX - 16, topY - 4, -sideX - 16, topY + 4)
     } else {
-      // Firing right nose thruster to pitch left
       this.rcsGraphic.fillTriangle(sideX, topY, sideX + 16, topY - 4, sideX + 16, topY + 4)
     }
   }
@@ -705,10 +971,9 @@ export class FlightScene extends Phaser.Scene {
   private updateParachuteAndHeatShield() {
     if (!this.chuteGraphic || !this.shieldGraphic || !this.rbState) return
     const inLanding = this.phase === 'landing' && this.flightActive
-    const showChute = inLanding && this.options.parachute && this.rbState.yM > 12
+    const showChute = inLanding && this.options.parachute && this.rbState.yM > 10
     this.chuteGraphic.setVisible(showChute)
     if (showChute) {
-      // Subtle canopy sway opposing horizontal velocity
       this.chuteGraphic.setRotation(Math.max(-0.25, Math.min(0.25, -this.rbState.vxMps * 0.02)))
     }
 
@@ -716,13 +981,13 @@ export class FlightScene extends Phaser.Scene {
       inLanding &&
       this.options.destinationId === 'mars' &&
       this.options.heatShield &&
-      this.rbState.yM > 140
+      this.rbState.yM > 125
     this.shieldGraphic.setVisible(showShield)
   }
 
   private createParticlePool() {
     this.exhaustPool.forEach((p) => p.sprite.destroy())
-    this.exhaustPool = Array.from({ length: 64 }, (_, idx) => ({
+    this.exhaustPool = Array.from({ length: 72 }, (_, idx) => ({
       sprite: this.add
         .rectangle(0, 0, idx % 2 === 0 ? 5 : 4, idx % 2 === 0 ? 5 : 4, 0xffad57, 0.85)
         .setDepth(2)
@@ -733,20 +998,18 @@ export class FlightScene extends Phaser.Scene {
       vy: 0,
       life: 0,
       maxLife: 0.6,
-      baseSize: idx % 3 === 0 ? 6 : 4,
     }))
   }
 
   private emitExhaustParticles(throttle: number) {
     if (!this.rocket || !this.rbState) return
-    const totalAngle = this.rocket.rotation + this.rbState.gimbalAngleRad * 0.5
+    // Matches world nozzle angle: rocket.rotation + nozzleContainer.rotation (= angleRad - gimbalAngleRad)
+    const totalAngle = this.rocket.rotation - this.rbState.gimbalAngleRad
     const nozzleDist = this.bodyHeight * 0.5 + this.engineHeight
-    // World position of nozzle exit
     const emitX = this.rocket.x - Math.sin(totalAngle) * nozzleDist
     const emitY = this.rocket.y + Math.cos(totalAngle) * nozzleDist
 
-    // Exhaust jet direction is opposite thrust vector
-    const jetSpeed = 140 + throttle * 160
+    const jetSpeed = 135 + throttle * 165
     const dirX = -Math.sin(totalAngle)
     const dirY = Math.cos(totalAngle)
 
@@ -756,12 +1019,10 @@ export class FlightScene extends Phaser.Scene {
         const spread = (Math.random() - 0.5) * 0.42
         const cosS = Math.cos(spread)
         const sinS = Math.sin(spread)
-        const vx = (dirX * cosS - dirY * sinS) * jetSpeed + (Math.random() - 0.5) * 24
-        const vy = (dirX * sinS + dirY * cosS) * jetSpeed + (Math.random() - 0.5) * 24
         p.x = emitX
         p.y = emitY
-        p.vx = vx
-        p.vy = vy
+        p.vx = (dirX * cosS - dirY * sinS) * jetSpeed + (Math.random() - 0.5) * 24
+        p.vy = (dirX * sinS + dirY * cosS) * jetSpeed + (Math.random() - 0.5) * 24
         p.maxLife = 0.38 + Math.random() * 0.28
         p.life = p.maxLife
         p.sprite.setPosition(p.x, p.y).setScale(1).setAlpha(0.9).setVisible(true)
@@ -772,9 +1033,30 @@ export class FlightScene extends Phaser.Scene {
     }
   }
 
+  private spawnSurfaceDustBurst(x: number) {
+    const groundY = this.scale.height * 0.82 - 4
+    const dustColor = this.options.destinationId === 'mars' ? 0xfb923c : 0x94a3b8
+    let spawned = 0
+    for (const p of this.exhaustPool) {
+      if (p.life <= 0) {
+        const side = spawned % 2 === 0 ? -1 : 1
+        p.x = x + side * (12 + Math.random() * 14)
+        p.y = groundY
+        p.vx = side * (60 + Math.random() * 75)
+        p.vy = -(15 + Math.random() * 25)
+        p.maxLife = 0.7
+        p.life = p.maxLife
+        p.sprite.setPosition(p.x, p.y).setFillStyle(dustColor, 0.8).setScale(1.6).setVisible(true)
+        spawned += 1
+        if (spawned >= 12) break
+      }
+    }
+  }
+
   private updateParticles(dt: number) {
     const groundY = this.scale.height * (this.phase === 'landing' ? 0.82 : 0.84)
     const padVisible = this.phase === 'landing' || (this.rbState?.yM ?? 0) < 90
+    const regolithDustColor = this.options.destinationId === 'mars' ? 0xfb923c : 0x93a8c7
 
     for (const p of this.exhaustPool) {
       if (p.life <= 0) continue
@@ -784,16 +1066,15 @@ export class FlightScene extends Phaser.Scene {
         continue
       }
 
-      p.vy += 45 * dt // Slight gravity on plume particles
+      p.vy += 45 * dt
       p.x += p.vx * dt
       p.y += p.vy * dt
 
-      // Ground deflection & smoke billow when exhaust hits launchpad or planetary surface!
       if (padVisible && p.y >= groundY - 3) {
         p.y = groundY - 3
-        p.vy = -Math.abs(p.vy) * 0.18 - 12
+        p.vy = -Math.abs(p.vy) * 0.18 - 10
         p.vx = (p.vx >= 0 ? 1 : -1) * (65 + Math.random() * 95)
-        p.sprite.setFillStyle(0x93a8c7, 0.65)
+        p.sprite.setFillStyle(this.phase === 'landing' ? regolithDustColor : 0x93a8c7, 0.65)
       }
 
       const progress = 1 - p.life / p.maxLife
@@ -803,21 +1084,18 @@ export class FlightScene extends Phaser.Scene {
     }
   }
 
-  /**
-   * Uses Phaser 3 Matter.js Rigid-Body Physics to break the rocket into physical tumbling pieces on crash!
-   */
   private spawnMatterBreakupDebris(x: number, y: number, baseVx: number, baseVy: number) {
     this.rocket?.setVisible(false)
     this.cameras.main?.shake(340, 0.014)
     this.clearDebris()
 
     const partSpecs = [
-      { w: 22, h: 24, color: 0xffad57, ox: 0, oy: -42 }, // Nose cone
-      { w: 36, h: 38, color: 0xc7d6e8, ox: -4, oy: -12 }, // Upper tank
-      { w: 36, h: 38, color: 0x8197b5, ox: 4, oy: 20 }, // Lower tank
-      { w: 18, h: 22, color: 0xe45b69, ox: -22, oy: 32 }, // Left fin
-      { w: 18, h: 22, color: 0xe45b69, ox: 22, oy: 32 }, // Right fin
-      { w: 24, h: 20, color: 0x38d9e8, ox: 0, oy: 48 }, // Engine bell
+      { w: 22, h: 24, color: 0xffad57, ox: 0, oy: -42 },
+      { w: 36, h: 38, color: 0xc7d6e8, ox: -4, oy: -12 },
+      { w: 36, h: 38, color: 0x8197b5, ox: 4, oy: 20 },
+      { w: 18, h: 22, color: 0xe45b69, ox: -22, oy: 32 },
+      { w: 18, h: 22, color: 0xe45b69, ox: 22, oy: 32 },
+      { w: 24, h: 20, color: 0x38d9e8, ox: 0, oy: 48 },
     ]
 
     partSpecs.forEach((spec, idx) => {
@@ -842,7 +1120,6 @@ export class FlightScene extends Phaser.Scene {
       this.debrisObjects.push(rect)
     })
 
-    // Also burst exhaust particles outward
     this.exhaustPool.forEach((p, idx) => {
       const angle = (idx / this.exhaustPool.length) * Math.PI * 2
       const spd = 60 + (idx % 5) * 35
@@ -891,7 +1168,6 @@ export class FlightScene extends Phaser.Scene {
       sky.fillRect(Math.round(x), Math.round(y), random() > 0.8 ? 3 : 2, random() > 0.8 ? 3 : 2)
     }
 
-    // Smooth atmospheric glow layer that fades out as rocket ascends into space
     this.atmosphereOverlay = this.add
       .rectangle(width * 0.5, height * 0.5, width, height, 0x1e3a6e, 0.55)
       .setDepth(-8)
@@ -947,7 +1223,6 @@ export class FlightScene extends Phaser.Scene {
     this.launchPad.fillStyle(0x0e1727, 1).fillRect(0, height * 0.84, width, height * 0.25)
     this.launchPad.fillStyle(0x4ade80, 1).fillRect(0, height * 0.84, width, 4)
     this.launchPad.fillStyle(0x283d5c, 1).fillRect(width * 0.5 - 105, height * 0.84 - 8, 210, 10)
-    // Launch service tower
     this.launchPad.fillStyle(0x233752, 1).fillRect(width * 0.5 - 78, height * 0.54, 16, height * 0.3)
     this.launchPad.fillStyle(0x38d9e8, 0.65).fillRect(width * 0.5 - 62, height * 0.58, 32, 5)
     this.launchPad.lineStyle(2, 0x38d9e8, 0.65).lineBetween(width * 0.5 - 132, height * 0.84, width * 0.5 + 132, height * 0.84)
@@ -958,9 +1233,32 @@ export class FlightScene extends Phaser.Scene {
     const width = this.scale.width
     const height = this.scale.height
     const isMars = this.options.destinationId === 'mars'
-    this.planetSurface = this.add.graphics().setDepth(1).setVisible(this.phase === 'landing')
+    this.planetSurface = this.add.graphics().setDepth(1).setVisible(this.phase === 'landing' || this.phase === 'space')
 
-    // Pixel terrain & layered regolith
+    if (!isMars) {
+      this.planetSurface.fillStyle(0x2563eb, 0.9).fillRect(width * 0.78, height * 0.18, 36, 36)
+      this.planetSurface.fillStyle(0x4ade80, 0.85).fillRect(width * 0.78 + 8, height * 0.18 + 8, 14, 12)
+      this.planetSurface.fillStyle(0xf8fafc, 0.65).fillRect(width * 0.78 + 4, height * 0.18 + 22, 22, 5)
+    } else {
+      this.planetSurface.fillStyle(0xfdba74, 0.85).fillRect(width * 0.8, height * 0.2, 20, 16)
+      this.planetSurface.fillStyle(0x9a3412, 0.8).fillRect(width * 0.8 + 4, height * 0.2 + 4, 6, 6)
+    }
+
+    this.planetSurface.fillStyle(isMars ? 0x5c1d0e : 0x1e293b, 0.9)
+    this.planetSurface.fillPoints(
+      [
+        new Phaser.Math.Vector2(0, height * 0.82),
+        new Phaser.Math.Vector2(width * 0.15, height * 0.68),
+        new Phaser.Math.Vector2(width * 0.31, height * 0.77),
+        new Phaser.Math.Vector2(width * 0.5, height * 0.74),
+        new Phaser.Math.Vector2(width * 0.71, height * 0.66),
+        new Phaser.Math.Vector2(width * 0.88, height * 0.76),
+        new Phaser.Math.Vector2(width, height * 0.7),
+        new Phaser.Math.Vector2(width, height * 0.82),
+      ],
+      true,
+    )
+
     this.planetSurface
       .fillStyle(isMars ? 0x9a3412 : 0x475569, 1)
       .fillRect(0, height * 0.82, width, height * 0.18)
@@ -968,19 +1266,17 @@ export class FlightScene extends Phaser.Scene {
       .fillStyle(isMars ? 0x7c2d12 : 0x334155, 1)
       .fillRect(0, height * 0.88, width, height * 0.12)
 
-    // Pixel craters
     this.planetSurface.fillStyle(isMars ? 0x431407 : 0x1e293b, 1)
-    this.planetSurface.fillRect(width * 0.16, height * 0.84, 64, 12)
+    this.planetSurface.fillRect(width * 0.14, height * 0.84, 64, 12)
     this.planetSurface.fillRect(width * 0.74, height * 0.85, 72, 14)
 
     // Glowing SFS Target Landing Pad in center (xM = 0, +/- 45m)
     const padHalfPx = 45 * 2.6
-    this.planetSurface.fillStyle(0x1e293b, 1).fillRect(width * 0.5 - padHalfPx, height * 0.82 - 4, padHalfPx * 2, 8)
+    this.planetSurface.fillStyle(0x0f172a, 1).fillRect(width * 0.5 - padHalfPx, height * 0.82 - 4, padHalfPx * 2, 10)
     this.planetSurface.fillStyle(0x38d9e8, 1).fillRect(width * 0.5 - padHalfPx, height * 0.82 - 4, padHalfPx * 2, 4)
-    this.planetSurface.fillStyle(0x4ade80, 1).fillRect(width * 0.5 - 36, height * 0.82 - 6, 72, 4)
-    // Beacon lights on pad edges
-    this.planetSurface.fillStyle(0xffad57, 1).fillRect(width * 0.5 - padHalfPx, height * 0.82 - 10, 6, 6)
-    this.planetSurface.fillStyle(0xffad57, 1).fillRect(width * 0.5 + padHalfPx - 6, height * 0.82 - 10, 6, 6)
+    this.planetSurface.fillStyle(0x4ade80, 1).fillRect(width * 0.5 - 42, height * 0.82 - 6, 84, 4)
+    this.planetSurface.fillStyle(0xffad57, 1).fillRect(width * 0.5 - padHalfPx, height * 0.82 - 14, 6, 10)
+    this.planetSurface.fillStyle(0xffad57, 1).fillRect(width * 0.5 + padHalfPx - 6, height * 0.82 - 14, 6, 10)
   }
 
   private drawVehicle() {
@@ -996,9 +1292,10 @@ export class FlightScene extends Phaser.Scene {
     this.bodyWidth = bodyW
     this.bodyHeight = bodyH
     this.engineHeight = engineH
+    this.legLength = engineH + 20
     const top = -bodyH / 2
 
-    // 1. Parachute child graphic (attached to top of nose cone)
+    // 1. Parachute child graphic
     this.chuteGraphic = this.add.graphics().setPosition(0, top - 28).setVisible(false)
     this.chuteGraphic.fillStyle(0xfb7185, 1).fillRect(-28, -42, 56, 14)
     this.chuteGraphic.fillStyle(0xffad57, 1).fillRect(-20, -50, 40, 8)
@@ -1007,7 +1304,7 @@ export class FlightScene extends Phaser.Scene {
     this.chuteGraphic.lineBetween(22, -28, 4, 0)
     this.rocket.add(this.chuteGraphic)
 
-    // 2. Gimballing Engine Nozzle + Flame Container (attached to bottom of rocket body)
+    // 2. Gimballing Engine Nozzle + Flame Container
     this.nozzleContainer = this.add.container(0, bodyH / 2 - 2)
     this.flameGraphic = this.add.graphics().setVisible(false)
     this.nozzleGraphic = this.add.graphics()
@@ -1022,14 +1319,14 @@ export class FlightScene extends Phaser.Scene {
     this.nozzleContainer.add([this.flameGraphic, this.nozzleGraphic])
     this.rocket.add(this.nozzleContainer)
 
-    // 3. Deployable Spring-Damped Landing Legs (hinged at bottom left/right of body)
-    this.leftLegGraphic = this.add.graphics().setPosition(-bodyW * 0.45, bodyH * 0.42)
-    this.leftLegGraphic.fillStyle(0x93a8c7, 1).fillRect(-3, 0, 5, 28)
-    this.leftLegGraphic.fillStyle(0x38d9e8, 1).fillRect(-9, 25, 12, 4)
+    // 3. Deployable Telescopic SFS Landing Legs (extend BELOW nozzle bell so pad rests cleanly on footpads!)
+    this.leftLegGraphic = this.add.graphics().setPosition(-bodyW * 0.44, bodyH * 0.42)
+    this.leftLegGraphic.fillStyle(0x93a8c7, 1).fillRect(-3, 0, 5, this.legLength)
+    this.leftLegGraphic.fillStyle(0x38d9e8, 1).fillRect(-10, this.legLength - 4, 14, 5)
 
-    this.rightLegGraphic = this.add.graphics().setPosition(bodyW * 0.45, bodyH * 0.42)
-    this.rightLegGraphic.fillStyle(0x93a8c7, 1).fillRect(-2, 0, 5, 28)
-    this.rightLegGraphic.fillStyle(0x38d9e8, 1).fillRect(-3, 25, 12, 4)
+    this.rightLegGraphic = this.add.graphics().setPosition(bodyW * 0.44, bodyH * 0.42)
+    this.rightLegGraphic.fillStyle(0x93a8c7, 1).fillRect(-2, 0, 5, this.legLength)
+    this.rightLegGraphic.fillStyle(0x38d9e8, 1).fillRect(-4, this.legLength - 4, 14, 5)
     this.rocket.add([this.leftLegGraphic, this.rightLegGraphic])
 
     // 4. Main Rocket Fuselage, Fins & Cargo Pods
@@ -1071,7 +1368,7 @@ export class FlightScene extends Phaser.Scene {
     })
     this.rocket.add(graphics)
 
-    // 5. RCS Cold-Gas Thruster Puffs & Heatshield Plasma Glow (attached to rocket container)
+    // 5. RCS Cold-Gas Thruster Puffs & Heatshield Plasma Glow
     this.rcsGraphic = this.add.graphics()
     this.shieldGraphic = this.add.graphics().setPosition(0, bodyH / 2 + engineH + 6).setVisible(false)
     this.shieldGraphic.fillStyle(0xffad57, 0.95).fillRect(-32, 0, 64, 6)
