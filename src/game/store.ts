@@ -60,3 +60,6 @@ export function resetGame() {
   saveGame()
   bump()
 }
+
+// Geliştirici konsolundan erişim (hata ayıklama / demo senaryoları için).
+if (typeof window !== 'undefined') (window as unknown as { __sim: Sim }).__sim = sim

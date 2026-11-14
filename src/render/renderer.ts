@@ -28,7 +28,7 @@ export interface View {
 }
 
 export function createView(): View {
-  return { w: 800, h: 600, zoom: 5, camRot: 0, map: false, mapZoom: 2.2e-5, mapFocus: 'earth', mapPan: { x: 0, y: 0 }, clock: 0 }
+  return { w: 800, h: 600, zoom: 7, camRot: 0, map: false, mapZoom: 2.2e-5, mapFocus: 'earth', mapPan: { x: 0, y: 0 }, clock: 0 }
 }
 
 const hash = (n: number) => {
@@ -57,7 +57,7 @@ function drawStars(ctx: Ctx, view: View, alpha: number, rot: number) {
 function mix(a: string, b: string, t: number): string {
   const pa = [1, 3, 5].map((i) => parseInt(a.slice(i, i + 2), 16))
   const pb = [1, 3, 5].map((i) => parseInt(b.slice(i, i + 2), 16))
-  return `rgb(${pa.map((v, i) => Math.round(v + (pb[i]! - v) * t)).join(',')})`
+  return `#${pa.map((v, i) => Math.round(v + (pb[i]! - v) * t).toString(16).padStart(2, '0')).join('')}`
 }
 
 /** Küre gölgelendirmesi: ışık Güneş yönünden gelir. */
@@ -277,8 +277,8 @@ function drawTerrain(ctx: Ctx, cam: Cam, body: BodyDef, focusTheta: number, sim:
   const c = body.colors
   // uzak sırt (derinlik hissi)
   if (cam.z > 0.15) {
-    layer((t) => terrainHeight(body.id, t + 0.00041) * 0.85 + 16 + 9 * Math.sin(t * 5200 + 1.3), mix(c.dark, c.base, 0.45))
-    layer((t) => terrainHeight(body.id, t - 0.00023) * 0.95 + 7 + 4 * Math.sin(t * 8300), mix(c.dark, c.base, 0.75))
+    layer((t) => terrainHeight(body.id, t + 0.00041) * 0.85 + 16 + 9 * Math.sin(t * 5200 + 1.3), body.id === 'earth' ? '#2f6b4f' : mix(c.dark, c.base, 0.45))
+    layer((t) => terrainHeight(body.id, t - 0.00023) * 0.95 + 7 + 4 * Math.sin(t * 8300), body.id === 'earth' ? '#3f8a4f' : mix(c.dark, c.base, 0.75))
   }
   const top = pt(focusTheta, body.radius + terrainHeight(body.id, focusTheta))
   const low = pt(focusTheta, body.radius + terrainHeight(body.id, focusTheta) - Math.min(depth, 260 / Math.min(1, cam.z) ))

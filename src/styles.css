@@ -428,3 +428,9 @@ kbd { background: #1b2b47; border: 1px solid #8296b355; border-bottom-width: 2px
 .base-actions p { width: 100%; margin: 0; font-size: 12px; }
 .flight .dialog-backdrop { z-index: 6; }
 @media (max-width: 1000px) { .builder-body { grid-template-columns: 200px 1fr 240px; } .palette-grid { grid-template-columns: 1fr 1fr; } }
+
+.readout, .hud-bl, .next-mission { background: #060c18a6; border: 1px solid #8296b326; border-radius: 10px; padding: 8px 10px; backdrop-filter: blur(6px); }
+.hud-bl { width: 250px; }
+.hud-money { background: #060c18a6; border-radius: 8px; padding: 6px 10px; }
+.warp b { background: #060c18a6; border-radius: 8px; padding: 6px 8px; }
+.hud-br b { background: #060c18a6; border-radius: 8px; padding: 3px 8px; }
