@@ -167,7 +167,7 @@ export function vesselStats(parts: PartInst[], cargo?: Cargo | null): VesselStat
   const cm = cargoMass(cargo)
   const comX = mass > 0 ? mx / mass : 0
   const comY = mass > 0 ? my / mass : 0
-  const legTolerance = legsDeployed >= 2 ? legTolSum / legsDeployed : 7
+  const legTolerance = legsDeployed >= 2 ? legTolSum / legsDeployed : 9
   return {
     mass: mass + cm, dryMass: mass - fuel + cm, fuel, fuelCap, comX, comY, minX, maxX, minY, maxY, cost, ecCap, cargoCap,
     hasCommand, rcs, legs, legsDeployed, legTolerance, chutes, chutesDeployed, hasNose,

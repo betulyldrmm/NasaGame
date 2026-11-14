@@ -2,16 +2,17 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { MODULES } from '../game/base'
 import { GRID_H, GRID_W, partDef, PARTS, SHIP_PRESETS, SHIP_SLOT_COUNT } from '../game/data'
 import { bump, saveGame, setIdleWarp, sim, useAuthState, useGame } from '../game/store'
-import { isModuleUnlocked, isPartUnlocked, requiredTechForModule, requiredTechForPart } from '../game/tech'
+import { hasAffordableTech, isModuleUnlocked, isPartUnlocked, requiredTechForModule, requiredTechForPart } from '../game/tech'
 import type { PartCategory, PartInst } from '../game/types'
 import { canPlace, cargoMass, estimateDeltaV, partAt, vesselStats } from '../game/vessel'
 import { designCost, launchDesign, totalPassiveIncomePerHour, validateDesign } from '../flight/world'
 import { drawPart } from '../render/partArt'
 import PartIcon from './PartIcon'
+import PlanetGridPanel from './PlanetGridPanel'
 import TechTreeModal from './TechTreeModal'
 
 const CATEGORIES: PartCategory[] = ['Komuta', 'Yakıt', 'Motorlar', 'Kademe', 'Güç', 'İniş', 'Kargo']
-const IDLE_WARPS = [1, 4, 10, 25]
+const IDLE_WARPS = [1, 5, 25]
 const fmt = (n: number) => Math.round(n).toLocaleString('tr-TR')
 
 interface Props {
@@ -27,6 +28,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
   const [hover, setHover] = useState<{ x: number; y: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [showTech, setShowTech] = useState(false)
+  const [showGrid, setShowGrid] = useState(false)
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [cell, setCell] = useState(24)
@@ -57,6 +59,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
   const problem = validateDesign(design, gs.designCargo, gs)
   const twr = stages[0]?.twr ?? 0
   const passivePerHr = totalPassiveIncomePerHour(gs)
+  const techReady = hasAffordableTech(gs)
 
   const mirrorX = (x: number, w: number) => GRID_W - x - w
 
@@ -228,8 +231,6 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
   const clearSlot = (i: number) => {
     if (window.confirm(`"${slots[i]?.name}" slotu boşaltılsın mı?`)) writeSlots(slots.map((s, j) => (j === i ? null : s)))
   }
-  const needThrust = (stats.mass + cargoT) * 9.8 * 1.2
-
   const sel = selected ? partDef(selected) : null
 
   return (
@@ -237,7 +238,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
       <header className="builder-top">
         <button className="hud-btn" onClick={onBack}>← Ana menü</button>
         <h1>Roket Montaj Binası</h1>
-        <div className="idle-warp-group" title="Pasif gelir zaman hızı">
+        <div className="idle-warp-group" title="Oyun hızı (pasif gelir en fazla 5× artar)">
           {IDLE_WARPS.map((w) => (
             <button
               key={w}
@@ -249,7 +250,12 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
             </button>
           ))}
         </div>
-        <button className="hud-btn" onClick={() => setShowTech(true)}>🧬 Teknoloji ({gs.techDone.length})</button>
+        <button className={`hud-btn${techReady ? ' has-ready' : ''}`} onClick={() => setShowTech(true)}>
+          🧬 Teknoloji ({gs.techDone.length}){techReady ? ' •' : ''}
+        </button>
+        <button className="hud-btn" onClick={() => setShowGrid(true)}>
+          🪐 Grid
+        </button>
         <div className="builder-money">
           Bütçe <b>{fmt(gs.money)} ₡</b> <small className="income-sub">+{fmt(passivePerHr)} ₡/sa</small>
         </div>
@@ -339,15 +345,13 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
           <h3>Araç</h3>
           <dl>
             <div><dt>Kütle</dt><dd>{(stats.mass + cargoT).toFixed(2)} t</dd></div>
-            <div><dt>Kalkış itkisi</dt><dd>{fmt(stages[0]?.thrust ?? 0)} kN</dd></div>
-            <div><dt>İtki / Ağırlık (TWR)</dt><dd className={twr >= 1.2 ? 'ok' : twr >= 1 ? 'warn' : 'bad'}>{twr.toFixed(2)}</dd></div>
-            <div><dt>Gereken itki (TWR 1,2)</dt><dd>{fmt(needThrust)} kN</dd></div>
+            <div><dt>TWR</dt><dd className={twr >= 1.2 ? 'ok' : twr >= 1 ? 'warn' : 'bad'}>{twr.toFixed(2)}</dd></div>
             <div><dt>Toplam Δv</dt><dd>{fmt(totalDv)} m/s</dd></div>
             <div><dt>Maliyet</dt><dd className={cost > gs.money ? 'bad' : ''}>{fmt(cost)} ₡</dd></div>
           </dl>
           <div className="twr-meter" title="1,0 altı kalkamaz · 1,2 ve üstü güvenli">
             <i><em className={twr >= 1.2 ? 'ok' : twr >= 1 ? 'warn' : 'bad'} style={{ width: `${Math.min(100, (twr / 2.4) * 100)}%` }} /></i>
-            <small>{twr < 1 ? `Kalkamaz: ${fmt(needThrust - (stages[0]?.thrust ?? 0))} kN daha itki gerek ya da kütle azalt` : twr < 1.2 ? 'Kalkar ama yavaş: yakıtın çoğu yerçekimine gider' : 'Kalkış için yeterli itki'}</small>
+            <small>{twr < 1 ? 'Kalkamaz: daha güçlü motor ekle veya kütleyi azalt' : twr < 1.2 ? 'Yavaş kalkar (önerilen TWR ≥ 1,2)' : 'Kalkış için yeterli itki'}</small>
           </div>
           <h3>Kademeler</h3>
           <ol className="stage-list">
@@ -357,34 +361,63 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
             {!stages.length && <li><span>Motor + yakıt ekle</span></li>}
           </ol>
           <p className="dv-guide">
-            Gereken Δv: Dünya yörüngesi <b>2.400</b> · Ay <b>+1.300</b> · Venüs/Mars <b>+1.100</b> · Merkür/Ceres <b>+2.200</b> · Jüpiter/Satürn <b>+3.400</b> m/s
+            Hedef Δv: Yörünge <b>2.400</b> · Ay <b>+1.300</b> · Mars/Venüs <b>+1.100</b> · Uzak gezegenler <b>+2.200+</b> m/s
           </p>
-          <h3>Kargo <small>{cargoT.toFixed(1)} / {stats.cargoCap} t</small></h3>
-          <ul className="cargo-list">
-            {MODULES.map((m) => {
-              const unlocked = isModuleUnlocked(gs, m.id)
-              const req = unlocked ? null : requiredTechForModule(m.id)
-              return (
-                <li key={m.id} className={unlocked ? '' : 'is-locked'} title={unlocked ? m.desc : `Kilitli: ${req?.name ?? 'Teknoloji'}`}>
-                  <span>
-                    {m.icon} {m.name}
-                    <small>{unlocked ? `${m.mass} t · ${fmt(m.cost)} ₡` : `🔒 ${req?.name ?? 'Teknoloji'}`}</small>
-                  </span>
-                  <span className="stepper">
-                    <button onClick={() => changeCargo(m.id, -1)} disabled={!gs.designCargo[m.id]}>−</button>
-                    <b>{gs.designCargo[m.id] ?? 0}</b>
-                    <button onClick={() => changeCargo(m.id, 1)} disabled={!unlocked || cargoT + m.mass > stats.cargoCap + 1e-9}>＋</button>
-                  </span>
-                </li>
-              )
-            })}
-          </ul>
+          {(stats.cargoCap > 0 || cargoT > 0) ? (
+            <>
+              <h3>Kargo <small>{cargoT.toFixed(1)} / {stats.cargoCap} t</small></h3>
+              <ul className="cargo-list">
+                {MODULES.map((m) => {
+                  const unlocked = isModuleUnlocked(gs, m.id)
+                  const req = unlocked ? null : requiredTechForModule(m.id)
+                  return (
+                    <li key={m.id} className={unlocked ? '' : 'is-locked'} title={unlocked ? m.desc : `Kilitli: ${req?.name ?? 'Teknoloji'}`}>
+                      <span>
+                        {m.icon} {m.name}
+                        <small>{unlocked ? `${m.mass} t · ${fmt(m.cost)} ₡` : `🔒 ${req?.name ?? 'Teknoloji'}`}</small>
+                      </span>
+                      <span className="stepper">
+                        <button onClick={() => changeCargo(m.id, -1)} disabled={!gs.designCargo[m.id]}>−</button>
+                        <b>{gs.designCargo[m.id] ?? 0}</b>
+                        <button onClick={() => changeCargo(m.id, 1)} disabled={!unlocked || cargoT + m.mass > stats.cargoCap + 1e-9}>＋</button>
+                      </span>
+                    </li>
+                  )
+                })}
+              </ul>
+            </>
+          ) : (
+            <p className="dv-guide">Modül taşımak için <b>Kargo Gövdesi</b> ekle — veya gezegene indiğinde üs panelinden kur.</p>
+          )}
           {(error ?? problem) && <p className="builder-error">{error ?? problem}</p>}
           <button className="launch-btn" onClick={launch} disabled={!!problem}>Rampaya çıkar — {fmt(cost)} ₡</button>
         </aside>
       </div>
 
       {showTech && <TechTreeModal onClose={() => setShowTech(false)} />}
+
+      {showGrid && (
+        <div className="dialog-backdrop tech-backdrop" role="presentation" onClick={() => setShowGrid(false)}>
+          <section className="tech-modal panel-card grid-modal" role="dialog" aria-modal="true" aria-label="Koloni Gridi" onClick={(e) => e.stopPropagation()}>
+            <header className="tech-head">
+              <div>
+                <p className="eyebrow"><span /> GEZEGEN YÜZEYİ & ÜS GRİDİ</p>
+                <h2>Koloni Gridi</h2>
+              </div>
+              <div className="tech-head-right">
+                <span className="tech-budget">Bütçe: <b>{fmt(gs.money)} ₡</b></span>
+                <button type="button" className="hud-btn" onClick={() => setShowGrid(false)}>Kapat ×</button>
+              </div>
+            </header>
+            <PlanetGridPanel
+              onOpenTech={() => {
+                setShowGrid(false)
+                setShowTech(true)
+              }}
+            />
+          </section>
+        </div>
+      )}
     </main>
   )
 }

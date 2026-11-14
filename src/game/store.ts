@@ -1,11 +1,12 @@
 /** Tekil oyun durumu, hesap oturumu ve hesaba özel kalıcılık. */
 import { useSyncExternalStore } from 'react'
 import { SHIP_SLOT_COUNT } from './data'
-import { STARTER_EARTH_MODULES } from './base'
-import { INITIAL_TECH } from './tech'
-import type { GameState } from './types'
+import { ensureBaseGrid, STARTER_EARTH_MODULES, syncBaseModulesFromGrid } from './base'
+import { INITIAL_TECH, TECH_MIGRATION } from './tech'
+import type { GameCommand, GameState } from './types'
+import type { BodyId } from '../nasa/bodies'
 import { PAD_ANGLE } from '../flight/physics'
-import { newGame, type Sim, tickBasesOnly } from '../flight/world'
+import { dispatchCommand, newGame, type Sim, tickBasesOnly } from '../flight/world'
 
 const KEY_PREFIX = 'nasagame-save-v3:'
 
@@ -66,6 +67,13 @@ export function setIdleWarp(w: number) {
   bump()
 }
 
+export function runCommand(cmd: GameCommand) {
+  const res = dispatchCommand(sim, cmd, authUser?.username ?? 'local')
+  void saveGame(true)
+  bump()
+  return res
+}
+
 export function normalizeGameState(raw: unknown): GameState {
   const base = newGame()
   if (!raw || typeof raw !== 'object') return base
@@ -76,7 +84,9 @@ export function normalizeGameState(raw: unknown): GameState {
     ...gs,
     bases: { ...(gs.bases ?? {}) },
     missionsDone: Array.isArray(gs.missionsDone) ? [...gs.missionsDone] : [],
-    techDone: Array.isArray(gs.techDone) && gs.techDone.length ? [...new Set([INITIAL_TECH, ...gs.techDone])] : [INITIAL_TECH],
+    techDone: Array.isArray(gs.techDone) && gs.techDone.length
+      ? [...new Set([INITIAL_TECH, ...gs.techDone.map((id) => TECH_MIGRATION[id] ?? id)])]
+      : [INITIAL_TECH],
     designCargo: gs.designCargo ? { ...gs.designCargo } : {},
     targetBody: gs.targetBody ?? 'moon',
     shipSlots: Array.from({ length: SHIP_SLOT_COUNT }, (_, i) => (Array.isArray(gs.shipSlots) ? gs.shipSlots[i] ?? null : null)),
@@ -89,9 +99,16 @@ export function normalizeGameState(raw: unknown): GameState {
       earned: 0,
     }
   }
+  for (const id of Object.keys(merged.bases) as BodyId[]) {
+    const b = merged.bases[id]
+    if (b) {
+      ensureBaseGrid(b, id)
+      syncBaseModulesFromGrid(b)
+    }
+  }
   const now = Date.now()
   if (typeof gs.lastSavedAt === 'number' && now - gs.lastSavedAt > 5000) {
-    const elapsedSec = Math.min(24 * 3600, (now - gs.lastSavedAt) / 1000)
+    const elapsedSec = Math.min(8 * 3600, (now - gs.lastSavedAt) / 1000)
     const gained = tickBasesOnly(merged, elapsedSec)
     if (gained >= 1) {
       offlineGain = { money: gained, seconds: elapsedSec }
@@ -117,8 +134,10 @@ function loadFromAccountSave(username: string, serverSave: unknown) {
   if (serverSave && typeof serverSave === 'object') {
     sim.gs = normalizeGameState(serverSave)
   } else {
-    sim.gs = loadLocalForUser(username) ?? newGame()
+    sim.gs = loadLocalForUser(username) ?? newGame(username)
   }
+  sim.gs.ownerId = username
+  sim.gs.players = { ...(sim.gs.players ?? {}), [username]: { id: username, username } }
   sim.warpIdx = 0
   sim.firing.clear()
 }
@@ -204,7 +223,7 @@ export async function registerAccount(username: string, password: string): Promi
     if (!res.ok || !data.user) return data.error ?? 'Hesap oluşturulamadı.'
     authUser = data.user
     offlineGain = null
-    sim.gs = newGame()
+    sim.gs = newGame(data.user.username)
     sim.warpIdx = 0
     sim.firing.clear()
     await saveGame(true)
@@ -232,7 +251,7 @@ export async function logoutAccount() {
 
 export function resetGame() {
   offlineGain = null
-  sim.gs = newGame()
+  sim.gs = newGame(authUser?.username ?? 'local')
   sim.warpIdx = 0
   sim.firing.clear()
   void saveGame(true)

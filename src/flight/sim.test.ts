@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { baseReport, ensureBaseGrid, isSectorReadyToScan, tileAt, tileSynergyBonus } from '../game/base'
 import { DEFAULT_DESIGN } from '../game/data'
 import { baseIncomeMultiplier, hasAutoLandTech, INITIAL_TECH, isModuleUnlocked, isPartUnlocked, unlockTech } from '../game/tech'
 import { estimateDeltaV, freshParts, isConnected, vesselStats } from '../game/vessel'
@@ -8,15 +9,25 @@ import { PAD_ANGLE, situation, terrainHeight } from './physics'
 import { predictTrajectory } from './predict'
 import {
   activeVessel,
+  buyBaseModule,
   buyEarthModule,
+  canControlVessel,
+  dispatchCommand,
+  earthModuleCost,
+  effectiveIncomeDt,
   launchDesign,
   newGame,
   PHYSICS_WARP_MAX_IDX,
+  placePlanetModule,
+  scanPlanetSector,
+  setVesselAutopilot,
   type Sim,
   stageNext,
   stepWorld,
+  sweepPlanetTile,
   tickBasesOnly,
   totalPassiveIncomePerHour,
+  upgradePlanetModule,
   validateDesign,
   WARPS,
 } from './world'
@@ -173,7 +184,7 @@ describe('idle passive income & tech tree', () => {
     expect(validateDesign(lockedDesign, {}, gs)).not.toBeNull()
 
     // Önce önkoşul olmadan tier-2 araştırması açılamaz
-    expect(unlockTech(gs, 'auto-land')).not.toBeNull()
+    expect(unlockTech(gs, 'ion-power')).not.toBeNull()
 
     // Yeterli bütçe ile sırayla idle-ops ve adv-landing aç
     const baseEarthMult = baseIncomeMultiplier(gs, 'earth')
@@ -183,15 +194,41 @@ describe('idle passive income & tech tree', () => {
 
     expect(unlockTech(gs, 'adv-landing')).toBeNull()
     expect(isPartUnlocked(gs, 'aerospike')).toBe(true)
-    expect(validateDesign(lockedDesign, {}, gs)).toBeNull()
-
-    expect(unlockTech(gs, 'auto-land')).toBeNull()
     expect(hasAutoLandTech(gs)).toBe(true)
+    expect(validateDesign(lockedDesign, {}, gs)).toBeNull()
+    expect(unlockTech(gs, 'ion-power')).toBeNull()
+
+    // Eski kayıt ID'leri geriye dönük uyumlu olmalı
+    expect(hasAutoLandTech({ ...gs, techDone: ['basic-rocketry', 'auto-land'] })).toBe(true)
 
     const sim: Sim = { gs, warpIdx: 0, firing: new Map() }
     const countBefore = gs.bases.earth!.modules.datacenter ?? 0
     expect(buyEarthModule(sim, 'datacenter')).toBeNull()
     expect(gs.bases.earth!.modules.datacenter).toBe(countBefore + 1)
+
+    // İniş yapmadan gezegen üssü kurulamaz; Ay'a inen araçla doğrudan modül kurulabilir
+    expect(buyBaseModule(sim, 'moon', 'drill')).not.toBeNull()
+    gs.vessels.push({
+      id: 99,
+      name: 'MoonBaseBuilder',
+      parts: freshParts([{ def: 'probe', x: 6, y: 10 }]),
+      bodyId: 'moon',
+      pos: { x: BODIES.moon.radius, y: 0 },
+      vel: { x: 0, y: 0 },
+      angle: 0,
+      angVel: 0,
+      landed: true,
+      throttle: 0,
+      ec: 100,
+      cargo: { modules: {}, ore: 0, oreFrom: null },
+      rcsOn: false,
+      sas: 'off',
+      visited: ['moon'],
+      assist: null,
+      dvUsed: 0,
+    })
+    expect(buyBaseModule(sim, 'moon', 'drill')).toBeNull()
+    expect(gs.bases.moon?.modules.drill).toBe(1)
   })
 })
 
@@ -211,7 +248,7 @@ describe('25x warp & auto-land', () => {
 
   it('lands a vessel safely on the Moon using autoLand guidance', () => {
     const gs = newGame()
-    gs.techDone.push('adv-landing', 'auto-land')
+    gs.techDone.push('adv-landing')
     const parts = freshParts([
       { def: 'probe', x: 6, y: 10 },
       { def: 'tank-m', x: 6, y: 11 },
@@ -301,5 +338,301 @@ describe('ship presets, delete and docking', () => {
     expect(gs.vessels.length).toBe(2)
     expect(deleteVessel(sim, a.id)).toBe(true)
     expect(gs.activeId).not.toBe(a.id)
+  })
+})
+
+describe('economy balance & controlled rotation', () => {
+  it('caps passive income warp scaling and escalates duplicate Earth module prices', () => {
+    expect(effectiveIncomeDt(1, 1)).toBeCloseTo(1, 4)
+    expect(effectiveIncomeDt(1, 100_000)).toBeLessThanOrEqual(5)
+
+    // 100.000× yörünge hızlandırması pasif geliri sömürmemeli
+    const sim: Sim = { gs: newGame(), warpIdx: WARPS.length - 1, firing: new Map() }
+    const m0 = sim.gs.money
+    for (let i = 0; i < 20; i += 1) stepWorld(sim, 0.05, ctrl)
+    const gained = sim.gs.money - m0
+    expect(gained).toBeLessThan(10)
+
+    // Aynı Dünya modülünü tekrar eklemek giderek pahalanmalı
+    const firstTelCost = earthModuleCost(sim.gs, 'telemetry')
+    sim.gs.bases.earth!.modules.telemetry = 3
+    expect(earthModuleCost(sim.gs, 'telemetry')).toBeGreaterThan(firstTelCost)
+  })
+
+  it('keeps manual turning controlled even at 25x physics warp', () => {
+    const setupOrbit = () => {
+      const gs = newGame()
+      const parts = freshParts([
+        { def: 'probe', x: 6, y: 10 },
+        { def: 'tank-m', x: 6, y: 11 },
+        { def: 'frontier', x: 6, y: 13 },
+      ])
+      const r = BODIES.earth.radius + 80_000
+      gs.vessels.push({
+        id: 1,
+        name: 'SpinTest',
+        parts,
+        bodyId: 'earth',
+        pos: { x: 0, y: r },
+        vel: { x: -1600, y: 0 },
+        angle: Math.PI / 2,
+        angVel: 0,
+        landed: false,
+        throttle: 1,
+        ec: 60,
+        cargo: { modules: {}, ore: 0, oreFrom: null },
+        rcsOn: false,
+        sas: 'off',
+        visited: ['earth'],
+        assist: null,
+        dvUsed: 0,
+      })
+      gs.activeId = 1
+      return gs
+    }
+
+    const sim1: Sim = { gs: setupOrbit(), warpIdx: 0, firing: new Map() }
+    const sim25: Sim = { gs: setupOrbit(), warpIdx: PHYSICS_WARP_MAX_IDX, firing: new Map() }
+    const turnCtrl = { rotate: 1, tx: 0, ty: 0 }
+    for (let i = 0; i < 12; i += 1) {
+      stepWorld(sim1, 1 / 60, turnCtrl)
+      stepWorld(sim25, 1 / 60, turnCtrl)
+    }
+    const delta1 = Math.abs(wrapPi(sim1.gs.vessels[0]!.angle - Math.PI / 2))
+    const delta25 = Math.abs(wrapPi(sim25.gs.vessels[0]!.angle - Math.PI / 2))
+    expect(delta1).toBeGreaterThan(0.01)
+    expect(delta1).toBeLessThan(0.35)
+    expect(delta25).toBeLessThan(0.35)
+    expect(Math.abs(delta25 - delta1)).toBeLessThan(0.05)
+  })
+})
+
+describe('planet 4x4 grid (moon sweepers + factorio upgrades)', () => {
+  it('supports tile sweeping, adjacent synergies, module upgrades, and sector scans', () => {
+    const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
+    sim.gs.money = 50_000
+    const earth = sim.gs.bases.earth!
+    const grid = ensureBaseGrid(earth, 'earth')
+    expect(grid.length).toBe(16)
+
+    // Center starter tiles should already exist and neighbor synergy applies
+    const telemetry = tileAt(grid, 2, 1)!
+    expect(telemetry.moduleId).toBe('telemetry')
+    expect(tileSynergyBonus(grid, telemetry).bonus).toBeGreaterThan(0)
+
+    const beforeReport = baseReport(earth, 1, 1)
+
+    // Sweep an adjacent fog tile (0,1) next to (1,1) solar-farm
+    const sweep1 = sweepPlanetTile(sim, 'earth', 0, 1)
+    expect(sweep1.ok).toBe(true)
+    expect(sweep1.reward).toBeGreaterThan(0)
+
+    // Already opened empty tile (2,2) cannot be swept again
+    const alreadyOpenBlocked = sweepPlanetTile(sim, 'earth', 2, 2)
+    expect(alreadyOpenBlocked.ok).toBe(false)
+
+    // Place a telemetry station on open center tile (2,2) (adjacent to telemetry & habitat) and upgrade to Lv.2
+    const placeErr = placePlanetModule(sim, 'earth', 2, 2, 'telemetry')
+    expect(placeErr).toBeNull()
+    const upgradeErr = upgradePlanetModule(sim, 'earth', 2, 2)
+    expect(upgradeErr).toBeNull()
+    expect(tileAt(earth.grid!, 2, 2)!.level).toBe(2)
+
+    const afterUpgrade = baseReport(earth, 1, 1)
+    expect(afterUpgrade.incomePerHour).toBeGreaterThan(beforeReport.incomePerHour)
+
+    // Clear all remaining unrevealed/crater tiles by sweeping neighbors until sector scan unlocks
+    for (let pass = 0; pass < 10 && !isSectorReadyToScan(earth, 'earth'); pass += 1) {
+      for (let y = 0; y < 4; y += 1) {
+        for (let x = 0; x < 4; x += 1) {
+          const t = tileAt(earth.grid!, x, y)
+          if (t && (t.kind === 'fog' || t.kind === 'crater')) {
+            sweepPlanetTile(sim, 'earth', x, y)
+          }
+        }
+      }
+    }
+    expect(isSectorReadyToScan(earth, 'earth')).toBe(true)
+
+    const scanRes = scanPlanetSector(sim, 'earth')
+    expect(scanRes.ok).toBe(true)
+    expect(scanRes.reward).toBeGreaterThan(0)
+    expect(earth.sectorLevel).toBe(1)
+    // Built modules remain intact across sector re-scans
+    expect(tileAt(earth.grid!, 2, 2)!.kind).toBe('built')
+    expect(tileAt(earth.grid!, 2, 2)!.moduleId).toBe('telemetry')
+    expect(baseReport(earth, 1, 1).sectorMult).toBeGreaterThan(1)
+  })
+})
+
+describe('auto-orbit, auto-transfer & proximity warning', () => {
+  it('auto-orbits from Earth pad then auto-transfers to Moon SOI with proximity warning when auto-land is locked', () => {
+    const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
+    sim.gs.money = 100_000
+    expect(hasAutoLandTech(sim.gs)).toBe(false)
+
+    const launchErr = launchDesign(sim)
+    expect(launchErr).toBeNull()
+    let v = activeVessel(sim.gs)!
+    expect(v.landed).toBe(true)
+
+    // 1. One-click orbit autopilot from Earth launchpad (1x physics dt capped at 0.05s)
+    const orbitErr = setVesselAutopilot(sim, v, 'orbit')
+    expect(orbitErr).toBeNull()
+
+    let reachedOrbit = false
+    for (let i = 0; i < 16000; i += 1) {
+      stepWorld(sim, 0.05, ctrl)
+      v = activeVessel(sim.gs)!
+      if (sim.gs.missionsDone.includes('earth-orbit') && v.autopilot === 'off') {
+        reachedOrbit = true
+        break
+      }
+    }
+    expect(reachedOrbit).toBe(true)
+    const orbitEl = elementsFromState(v.pos, v.vel, BODIES.earth.mu)
+    expect(orbitEl.e).toBeLessThan(1)
+    expect(orbitEl.rp - BODIES.earth.radius).toBeGreaterThan(BODIES.earth.atmoHeight)
+
+    // 2. Select Moon as target and engage auto-transfer
+    sim.gs.targetBody = 'moon'
+    const transferErr = setVesselAutopilot(sim, v, 'transfer')
+    expect(transferErr).toBeNull()
+
+    let moonWarningEv = false
+    for (let i = 0; i < 40000; i += 1) {
+      const evs = stepWorld(sim, 0.05, ctrl)
+      v = activeVessel(sim.gs)!
+      if (evs.some((e) => e.type === 'toast' && e.text.includes('YAKINLAŞMA UYARISI'))) {
+        moonWarningEv = true
+      }
+      if (v.bodyId === 'moon' && v.approachWarn === 'moon') {
+        break
+      }
+    }
+
+    v = activeVessel(sim.gs)!
+    expect(v.bodyId).toBe('moon')
+    expect(sim.gs.missionsDone).toContain('moon-soi')
+    expect(v.approachWarn).toBe('moon')
+    expect(v.autopilot).toBe('off')
+    expect(sim.warpIdx).toBe(0)
+    expect(moonWarningEv).toBe(true)
+  }, 30_000)
+
+  it('auto-transfers directly from Earth base pad to Moon without clicking orbit first', () => {
+    const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
+    sim.gs.money = 100_000
+    expect(launchDesign(sim)).toBeNull()
+    let v = activeVessel(sim.gs)!
+    expect(v.landed).toBe(true)
+
+    sim.gs.targetBody = 'moon'
+    expect(setVesselAutopilot(sim, v, 'transfer')).toBeNull()
+    expect(v.throttle).toBe(1)
+
+    let liftedOff = false
+    let coastedAtHighWarp = false
+    let arrived = false
+    for (let i = 0; i < 40000; i += 1) {
+      stepWorld(sim, 0.05, ctrl)
+      v = activeVessel(sim.gs)!
+      if (!v.landed) liftedOff = true
+      if (sim.warpIdx > PHYSICS_WARP_MAX_IDX) coastedAtHighWarp = true
+      if (v.bodyId === 'moon' && v.approachWarn === 'moon') {
+        arrived = true
+        break
+      }
+    }
+
+    expect(liftedOff).toBe(true)
+    expect(coastedAtHighWarp).toBe(true)
+    expect(arrived).toBe(true)
+    expect(sim.gs.missionsDone).toContain('earth-orbit')
+    expect(sim.gs.missionsDone).toContain('moon-soi')
+    expect(sim.warpIdx).toBe(0)
+  }, 30_000)
+
+  it('auto-transfers directly from Moon surface back to Earth SOI', () => {
+    const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
+    const parts = freshParts([
+      { def: 'probe', x: 6, y: 8 },
+      { def: 'tank-xl', x: 6, y: 10 },
+      { def: 'frontier', x: 6, y: 14 },
+    ])
+    const st = vesselStats(parts)
+    const r = BODIES.moon.radius + terrainHeight('moon', 0) + (st.maxY - st.comY)
+    sim.gs.vessels.push({
+      id: 1,
+      name: 'LunarReturn',
+      parts,
+      bodyId: 'moon',
+      pos: { x: r, y: 0 },
+      vel: { x: 0, y: 0 },
+      angle: 0,
+      angVel: 0,
+      landed: true,
+      throttle: 0,
+      ec: 100,
+      cargo: { modules: {}, ore: 0, oreFrom: null },
+      rcsOn: false,
+      sas: 'off',
+      visited: ['moon'],
+      assist: null,
+      dvUsed: 0,
+    })
+    sim.gs.activeId = 1
+    sim.gs.targetBody = 'earth'
+
+    let v = activeVessel(sim.gs)!
+    expect(setVesselAutopilot(sim, v, 'transfer')).toBeNull()
+    expect(v.throttle).toBe(1)
+
+    let arrivedEarth = false
+    for (let i = 0; i < 30000; i += 1) {
+      stepWorld(sim, 0.05, ctrl)
+      v = activeVessel(sim.gs)!
+      if (v.bodyId === 'earth' && v.approachWarn === 'earth') {
+        arrivedEarth = true
+        break
+      }
+    }
+    expect(arrivedEarth).toBe(true)
+    expect(v.autopilot).toBe('off')
+    expect(sim.warpIdx).toBe(0)
+  }, 30_000)
+})
+
+describe('multiplayer-ready dispatchCommand & ownerId isolation', () => {
+  it('enforces vessel ownership boundaries while executing deterministic serializable commands', () => {
+    const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
+    sim.gs.ownerId = 'alice'
+    sim.gs.money = 50_000
+    expect(launchDesign(sim)).toBeNull()
+    const v = activeVessel(sim.gs)!
+    expect(v.ownerId).toBe('alice')
+    expect(canControlVessel(v, 'alice')).toBe(true)
+    expect(canControlVessel(v, 'bob')).toBe(false)
+
+    // Bob cannot hijack Alice's vessel
+    const bobRes = dispatchCommand(sim, { type: 'setAutopilot', vesselId: v.id, mode: 'orbit' }, 'bob')
+    expect(bobRes.error).toBeTruthy()
+    expect(v.autopilot).toBe('off')
+
+    // Alice can dispatch commands and deterministic tick counter advances on world step
+    const tickBefore = sim.gs.tick ?? 0
+    const targetRes = dispatchCommand(sim, { type: 'setTarget', bodyId: 'moon' }, 'alice')
+    expect(targetRes.error).toBeUndefined()
+    expect(sim.gs.targetBody).toBe('moon')
+
+    const sweepRes = dispatchCommand(sim, { type: 'sweepTile', bodyId: 'earth', x: 0, y: 1 }, 'alice')
+    expect(sweepRes.error).toBeUndefined()
+
+    const apRes = dispatchCommand(sim, { type: 'setAutopilot', vesselId: v.id, mode: 'orbit' }, 'alice')
+    expect(apRes.error).toBeUndefined()
+    expect(v.autopilot).toBe('orbit')
+
+    stepWorld(sim, 0.05, ctrl)
+    expect((sim.gs.tick ?? 0)).toBeGreaterThan(tickBefore)
   })
 })

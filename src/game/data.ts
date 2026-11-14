@@ -1,7 +1,7 @@
 import type { PartDef, PartInst } from './types'
 
 /** Parça kütleleri, itkiler ve fiyatlar oyun varsayımıdır; Isp oranları gerçek motor sınıflarını izler. */
-export const INITIAL_MONEY = 40_000
+export const INITIAL_MONEY = 30_000
 export const GRID_W = 14
 export const GRID_H = 30
 

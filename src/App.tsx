@@ -1,8 +1,10 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
-import { tickBasesOnly, totalPassiveIncomePerHour } from './flight/world'
+import { effectiveIncomeDt, tickBasesOnly, totalPassiveIncomePerHour } from './flight/world'
+import { hasAffordableTech } from './game/tech'
 import AuthScreen from './components/AuthScreen'
 import BuilderScreen from './components/BuilderScreen'
 import IntroCutscene from './components/IntroCutscene'
+import PlanetGridPanel from './components/PlanetGridPanel'
 import TechTreeModal from './components/TechTreeModal'
 import { bump, clearOfflineGain, initAuth, logoutAccount, resetGame, saveGame, setIdleWarp, sim, useAuthState, useGame } from './game/store'
 import { messages } from './i18n/tr'
@@ -10,7 +12,7 @@ import { messages } from './i18n/tr'
 const FlightScreen = lazy(() => import('./components/FlightScreen'))
 
 type Dialog = 'how-to-play' | null
-const IDLE_WARPS = [1, 4, 10, 25]
+const IDLE_WARPS = [1, 5, 25]
 const fmt = (n: number) => Math.round(n).toLocaleString('tr-TR')
 
 function App() {
@@ -18,6 +20,7 @@ function App() {
   const auth = useAuthState()
   const [dialog, setDialog] = useState<Dialog>(null)
   const [showTech, setShowTech] = useState(false)
+  const [showGrid, setShowGrid] = useState(false)
   const [showCutscene, setShowCutscene] = useState(false)
   const [screen, setScreen] = useState<'home' | 'assembly' | 'flight'>('home')
 
@@ -35,11 +38,11 @@ function App() {
     }
   }, [auth.user])
 
-  // Ana menü ve montaj ekranında da pasif gelir işlesin (seçili idle hızında 1×–25×)
+  // Ana menü ve montaj ekranında da pasif gelir işlesin (takvim 1×–25×, gelir en fazla 5×)
   useEffect(() => {
     if (!auth.user || screen === 'flight') return
     const timer = window.setInterval(() => {
-      tickBasesOnly(sim.gs, 0.25 * auth.idleWarp)
+      tickBasesOnly(sim.gs, effectiveIncomeDt(0.25, auth.idleWarp), 0.25 * auth.idleWarp)
       void saveGame()
       bump()
     }, 250)
@@ -67,6 +70,7 @@ function App() {
   }
 
   const passivePerHr = totalPassiveIncomePerHour(gs)
+  const techReady = hasAffordableTech(gs)
 
   return (
     <main className="app-shell">
@@ -85,7 +89,7 @@ function App() {
           <span className="income-pill" title="Saatlik pasif gelir">
             💰 {fmt(gs.money)} ₡ <small>(+{fmt(passivePerHr)} ₡/sa)</small>
           </span>
-          <div className="idle-warp-group" title="Pasif gelir zaman hızı">
+          <div className="idle-warp-group" title="Oyun hızı (pasif gelir en fazla 5× artar)">
             {IDLE_WARPS.map((w) => (
               <button
                 key={w}
@@ -134,8 +138,11 @@ function App() {
                 Uçuşa devam et
               </button>
             )}
-            <button className="button button-secondary" onClick={() => setShowTech(true)}>
-              🧬 Teknoloji Ağacı ({gs.techDone.length})
+            <button className={`button button-secondary${techReady ? ' has-ready' : ''}`} onClick={() => setShowTech(true)}>
+              🧬 Teknoloji Ağacı ({gs.techDone.length}){techReady ? ' •' : ''}
+            </button>
+            <button className="button button-secondary" onClick={() => setShowGrid(true)}>
+              🪐 Koloni Gridi
             </button>
             <button
               className="button button-secondary"
@@ -199,6 +206,29 @@ function App() {
       )}
 
       {showTech && <TechTreeModal onClose={() => setShowTech(false)} />}
+
+      {showGrid && (
+        <div className="dialog-backdrop tech-backdrop" role="presentation" onClick={() => setShowGrid(false)}>
+          <section className="tech-modal panel-card grid-modal" role="dialog" aria-modal="true" aria-label="Koloni Gridi" onClick={(e) => e.stopPropagation()}>
+            <header className="tech-head">
+              <div>
+                <p className="eyebrow"><span /> GEZEGEN YÜZEYİ & ÜS GRİDİ</p>
+                <h2>Koloni Gridi</h2>
+              </div>
+              <div className="tech-head-right">
+                <span className="tech-budget">Bütçe: <b>{fmt(gs.money)} ₡</b></span>
+                <button type="button" className="hud-btn" onClick={() => setShowGrid(false)}>Kapat ×</button>
+              </div>
+            </header>
+            <PlanetGridPanel
+              onOpenTech={() => {
+                setShowGrid(false)
+                setShowTech(true)
+              }}
+            />
+          </section>
+        </div>
+      )}
 
       {dialog && (
         <div className="dialog-backdrop" role="presentation" onClick={() => setDialog(null)}>

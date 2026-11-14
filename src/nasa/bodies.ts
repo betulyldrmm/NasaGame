@@ -156,7 +156,7 @@ export const BODIES: Record<BodyId, BodyDef> = {
     id: 'mercury', name: 'Merkür', parentId: 'sun', radius: mercuryRadius, mu: mercuryMu, gravity: REAL.mercury.gravity,
     soi: soi(mercuryOrbit.a, mercuryMu, sunMu), atmoHeight: 0, scaleHeight: 1, rho0: 0,
     orbit: mercuryOrbit, landable: true,
-    colors: { base: '#9e978e', light: '#d6cfc7', dark: '#4f4a44', sky: '#000000', map: '#b7afa6' }, orePrice: 2200, incomeMult: 2.5,
+    colors: { base: '#9e978e', light: '#d6cfc7', dark: '#4f4a44', sky: '#000000', map: '#b7afa6' }, orePrice: 2200, incomeMult: 3.0,
   },
   venus: {
     id: 'venus', name: 'Venüs', parentId: 'sun', radius: venusRadius, mu: venusMu, gravity: REAL.venus.gravity,
@@ -164,7 +164,7 @@ export const BODIES: Record<BodyId, BodyDef> = {
     atmoHeight: REAL.venus.atmoKm * 1000 * SCALE.atmosphere,
     scaleHeight: REAL.venus.scaleHeightKm * 1000 * SCALE.atmosphere * 1.1,
     rho0: REAL.venus.rho0, orbit: venusOrbit, landable: true,
-    colors: { base: '#d9a65b', light: '#f6d69d', dark: '#7b5222', sky: '#e2b068', map: '#e5b873' }, orePrice: 1800, incomeMult: 2.0,
+    colors: { base: '#d9a65b', light: '#f6d69d', dark: '#7b5222', sky: '#e2b068', map: '#e5b873' }, orePrice: 1800, incomeMult: 2.4,
   },
   earth: {
     id: 'earth', name: 'Dünya', parentId: 'sun', radius: earthRadius, mu: earthMu, gravity: REAL.earth.gravity,
@@ -178,19 +178,19 @@ export const BODIES: Record<BodyId, BodyDef> = {
     id: 'moon', name: 'Ay', parentId: 'earth', radius: moonRadius, mu: moonMu, gravity: REAL.moon.gravity,
     soi: soi(moonA, moonMu, earthMu), atmoHeight: 0, scaleHeight: 1, rho0: 0,
     orbit: { a: moonA, e: REAL.moon.ecc, argp: rad(40), M0: rad(150), n: moonN }, landable: true,
-    colors: { base: '#a9adb6', light: '#e3e6ec', dark: '#5d6170', sky: '#000000', map: '#c9ccd4' }, orePrice: 420, incomeMult: 1.5,
+    colors: { base: '#a9adb6', light: '#e3e6ec', dark: '#5d6170', sky: '#000000', map: '#c9ccd4' }, orePrice: 420, incomeMult: 1.8,
   },
   mars: {
     id: 'mars', name: 'Mars', parentId: 'sun', radius: marsRadius, mu: marsMu, gravity: REAL.mars.gravity,
     soi: soi(marsOrbit.a, marsMu, sunMu),
     atmoHeight: 22_000, scaleHeight: 5_500, rho0: REAL.mars.rho0, orbit: marsOrbit, landable: true,
-    colors: { base: '#c8643c', light: '#f0a070', dark: '#6e2f1c', sky: '#d9a06e', map: '#e07b50' }, orePrice: 1500, incomeMult: 2.2,
+    colors: { base: '#c8643c', light: '#f0a070', dark: '#6e2f1c', sky: '#d9a06e', map: '#e07b50' }, orePrice: 1500, incomeMult: 2.8,
   },
   ceres: {
     id: 'ceres', name: 'Ceres', parentId: 'sun', radius: ceresRadius, mu: ceresMu, gravity: REAL.ceres.gravity,
     soi: soi(ceresOrbit.a, ceresMu, sunMu), atmoHeight: 0, scaleHeight: 1, rho0: 0,
     orbit: ceresOrbit, landable: true,
-    colors: { base: '#7d8594', light: '#bcc4d2', dark: '#3e4450', sky: '#000000', map: '#9aa3b2' }, orePrice: 2600, incomeMult: 2.8,
+    colors: { base: '#7d8594', light: '#bcc4d2', dark: '#3e4450', sky: '#000000', map: '#9aa3b2' }, orePrice: 2600, incomeMult: 3.5,
   },
   jupiter: {
     id: 'jupiter', name: 'Jüpiter', parentId: 'sun', radius: jupiterRadius, mu: jupiterMu, gravity: REAL.jupiter.gravity,
@@ -202,7 +202,7 @@ export const BODIES: Record<BodyId, BodyDef> = {
     id: 'ganymede', name: 'Ganimed', parentId: 'jupiter', radius: ganymedeRadius, mu: ganymedeMu, gravity: REAL.ganymede.gravity,
     soi: soi(ganymedeA, ganymedeMu, jupiterMu), atmoHeight: 0, scaleHeight: 1, rho0: 0,
     orbit: { a: ganymedeA, e: REAL.ganymede.ecc, argp: rad(25), M0: rad(80), n: ganymedeN }, landable: true,
-    colors: { base: '#8e8a83', light: '#cfc9be', dark: '#474542', sky: '#000000', map: '#b7b2a8' }, orePrice: 3600, incomeMult: 3.5,
+    colors: { base: '#8e8a83', light: '#cfc9be', dark: '#474542', sky: '#000000', map: '#b7b2a8' }, orePrice: 3600, incomeMult: 4.5,
   },
   saturn: {
     id: 'saturn', name: 'Satürn', parentId: 'sun', radius: saturnRadius, mu: saturnMu, gravity: REAL.saturn.gravity,
@@ -216,7 +216,7 @@ export const BODIES: Record<BodyId, BodyDef> = {
     atmoHeight: REAL.titan.atmoKm * 1000 * SCALE.atmosphere,
     scaleHeight: REAL.titan.scaleHeightKm * 1000 * SCALE.atmosphere,
     rho0: REAL.titan.rho0, orbit: { a: titanA, e: REAL.titan.ecc, argp: rad(110), M0: rad(210), n: titanN }, landable: true,
-    colors: { base: '#cf873c', light: '#f4bc74', dark: '#6d4016', sky: '#d99648', map: '#e09a4a' }, orePrice: 4500, incomeMult: 4.5,
+    colors: { base: '#cf873c', light: '#f4bc74', dark: '#6d4016', sky: '#d99648', map: '#e09a4a' }, orePrice: 4500, incomeMult: 6.0,
   },
 }
 

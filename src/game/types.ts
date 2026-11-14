@@ -64,6 +64,7 @@ export interface PartInst {
 }
 
 export type SasMode = 'off' | 'prograde' | 'retrograde' | 'radial'
+export type AutopilotMode = 'off' | 'orbit' | 'transfer' | 'land'
 
 export interface Cargo {
   modules: Record<string, number>
@@ -74,6 +75,8 @@ export interface Cargo {
 export interface Vessel {
   id: number
   name: string
+  /** Çok oyunculu hazırlığı: aracın sahibi oyuncu kimliği */
+  ownerId?: string
   parts: PartInst[]
   bodyId: BodyId
   /** gök cismine göre konum (m) ve hız (m/s); eksenler dönmez */
@@ -94,6 +97,26 @@ export interface Vessel {
   dvUsed: number
   /** teknoloji ile açılan otomatik iniş asistanı */
   autoLand?: boolean
+  /** aktif otopilot modu ('orbit', 'transfer', 'land' vb.) */
+  autopilot?: AutopilotMode
+  /** otopilotun oyuncuya gösterdiği tek satırlık durum */
+  autopilotNote?: string
+  /** hedefe yaklaşıldığında otomatik iniş yoksa verilen yakınlaşma uyarısı */
+  approachWarn?: BodyId | null
+}
+
+export type TileKind = 'fog' | 'clear' | 'crater' | 'vein' | 'built'
+
+export interface PlanetTile {
+  x: number
+  y: number
+  kind: TileKind
+  /** sis kalkınca açılacak zemin */
+  under?: 'clear' | 'crater' | 'vein'
+  moduleId?: string
+  level?: number
+  /** çok oyunculu hazırlığı: kareyi kuran oyuncu */
+  ownerId?: string
 }
 
 export interface Base {
@@ -102,6 +125,12 @@ export interface Base {
   /** üssün yüzeydeki açısal konumu (rad) */
   siteAngle: number
   earned: number
+  /** 4×4 gezegen yüzeyi gridi */
+  grid?: PlanetTile[]
+  /** tamamlanan sektör tarama sayısı (her temizlikte artar) */
+  sectorLevel?: number
+  /** çok oyunculu hazırlığı: üs sahibi oyuncu kimliği */
+  ownerId?: string
 }
 
 export interface ShipSlot {
@@ -110,9 +139,20 @@ export interface ShipSlot {
   cargo: Record<string, number>
 }
 
+export interface PlayerMeta {
+  id: string
+  username: string
+  color?: string
+}
+
 export interface GameState {
   /** oyun saati (s) */
   time: number
+  /** deterministik adım sayacı (çok oyunculu senkron hazırlığı) */
+  tick?: number
+  protocolVersion?: number
+  ownerId?: string
+  players?: Record<string, PlayerMeta>
   money: number
   vessels: Vessel[]
   activeId: number | null
@@ -127,6 +167,29 @@ export interface GameState {
   targetBody?: BodyId | null
   lastSavedAt?: number
 }
+
+/** Çok oyunculu hazırlığı: serileştirilebilir oyuncu komutları. */
+export type GameCommand =
+  | { type: 'launch' }
+  | { type: 'stage'; vesselId: number }
+  | { type: 'dock'; vesselId: number; targetId: number }
+  | { type: 'deleteVessel'; vesselId: number }
+  | { type: 'recoverVessel'; vesselId: number }
+  | { type: 'setTarget'; bodyId: BodyId }
+  | { type: 'setAutopilot'; vesselId: number; mode: AutopilotMode }
+  | { type: 'setSas'; vesselId: number; sas: SasMode }
+  | { type: 'toggleRcs'; vesselId: number }
+  | { type: 'togglePartKind'; vesselId: number; kind: 'solar' | 'leg' | 'chute' }
+  | { type: 'deployModules'; vesselId: number }
+  | { type: 'loadOre'; vesselId: number }
+  | { type: 'refuelAtBase'; vesselId: number }
+  | { type: 'buyModule'; bodyId: BodyId; moduleId: string }
+  | { type: 'sweepTile'; bodyId: BodyId; x: number; y: number }
+  | { type: 'placeGridModule'; bodyId: BodyId; x: number; y: number; moduleId: string }
+  | { type: 'upgradeGridModule'; bodyId: BodyId; x: number; y: number }
+  | { type: 'removeGridModule'; bodyId: BodyId; x: number; y: number }
+  | { type: 'scanSector'; bodyId: BodyId }
+  | { type: 'unlockTech'; techId: string }
 
 export type GameEvent =
   | { type: 'toast'; text: string }

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { bump, saveGame, sim, useGame } from '../game/store'
-import { canUnlockTech, isTechDone, TECH_BY_ID, TECHS, unlockTech } from '../game/tech'
+import { canUnlockTech, isTechDone, TECH_BY_ID, TECHS, unlockTech, baseIncomeMultiplier, orePriceMultiplier, hasAutoLandTech } from '../game/tech'
 
 const fmt = (n: number) => Math.round(n).toLocaleString('tr-TR')
 
@@ -11,7 +11,7 @@ interface Props {
 export default function TechTreeModal({ onClose }: Props) {
   const gs = useGame()
   const [msg, setMsg] = useState<string | null>(null)
-  const tiers = [0, 1, 2, 3, 4]
+  const tiers = [0, 1, 2, 3]
 
   const research = (id: string) => {
     const err = unlockTech(sim.gs, id)
@@ -46,6 +46,12 @@ export default function TechTreeModal({ onClose }: Props) {
         </header>
 
         {msg && <p className="tech-msg">{msg}</p>}
+
+        <div className="tech-summary">
+          <span>Dünya Gelir: <b>×{baseIncomeMultiplier(gs, 'earth').toFixed(2)}</b></span>
+          <span>Maden Değeri: <b>×{orePriceMultiplier(gs).toFixed(2)}</b></span>
+          <span>Oto-İniş (L): <b>{hasAutoLandTech(gs) ? 'Açık ✓' : 'Kilitli'}</b></span>
+        </div>
 
         <div className="tech-tiers">
           {tiers.map((tier) => {

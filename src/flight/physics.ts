@@ -4,9 +4,9 @@
  */
 import { BODIES, type BodyDef, type BodyId, solarFlux } from '../nasa/bodies'
 import { partDef } from '../game/data'
-import type { SasMode, Vessel } from '../game/types'
+import type { AutopilotMode, SasMode, Vessel } from '../game/types'
 import { activeEngines, fuelGroups, runEngines, vesselStats, type VesselStats } from '../game/vessel'
-import { bodyAbsState, len, propagate, wrapPi } from './orbit'
+import { bodyAbsState, elementsFromState, len, propagate, wrapPi } from './orbit'
 
 /** Fırlatma rampasının Dünya üzerindeki açısı (gezegenin "tepesi"). */
 export const PAD_ANGLE = Math.PI / 2
@@ -109,21 +109,45 @@ function sasTarget(v: Vessel, mode: SasMode): number | null {
 }
 
 /** Tepki tekerleği / RCS ile dönüş. Hem fizik adımında hem "raylar üstünde" kullanılır. */
-export function rotateVessel(v: Vessel, st: VesselStats, dt: number, ctrl: Controls | null, forcedTarget: number | null = null) {
+export function rotateVessel(
+  v: Vessel,
+  st: VesselStats,
+  dt: number,
+  ctrl: Controls | null,
+  forcedTarget: number | null = null,
+  manualScale = 1,
+) {
   if (!st.hasCommand) {
     v.angle = wrapPi(v.angle + v.angVel * dt)
     return
   }
-  const maxAcc = 1.5 * (v.rcsOn && st.rcs > 0 ? 1.8 : 1)
-  let acc: number
-  if (ctrl && ctrl.rotate !== 0) {
-    acc = -ctrl.rotate * maxAcc
-  } else {
-    const target = forcedTarget ?? sasTarget(v, v.sas)
-    acc = target === null ? -3 * v.angVel : 7 * wrapPi(target - v.angle) - 4.5 * v.angVel
-    acc = Math.max(-maxAcc, Math.min(maxAcc, acc))
+  // Büyük roketler daha oturaklı, hafif sondalar daha çevik döner; aşırı savrulma önlenir.
+  const massScale = Math.max(0.45, Math.min(1.15, Math.sqrt(10 / Math.max(2.5, st.mass))))
+  const rcsBoost = v.rcsOn && st.rcs > 0 ? 1.45 : 1
+  const manualMaxAcc = 0.95 * massScale * rcsBoost
+  const autoMaxAcc = 1.65 * Math.max(0.7, massScale) * rcsBoost
+  const maxManualVel = 1.15 * (v.rcsOn && st.rcs > 0 ? 1.2 : 1)
+  const maxAutoVel = 1.65
+
+  if (!forcedTarget && ctrl && ctrl.rotate !== 0) {
+    const mdt = dt * manualScale
+    const acc = -ctrl.rotate * manualMaxAcc
+    v.angVel = Math.max(-maxManualVel, Math.min(maxManualVel, v.angVel + acc * mdt))
+    v.angle = wrapPi(v.angle + v.angVel * mdt)
+    return
   }
-  v.angVel = Math.max(-2.5, Math.min(2.5, v.angVel + acc * dt))
+
+  const target = forcedTarget ?? sasTarget(v, v.sas)
+  if (target === null) {
+    const dampDt = Math.min(dt * manualScale, 0.25)
+    v.angVel += -6.0 * v.angVel * dampDt
+    if (Math.abs(v.angVel) < 0.004) v.angVel = 0
+    v.angle = wrapPi(v.angle + v.angVel * dampDt)
+    return
+  }
+
+  const acc = Math.max(-autoMaxAcc, Math.min(autoMaxAcc, 7.5 * wrapPi(target - v.angle) - 5.2 * v.angVel))
+  v.angVel = Math.max(-maxAutoVel, Math.min(maxAutoVel, v.angVel + acc * dt))
   v.angle = wrapPi(v.angle + v.angVel * dt)
 }
 
@@ -163,6 +187,109 @@ function maxThrustAvailable(v: Vessel, pressure: number): number {
   return total
 }
 
+export function effectiveAutopilot(v: Vessel): AutopilotMode {
+  return v.autopilot ?? (v.autoLand ? 'land' : 'off')
+}
+
+export function safeOrbitAlt(body: BodyDef): number {
+  if (body.atmoHeight > 0) return body.atmoHeight + Math.max(15_000, Math.round(body.radius * 0.045))
+  return Math.max(8_000, Math.min(24_000, Math.round(body.radius * 0.14)))
+}
+
+function autoOrbitGuidance(
+  v: Vessel,
+  st: VesselStats,
+  body: BodyDef,
+  s: Situation,
+  pressure: number,
+  parkingOnly = false,
+): number | null {
+  if (body.id === 'sun') {
+    v.throttle = 0
+    v.autopilot = 'off'
+    v.autopilotNote = undefined
+    return null
+  }
+  const el = elementsFromState(v.pos, v.vel, body.mu)
+  const targetAlt = safeOrbitAlt(body)
+  const targetR = body.radius + targetAlt
+  const safePeri = body.radius + (body.atmoHeight > 0 ? body.atmoHeight + 4000 : Math.max(4000, targetAlt * 0.5))
+  const up = { x: v.pos.x / s.r, y: v.pos.y / s.r }
+  const vt = v.vel.x * -up.y + v.vel.y * up.x
+  const spin = Math.abs(vt) > 15 ? (vt >= 0 ? 1 : -1) : -1
+  const tanAngle = s.theta + spin * (Math.PI / 2)
+
+  // Kapalı, güvenli ve yeterince dairesel yörüngeye ulaşıldı mı?
+  if (!v.landed && el.e < 0.075 && el.rp >= safePeri && el.ra < body.soi * 0.85) {
+    v.throttle = 0
+    if (!parkingOnly) {
+      v.autopilot = 'off'
+      v.autopilotNote = undefined
+      v.approachWarn = null
+    }
+    v.sas = 'prograde'
+    return Math.atan2(v.vel.y, v.vel.x)
+  }
+
+  const maxF = maxThrustAvailable(v, pressure)
+  const maxAccel = maxF / Math.max(0.1, st.mass)
+  if (maxAccel <= 0.05) {
+    v.throttle = 0
+    v.autopilotNote = 'Yörünge otopilotu: bu kademede yakıt yok!'
+    return Math.atan2(v.vel.y || up.y, v.vel.x || up.x)
+  }
+
+  // Hiperbolik geliş veya taşmış elips → önce yakala / enberiyi düzelt
+  if (!v.landed && (el.e >= 1 || el.ra > body.soi * 0.85)) {
+    const captureZone = s.r <= Math.max(targetR * 2.2, el.rp * 1.45) || el.rp < safePeri || s.vr >= 0
+    if (!captureZone) {
+      v.throttle = 0
+      v.autopilotNote = `${body.name} yörünge yakalaması için yaklaşılıyor…`
+      return s.speed > 1 ? Math.atan2(-v.vel.y, -v.vel.x) : tanAngle
+    }
+    const retro = s.speed > 1 ? Math.atan2(-v.vel.y, -v.vel.x) : tanAngle
+    const aim = el.rp < safePeri ? s.theta * 0.25 + retro * 0.75 : retro
+    const target = el.rp < safePeri ? wrapPi(retro + wrapPi(s.theta - retro) * 0.35) : aim
+    const align = Math.cos(wrapPi(v.angle - target))
+    v.throttle = align > 0.45 ? 1 : 0
+    v.autopilotNote = `${body.name} yörünge yakalama yanışı…`
+    return target
+  }
+
+  // Yükseliş: öte noktayı hedef irtifaya çıkar
+  if (v.landed || el.ra < targetR) {
+    const startTurn = body.atmoHeight > 0 ? 450 : 90
+    const endTurn = Math.max(startTurn + 1200, targetAlt * (body.atmoHeight > 0 ? 0.55 : 0.38))
+    const tilt = s.alt < startTurn ? 0 : smooth(startTurn, endTurn, Math.max(0, s.altSea)) * 1.46
+    const targetAngle = s.theta + spin * tilt
+    const align = Math.cos(wrapPi(v.angle - targetAngle))
+    const ratio = (el.ra - body.radius) / Math.max(1, targetAlt)
+    v.throttle = s.alt < startTurn || align > 0.35 ? (ratio > 0.94 ? 0.45 : 1) : 0
+    v.autopilotNote = `${body.name} yörünge tırmanışı…`
+    return targetAngle
+  }
+
+  // Öte noktaya süzülme
+  const vCirc = Math.sqrt(body.mu / Math.max(s.r, targetR))
+  const vDes = { x: Math.cos(tanAngle) * vCirc, y: Math.sin(tanAngle) * vCirc }
+  const dv = { x: vDes.x - v.vel.x, y: vDes.y - v.vel.y }
+  const dvMag = len(dv)
+  const burnLead = Math.max(1500, targetAlt * 0.08)
+  const coastingToAp = el.rp < safePeri && s.vr > 0 && s.r < el.ra - burnLead && (el.ra - s.r) / Math.max(10, s.vr) > Math.max(12, (dvMag / maxAccel) * 0.65)
+  if (coastingToAp && s.altSea >= body.atmoHeight * 0.95) {
+    v.throttle = 0
+    v.autopilotNote = 'Öte noktaya süzülüyor (daireselleştirme beklemede)…'
+    return dvMag > 2 ? Math.atan2(dv.y, dv.x) : tanAngle
+  }
+
+  // Daireselleştirme yanışı
+  const targetAngle = dvMag > 1 ? Math.atan2(dv.y, dv.x) : tanAngle
+  const align = Math.cos(wrapPi(v.angle - targetAngle))
+  v.throttle = align > 0.55 ? Math.max(0.15, Math.min(1, dvMag / 22)) : 0
+  v.autopilotNote = `${body.name} yörüngesi daireselleştiriliyor…`
+  return targetAngle
+}
+
 function autoLandGuidance(v: Vessel, st: VesselStats, body: BodyDef, s: Situation, pressure: number, rho: number): number | null {
   if (!body.landable || v.landed) return null
   if (s.alt < 450) {
@@ -177,15 +304,18 @@ function autoLandGuidance(v: Vessel, st: VesselStats, body: BodyDef, s: Situatio
   const g = body.mu / (s.r * s.r)
   if (maxAccel <= 0.05) {
     v.throttle = 0
+    v.autopilotNote = 'Oto-İniş: yakıt yok!'
     return s.speed > 2 ? Math.atan2(-v.vel.y, -v.vel.x) : s.theta
   }
   const vh = Math.hypot(v.vel.x - s.vr * up.x, v.vel.y - s.vr * up.y)
   const aNet = Math.max(0.25, maxAccel - g)
   const brakeLimit = Math.sqrt(2 * aNet * Math.max(0, s.alt - 25)) * 0.62
   const targetVr =
-    s.alt > 45
-      ? -Math.max(4, Math.min(130, brakeLimit, s.alt * 0.14))
-      : -1.8
+    s.alt > 2500 && vh > 35
+      ? -Math.min(40, Math.max(6, s.alt * 0.015))
+      : s.alt > 45
+        ? -Math.max(4, Math.min(130, brakeLimit, s.alt * 0.14))
+        : -1.8
   const vDes = { x: up.x * targetVr, y: up.y * targetVr }
   const dv = { x: vDes.x - v.vel.x, y: vDes.y - v.vel.y }
   const tau = s.alt < 500 ? 0.9 : 1.4
@@ -196,25 +326,41 @@ function autoLandGuidance(v: Vessel, st: VesselStats, body: BodyDef, s: Situatio
     targetAngle = s.theta + Math.max(-0.28, Math.min(0.28, tilt))
   }
   const dStop = (s.speed * s.speed) / (2 * aNet * 0.65)
-  if (s.alt > 80 && s.alt > dStop * 1.6 + 180 && s.vr > targetVr * 0.85 && vh < 8) {
+  if (s.alt > 80 && vh < 15 && s.alt > dStop * 1.6 + 180 && s.vr > targetVr * 0.85) {
     v.throttle = 0
+    v.autopilotNote = 'Oto-İniş: kontrollü alçalma…'
     return targetAngle
   }
   const align = Math.cos(wrapPi(v.angle - targetAngle))
   const req = len(aCmd) / maxAccel
   v.throttle = align > 0.55 ? Math.max(0, Math.min(1, req * align)) : 0
+  v.autopilotNote = vh > 35 ? 'Oto-İniş: yörünge hızı düşürülüyor…' : 'Oto-İniş: dikey iniş freni…'
   return targetAngle
 }
 
 /** Tek bir fizik adımı (yarı-örtük Euler). Aracı yerinde değiştirir. */
-export function stepPhysics(v: Vessel, dt: number, ctrl: Controls | null): StepResult {
+export function stepPhysics(
+  v: Vessel,
+  dt: number,
+  ctrl: Controls | null,
+  manualScale = 1,
+  externalAutoTarget: number | null = null,
+): StepResult {
   const body = BODIES[v.bodyId]
   const st = vesselStats(v.parts, v.cargo)
   const s = situation(v, st)
   const up = { x: v.pos.x / s.r, y: v.pos.y / s.r }
   const rho = airDensity(body, s.altSea)
   const pressure = pressureRatio(body, s.altSea)
-  const autoTarget = v.autoLand ? autoLandGuidance(v, st, body, s, pressure, rho) : null
+  const ap = effectiveAutopilot(v)
+  const autoTarget =
+    externalAutoTarget !== null
+      ? externalAutoTarget
+      : ap === 'land'
+        ? autoLandGuidance(v, st, body, s, pressure, rho)
+        : ap === 'orbit' || ap === 'transfer'
+          ? autoOrbitGuidance(v, st, body, s, pressure, ap === 'transfer')
+          : null
   const out = runEngines(v.parts, v.throttle, pressure, dt, v.ec)
   v.ec -= out.ecUsed
   const fwd = { x: Math.cos(v.angle), y: Math.sin(v.angle) }
@@ -250,7 +396,7 @@ export function stepPhysics(v: Vessel, dt: number, ctrl: Controls | null): StepR
   // Paraşüt açıkken araç hız vektörünün tersine (burun yukarı) döner.
   const chuting = st.chutesDeployed > 0 && rho > 0.0005 && s.speed > 2
   const forcedTarget = chuting ? Math.atan2(-v.vel.y, -v.vel.x) : autoTarget
-  rotateVessel(v, st, dt, ctrl, forcedTarget)
+  rotateVessel(v, st, dt, ctrl, forcedTarget, manualScale)
 
   v.vel = { x: v.vel.x + ax * dt, y: v.vel.y + ay * dt }
 
@@ -283,6 +429,9 @@ export function stepPhysics(v: Vessel, dt: number, ctrl: Controls | null): StepR
       if (tilt > 0.75) return { firing: out.firing, crash: 'yan yattı ve parçalandı' }
       v.landed = true
       v.autoLand = false
+      v.autopilot = 'off'
+      v.autopilotNote = undefined
+      v.approachWarn = null
       v.throttle = 0
       v.vel = { x: 0, y: 0 }
       v.angVel = 0
@@ -297,12 +446,22 @@ export function stepPhysics(v: Vessel, dt: number, ctrl: Controls | null): StepR
 export function needsPhysics(v: Vessel, ctrl: Controls | null): boolean {
   const st = vesselStats(v.parts, v.cargo)
   const burning = v.throttle > 0 && st.fuel > 0 && activeEngines(v.parts).length > 0
-  if (v.landed) return burning
-  if (burning || v.autoLand) return true
-  if (ctrl && v.rcsOn && st.rcs > 0 && (ctrl.tx !== 0 || ctrl.ty !== 0)) return true
+  const ap = effectiveAutopilot(v)
+  if (v.landed) return burning || ap === 'orbit' || ap === 'transfer'
+  if (burning || ap === 'orbit' || ap === 'land') return true
   const body = BODIES[v.bodyId]
   const s = situation(v, st)
-  return s.altSea < body.atmoHeight || (body.landable && s.alt < 1500)
+  if (s.altSea < body.atmoHeight || (body.landable && s.alt < 1500)) return true
+  if (ap === 'transfer') {
+    if (body.id !== 'sun') {
+      const el = elementsFromState(v.pos, v.vel, body.mu)
+      const safeAlt = safeOrbitAlt(body)
+      const safePeri = body.radius + (body.atmoHeight > 0 ? body.atmoHeight + 4000 : Math.max(4000, safeAlt * 0.5))
+      if (el.rp < safePeri || (el.e < 1 && el.ra < body.radius + safeAlt * 0.78)) return true
+    }
+    return false
+  }
+  return !!(ctrl && v.rcsOn && st.rcs > 0 && (ctrl.tx !== 0 || ctrl.ty !== 0))
 }
 
 /** Motorlar kapalıyken Kepler yörüngesinde analitik ilerleme. */

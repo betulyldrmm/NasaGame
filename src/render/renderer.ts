@@ -550,6 +550,39 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
     }
     drawVesselAt(ctx, sim, o, p, cam.rot, cell, view.clock, vac, isActive ? view.rcsTx : 0)
     frame.hits.push({ id: o.id, x: p.x, y: p.y, cell, rot: Math.PI / 2 - (o.angle + cam.rot) })
+    if (isActive && !o.landed && cam.z < 12 && len(o.vel) > 8) {
+      const ringR = Math.max(46, ((st.maxY - st.minY) * cell) / 2 + 18)
+      const va = Math.atan2(o.vel.y, o.vel.x)
+      ctx.save()
+      ctx.translate(p.x, p.y)
+      ctx.strokeStyle = 'rgba(255,255,255,.10)'
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      ctx.arc(0, 0, ringR, 0, 6.283)
+      ctx.stroke()
+      // İleri hız yönü (Prograde - yeşil daire)
+      ctx.save()
+      ctx.rotate(Math.PI / 2 - (va + cam.rot))
+      ctx.strokeStyle = 'rgba(74,222,128,.85)'
+      ctx.lineWidth = 1.6
+      ctx.beginPath()
+      ctx.arc(0, -ringR, 4, 0, 6.283)
+      ctx.stroke()
+      ctx.restore()
+      // Geri hız yönü (Retrograde - turuncu çarpı)
+      ctx.save()
+      ctx.rotate(Math.PI / 2 - (va + Math.PI + cam.rot))
+      ctx.strokeStyle = 'rgba(255,173,87,.8)'
+      ctx.lineWidth = 1.6
+      ctx.beginPath()
+      ctx.moveTo(-3.2, -ringR - 3.2)
+      ctx.lineTo(3.2, -ringR + 3.2)
+      ctx.moveTo(3.2, -ringR - 3.2)
+      ctx.lineTo(-3.2, -ringR + 3.2)
+      ctx.stroke()
+      ctx.restore()
+      ctx.restore()
+    }
     if (!isActive) {
       ctx.fillStyle = 'rgba(255,255,255,.75)'
       ctx.font = '11px "DM Mono", monospace'

@@ -473,7 +473,7 @@ kbd { background: #1b2b47; border: 1px solid #8296b355; border-bottom-width: 2px
 .tech-budget b { color: var(--color-orange); }
 .tech-progress { font: 600 12px 'DM Mono', monospace; color: var(--color-turquoise); background: #0e1e36; border: 1px solid #38d9e844; padding: 6px 10px; border-radius: 8px; }
 .tech-msg { margin: 0 0 12px; padding: 8px 12px; border-radius: 8px; background: #17364a99; border: 1px solid #38d9e855; font-size: 13px; color: #d8f8ff; }
-.tech-tiers { display: grid; grid-template-columns: repeat(5, minmax(190px, 1fr)); gap: 12px; overflow-x: auto; padding-bottom: 6px; }
+.tech-tiers { display: grid; grid-template-columns: repeat(4, minmax(210px, 1fr)); gap: 12px; overflow-x: auto; padding-bottom: 6px; }
 .tech-tier-col { display: flex; flex-direction: column; gap: 10px; }
 .tech-tier-label { font: 700 10px 'DM Mono', monospace; letter-spacing: .14em; text-transform: uppercase; color: var(--color-turquoise); padding-bottom: 4px; border-bottom: 1px solid #8296b333; }
 .tech-node { background: #0d1a30; border: 1px solid #8296b333; border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
@@ -526,3 +526,38 @@ kbd { background: #1b2b47; border: 1px solid #8296b355; border-bottom-width: 2px
 .vessel-list .vessel-del { flex: none; justify-content: center; padding: 5px 7px; }
 .vessel-list .vessel-del:hover { border-color: var(--color-error); }
 .button.danger { background: var(--color-error); color: #2a0610; box-shadow: none; }
+.hud-btn.has-ready, .button.has-ready { border-color: var(--color-success); box-shadow: 0 0 14px #4ade8038; }
+.tech-summary { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 14px; padding: 9px 12px; background: #0e1c33; border: 1px solid #38d9e833; border-radius: 8px; font: 12px 'DM Mono', monospace; color: var(--color-muted); }
+.tech-summary b { color: var(--color-turquoise); margin-left: 4px; }
+.land-alert { margin-bottom: 6px; padding: 5px 12px; border-radius: 8px; background: #2d1b0ee0; border: 1px solid #ffad5788; font: 600 11.5px 'DM Mono', monospace; color: #ffd49e; }
+
+/* ───────── Otopilot & Yaklaşma Uyarısı ───────── */
+.autopilot-note { margin-bottom: 6px; padding: 5px 12px; border-radius: 8px; background: #0e2438e6; border: 1px solid #38d9e855; font: 600 11.5px 'DM Mono', monospace; color: #bfefff; }
+.approach-warn { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; padding: 7px 12px; border-radius: 9px; background: #3b1318ee; border: 1px solid #fb7185aa; font: 600 11.5px 'Manrope', sans-serif; color: #ffd8df; box-shadow: 0 0 22px #fb718533; }
+.approach-warn .mini-warp-btn { background: #1e2d48; color: #fff; padding: 5px 9px; }
+.approach-warn .mini-warp-btn:hover { background: var(--color-turquoise); color: #06131e; }
+
+/* ───────── Gezegen 4×4 Koloni Gridi (Moon Sweepers / Mini-Factorio) ───────── */
+.grid-modal { width: min(620px, 95vw); }
+.planet-grid-panel { display: flex; flex-direction: column; gap: 10px; }
+.grid-body-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.grid-kpis { display: flex; flex-wrap: wrap; gap: 10px; font: 600 11.5px 'DM Mono', monospace; background: #0e1c33; border: 1px solid #8296b333; border-radius: 8px; padding: 7px 10px; }
+.surface-grid { display: grid; gap: 7px; }
+.surface-cell { position: relative; aspect-ratio: 1; border-radius: 9px; border: 1px solid #8296b338; background: #0f1c33; color: var(--color-text); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; cursor: pointer; padding: 4px; transition: transform .08s, border-color .15s, background .15s; }
+.surface-cell:hover { transform: translateY(-1px); border-color: #38d9e8aa; }
+.surface-cell.is-selected { border-color: var(--color-orange); box-shadow: 0 0 0 1px var(--color-orange), 0 0 16px #ffad5733; }
+.surface-cell.is-fog { background: #091224; opacity: .72; }
+.surface-cell.is-fog.can-sweep { opacity: 1; border-style: dashed; border-color: #38d9e888; background: #102442; }
+.surface-cell.is-crater { background: #261b12; border-color: #ffad5788; }
+.surface-cell.is-vein { background: #0e2833; border-color: #38d9e866; }
+.surface-cell.is-built { background: #132842; border-color: #4ade8055; }
+.cell-icon { font-size: 20px; line-height: 1; }
+.cell-sub { font: 600 10px 'DM Mono', monospace; color: var(--color-muted); }
+.surface-cell.is-built .cell-sub { color: #dbe7f8; }
+.cell-syn { position: absolute; top: 3px; right: 4px; font-style: normal; font: 700 9px 'DM Mono', monospace; color: var(--color-success); background: #082018cc; padding: 1px 4px; border-radius: 4px; }
+.grid-actions-bar { display: flex; flex-direction: column; gap: 6px; }
+.grid-tip { font-size: 11px; color: var(--color-muted); line-height: 1.45; }
+.tile-inspector { background: #0e1c33; border: 1px solid #8296b338; border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.tile-inspector-head { display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; }
+.tile-inspector-head small { font-size: 11px; color: var(--color-muted); }
+.tile-inspector-btns { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }

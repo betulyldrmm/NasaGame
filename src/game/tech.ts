@@ -1,4 +1,4 @@
-/** Teknoloji ağacı: yeni roket parçaları, üs modülleri, iniş asistanı ve pasif gelir çarpanları. */
+/** Teknoloji ağacı: 6 sade araştırma düğümüyle roket parçaları, Oto-İniş ve koloni bonusları. */
 import { BODIES, type BodyId } from '../nasa/bodies'
 import type { GameState } from './types'
 
@@ -17,16 +17,23 @@ export interface TechNode {
 
 export const INITIAL_TECH = 'basic-rocketry'
 
+export const TECH_MIGRATION: Record<string, string> = {
+  'auto-land': 'adv-landing',
+  'heavy-cargo': 'adv-landing',
+  'mining-isru': 'idle-ops',
+  'nuclear-prop': 'ion-power',
+}
+
 export const TECHS: TechNode[] = [
   {
     id: 'basic-rocketry',
     tier: 0,
-    name: 'Temel Uzay Mühendisliği',
+    name: 'Temel Roketçilik',
     icon: '🚀',
     cost: 0,
     requires: [],
-    desc: 'Standart üç kademeli roket parçaları ve Dünya başlangıç telemetri üssü.',
-    effects: ['Selene I roket parçaları', 'Dünya Telemetri İstasyonu & Yaşam Modülü'],
+    desc: 'Üç hazır roket, temel parçalar ve Dünya başlangıç üssü.',
+    effects: ['Selene I, Pioneer ve Atlas Kargo', 'Dünya Telemetri İstasyonu & Yaşam Modülü'],
     parts: [
       'capsule', 'probe', 'nose',
       'tank-s', 'tank-m', 'tank-l', 'tank-xl', 'tank-slim',
@@ -40,99 +47,56 @@ export const TECHS: TechNode[] = [
   {
     id: 'idle-ops',
     tier: 1,
-    name: 'Otomatik Yer Operasyonları',
+    name: 'Otomatik Üs & Maden',
     icon: '📡',
-    cost: 4500,
+    cost: 3500,
     requires: ['basic-rocketry'],
-    desc: 'Dünya ve gezegen üslerindeki pasif gelir akışını otomatikleştirir.',
-    effects: ['+%35 tüm üslerde pasif gelir', 'Veri Merkezi modülü açılır'],
-    modules: ['datacenter'],
+    desc: 'Pasif gelir tesislerini, bilim laboratuvarını ve madenciliği açar.',
+    effects: ['+%25 tüm pasif gelir & +%25 maden değeri', 'Veri Merkezi, Bilim Lab, Sondaj & ISRU'],
+    modules: ['datacenter', 'lab', 'drill', 'isru'],
   },
   {
     id: 'adv-landing',
     tier: 1,
-    name: 'Gelişmiş İniş ve Atmosfer',
-    icon: '🛸',
-    cost: 6500,
-    requires: ['basic-rocketry'],
-    desc: 'Venüs, Mars ve kayalık dünyalara iniş ve geri kalkış için güçlendirilmiş donanım.',
-    effects: ['Aerospike Motor (yoğun atmosferde güçlü)', 'Ağır İniş Ayağı (24 m/s)', 'Süper Tank XXL (14 t)'],
-    parts: ['aerospike', 'heavy-leg', 'tank-xxl'],
-  },
-  {
-    id: 'auto-land',
-    tier: 2,
-    name: 'Otomatik İniş Bilgisayarı',
+    name: 'Oto-İniş & Ağır Gövde',
     icon: '🤖',
-    cost: 8000,
-    requires: ['adv-landing'],
-    desc: 'Yörüngeden alçalırken aracı dikey tutup motor itkisini ayarlayarak güvenli iniş yapar.',
-    effects: ['Uçuş HUD\'ında Oto-İniş (L) modu açılır'],
-  },
-  {
-    id: 'mining-isru',
-    tier: 2,
-    name: 'Derin Madencilik ve ISRU',
-    icon: '⛏️',
-    cost: 12000,
-    requires: ['idle-ops'],
-    desc: 'Diğer gezegenlerde maden çıkarma, yerinde yakıt üretimi ve bilim laboratuvarları.',
-    effects: ['Maden Sondajı, ISRU & Bilim Lab açılır', '+%25 maden satış fiyatı'],
-    modules: ['lab', 'drill', 'isru'],
+    cost: 4000,
+    requires: ['basic-rocketry'],
+    desc: 'Otomatik İniş Bilgisayarı ve yüksek kapasiteli iniş/kargo donanımları.',
+    effects: ['Oto-İniş (L) asistanı açılır', 'Aerospike, Ağır Ayak, Tank XXL, Büyük Kargo & YZ Sonda'],
+    parts: ['aerospike', 'heavy-leg', 'tank-xxl', 'cargo-lg', 'probe-ai'],
   },
   {
     id: 'ion-power',
     tier: 2,
-    name: 'İyon İtkisi ve RTG Gücü',
-    icon: '⚡',
-    cost: 16000,
-    requires: ['adv-landing'],
-    desc: 'Dış gezegenlerde güneş ışığı azaldığında bile çalışan nükleer pil ve iyon motoru.',
-    effects: ['İyon Motoru & Geniş Güneş Paneli', 'RTG Nükleer Pil (Güneş\'siz güç)'],
-    parts: ['ion', 'solar-xl', 'rtg'],
-  },
-  {
-    id: 'heavy-cargo',
-    tier: 2,
-    name: 'Ağır Kargo Lojistiği',
-    icon: '📦',
-    cost: 20000,
-    requires: ['adv-landing'],
-    desc: 'Büyük üs modüllerini ve bol maden yüklerini tek seferde taşıyın.',
-    effects: ['Büyük Kargo Gövdesi (10 t)', 'Yapay Zeka Sondası'],
-    parts: ['cargo-lg', 'probe-ai'],
-  },
-  {
-    id: 'nuclear-prop',
-    tier: 3,
-    name: 'NERVA Nükleer İtki',
+    name: 'Derin Uzay & Nükleer İtki',
     icon: '☢️',
-    cost: 38000,
-    requires: ['ion-power', 'heavy-cargo'],
-    desc: 'Yüksek vakum özgül itkisi (760 s) ile Ceres, Ganimed ve Titan seferlerini kolaylaştırır.',
-    effects: ['NERVA Nükleer Motor (140 kN, 760 s Isp)'],
-    parts: ['nerva'],
+    cost: 14000,
+    requires: ['adv-landing'],
+    desc: 'Ceres, Ganimed ve Titan seferleri için yüksek verimli motor ve nükleer güç.',
+    effects: ['İyon Motoru & NERVA Nükleer Motor (760 s Isp)', 'RTG Nükleer Pil & Geniş Güneş Paneli'],
+    parts: ['ion', 'nerva', 'solar-xl', 'rtg'],
   },
   {
     id: 'deep-colonies',
-    tier: 3,
-    name: 'Dış Gezegen Kolonizasyonu',
+    tier: 2,
+    name: 'Dış Gezegen Kolonileri',
     icon: '🌱',
-    cost: 48000,
-    requires: ['mining-isru', 'ion-power'],
-    desc: 'Jüpiter ve Satürn uydularında güneşsiz yaşayabilen kendi kendine yeterli koloniler.',
-    effects: ['Nükleer Üs Reaktörü (+16 sabit güç) & Biyodom', '+%50 Dünya dışı üs pasif geliri'],
+    cost: 16000,
+    requires: ['idle-ops'],
+    desc: 'Güneş ışığının az olduğu gezegenlerde kendi kendine yeten büyük koloniler.',
+    effects: ['+%50 Dünya dışı koloni pasif geliri', 'RTG Üs Reaktörü (+20 güç) & Biyodom'],
     modules: ['rtg-reactor', 'biodome'],
   },
   {
     id: 'interplanetary-net',
-    tier: 4,
-    name: 'Gezegenler Arası Ticaret Ağı',
+    tier: 3,
+    name: 'Kuantum Uzay Ağı',
     icon: '💎',
-    cost: 95000,
-    requires: ['nuclear-prop', 'deep-colonies'],
-    desc: 'Tüm Güneş Sistemi üslerini birbirine bağlayan kuantum ekonomi ağı.',
-    effects: ['Kuantum Ticaret Rölesi açılır', '+%100 tüm pasif gelirler & +%50 maden değeri'],
+    cost: 45000,
+    requires: ['ion-power', 'deep-colonies'],
+    desc: 'Tüm Güneş Sistemi kolonilerini bağlayan nihai ticaret ve telemetri ağı.',
+    effects: ['+%60 tüm pasif gelirler & +%50 maden değeri', 'Kuantum Ticaret Rölesi açılır'],
     modules: ['quantum-relay'],
   },
 ]
@@ -147,7 +111,8 @@ for (const t of TECHS) {
 }
 
 export function isTechDone(gs: GameState, techId: string): boolean {
-  return gs.techDone.includes(techId)
+  const target = TECH_MIGRATION[techId] ?? techId
+  return gs.techDone.some((id) => (TECH_MIGRATION[id] ?? id) === target)
 }
 
 export function requiredTechForPart(partId: string): TechNode | null {
@@ -162,39 +127,39 @@ export function requiredTechForModule(moduleId: string): TechNode | null {
 
 export function isPartUnlocked(gs: GameState, partId: string): boolean {
   const tid = PART_TECH.get(partId)
-  return !tid || gs.techDone.includes(tid)
+  return !tid || isTechDone(gs, tid)
 }
 
 export function isModuleUnlocked(gs: GameState, moduleId: string): boolean {
   const tid = MODULE_TECH.get(moduleId)
-  return !tid || gs.techDone.includes(tid)
+  return !tid || isTechDone(gs, tid)
 }
 
 export function hasAutoLandTech(gs: GameState): boolean {
-  return gs.techDone.includes('auto-land')
+  return isTechDone(gs, 'adv-landing')
 }
 
 export function baseIncomeMultiplier(gs: GameState, bodyId: BodyId): number {
   let mult = BODIES[bodyId].incomeMult || 1
-  if (gs.techDone.includes('idle-ops')) mult *= 1.35
-  if (bodyId !== 'earth' && gs.techDone.includes('deep-colonies')) mult *= 1.5
-  if (gs.techDone.includes('interplanetary-net')) mult *= 2.0
+  if (isTechDone(gs, 'idle-ops')) mult *= 1.25
+  if (bodyId !== 'earth' && isTechDone(gs, 'deep-colonies')) mult *= 1.5
+  if (isTechDone(gs, 'interplanetary-net')) mult *= 1.6
   return mult
 }
 
 export function orePriceMultiplier(gs: GameState): number {
   let mult = 1
-  if (gs.techDone.includes('mining-isru')) mult *= 1.25
-  if (gs.techDone.includes('interplanetary-net')) mult *= 1.5
+  if (isTechDone(gs, 'idle-ops')) mult *= 1.25
+  if (isTechDone(gs, 'interplanetary-net')) mult *= 1.5
   return mult
 }
 
 export function canUnlockTech(gs: GameState, techId: string): { ok: boolean; reason?: string } {
   const node = TECH_BY_ID[techId]
   if (!node) return { ok: false, reason: 'Bilinmeyen teknoloji.' }
-  if (gs.techDone.includes(techId)) return { ok: false, reason: 'Zaten araştırıldı.' }
+  if (isTechDone(gs, techId)) return { ok: false, reason: 'Zaten araştırıldı.' }
   for (const req of node.requires) {
-    if (!gs.techDone.includes(req)) {
+    if (!isTechDone(gs, req)) {
       return { ok: false, reason: `Önce "${TECH_BY_ID[req]?.name ?? req}" açılmalı.` }
     }
   }
@@ -204,11 +169,15 @@ export function canUnlockTech(gs: GameState, techId: string): { ok: boolean; rea
   return { ok: true }
 }
 
+export function hasAffordableTech(gs: GameState): boolean {
+  return TECHS.some((t) => canUnlockTech(gs, t.id).ok)
+}
+
 export function unlockTech(gs: GameState, techId: string): string | null {
   const check = canUnlockTech(gs, techId)
   if (!check.ok) return check.reason ?? 'Araştırma açılamadı.'
   const node = TECH_BY_ID[techId]!
   gs.money -= node.cost
-  gs.techDone = [...gs.techDone, techId]
+  gs.techDone = [...new Set([...gs.techDone, techId])]
   return null
 }
