@@ -857,7 +857,7 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls): GameEvent[]
   }
 
   const cur = activeVessel(gs)
-  if (cur) {
+  if (cur && !isStationVessel(cur)) {
     for (const m of MISSIONS) {
       if (m.check && !gs.missionsDone.includes(m.id) && m.check(cur, gs)) completeMission(gs, m.id, events)
     }

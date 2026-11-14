@@ -516,6 +516,11 @@ export const EN: Record<string, string> = {
   'Koloni kur': 'Build colony',
   '⚡ Elektrik yetmiyor:': '⚡ Not enough power:',
   'yapı durdu.': 'building(s) stopped.',
+  'Bu yapı yalnızca uzay kolonilerinde (Ay, Mars…) kurulur.': 'This building can only be built in space colonies ({b}, {b}…).',
+  'Enberiye süzülüyor (daireselleştirme beklemede)…': 'Coasting to periapsis (circularisation pending)…',
+  'Ay yaklaşma yörüngesi alçaltılıyor…': 'Lowering the approach orbit at {b}…',
+  'Hoş geldin': 'Welcome back',
+  'Tamam': 'OK',
   // ── harita (canvas) ──
   'karşılaşma': 'encounter',
   'Ay etki alanı': '{b} sphere of influence',

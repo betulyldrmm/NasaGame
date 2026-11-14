@@ -321,6 +321,7 @@ export default function FlightScreen({ onBuilder }: Props) {
   const [isMap, setIsMap] = useState(false)
   const [toasts, setToasts] = useState<{ id: number; text: string; kind: string }[]>([])
   const [lost, setLost] = useState<string | null>(null)
+  const [wreck, setWreck] = useState(false)
   const [alarm, setAlarm] = useState(false)
   const spam = useRef<number[]>([])
   const typed = useRef('')
@@ -352,8 +353,10 @@ export default function FlightScreen({ onBuilder }: Props) {
       else if (e.type === 'crash') {
         if (e.wasActive) {
           // Patlamalar görünsün diye kayıp ekranı biraz gecikir.
+          setWreck(true)
           window.setTimeout(() => {
             audio.sfx('lose', 0.5)
+            setWreck(false)
             setLost(`${e.name}: ${e.reason}.`)
           }, 3800)
         } else toast(`${e.name}: ${e.reason}.`, 'warn')
@@ -965,7 +968,7 @@ export default function FlightScreen({ onBuilder }: Props) {
         </div>
       )}
 
-      {!confirmDel && (lost || !hud.has) && (
+      {!confirmDel && !wreck && (lost || !hud.has) && (
         <div className="dialog-backdrop">
           <section className="dialog">
             <h2>{lost ? 'Araç kaybedildi' : 'Aktif araç yok'}</h2>
@@ -976,7 +979,6 @@ export default function FlightScreen({ onBuilder }: Props) {
               <button className="button button-primary" onClick={quickLaunch}>🚀 Tasarımı Fırlat</button>
               <button className="button button-secondary" onClick={onBuilder}>Montaj binası</button>
               <button className="button button-secondary" onClick={() => setPanel('base')}>Üsler</button>
-              <button className="button button-secondary" onClick={() => setShowTech(true)}>Ar-Ge</button>
               {hud.vessels.map((o) => <button key={o.id} className="button button-secondary" onClick={() => switchTo(o.id)}>{o.name} · {o.body}</button>)}
             </div>
           </section>

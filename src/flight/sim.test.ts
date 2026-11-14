@@ -633,4 +633,14 @@ describe('ISS, break-up and easter eggs', () => {
     expect(got).toBe(true)
     expect(sim.gs.achievements).toContain('hamilton')
   })
+
+  it('istasyonu seçmek görev tamamlamaz', async () => {
+    const { ensureStation, isStationVessel } = await import('./world')
+    const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
+    ensureStation(sim.gs)
+    const iss = sim.gs.vessels.find(isStationVessel)!
+    sim.gs.activeId = iss.id
+    stepWorld(sim, 0.1, ctrl)
+    expect(sim.gs.missionsDone.length).toBe(0)
+  })
 })
