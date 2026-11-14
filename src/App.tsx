@@ -5,6 +5,7 @@ import BuilderScreen from './components/BuilderScreen'
 import IntroCutscene from './components/IntroCutscene'
 import PlanetGridPanel from './components/ColonyPanel'
 import { bump, clearOfflineGain, initAuth, logoutAccount, resetGame, saveGame, setIdleWarp, sim, useAuthState, useGame } from './game/store'
+import { audio } from './audio'
 import { messages } from './i18n/tr'
 
 const FlightScreen = lazy(() => import('./components/FlightScreen'))
@@ -25,6 +26,10 @@ function App() {
   useEffect(() => {
     void initAuth()
   }, [])
+
+  useEffect(() => {
+    if (screen === 'home') audio.music('menu')
+  }, [screen])
 
   // Yeni girişte tamamen yeni hesapsa intro sinematiğini aç
   useEffect(() => {
@@ -136,7 +141,7 @@ function App() {
               </button>
             )}
             <button className="button button-secondary" onClick={() => setShowGrid(true)}>
-              🪐 Koloni Gridi
+              🏗️ Koloni
             </button>
             <button
               className="button button-secondary"
@@ -202,11 +207,11 @@ function App() {
 
       {showGrid && (
         <div className="dialog-backdrop tech-backdrop" role="presentation" onClick={() => setShowGrid(false)}>
-          <section className="tech-modal panel-card grid-modal" role="dialog" aria-modal="true" aria-label="Koloni Gridi" onClick={(e) => e.stopPropagation()}>
+          <section className="tech-modal panel-card grid-modal" role="dialog" aria-modal="true" aria-label="Koloni" onClick={(e) => e.stopPropagation()}>
             <header className="tech-head">
               <div>
-                <p className="eyebrow"><span /> GEZEGEN YÜZEYİ & ÜS GRİDİ</p>
-                <h2>Koloni Gridi</h2>
+                <p className="eyebrow"><span /> YÜZEY KOLONİSİ</p>
+                <h2>Koloni</h2>
               </div>
               <div className="tech-head-right">
                 <span className="tech-budget">Bütçe: <b>{fmt(gs.money)} ₡</b></span>

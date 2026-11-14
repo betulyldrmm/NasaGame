@@ -15,6 +15,7 @@ export type PartKind =
   | 'rtg'
   | 'battery'
   | 'cargo'
+  | 'station'
 
 export type PartCategory = 'Komuta' | 'Yakıt' | 'Motorlar' | 'Kademe' | 'Güç' | 'İniş' | 'Kargo'
 
@@ -103,6 +104,10 @@ export interface Vessel {
   autopilotNote?: string
   /** hedefe yaklaşıldığında otomatik iniş yoksa verilen yakınlaşma uyarısı */
   approachWarn?: BodyId | null
+  /** çarpışma sonrası parça parça dağılma durumu */
+  breaking?: { left: number; timer: number; reason: string }
+  /** yörünge istasyonu (ISS): silinemez, kurtarılamaz */
+  station?: boolean
 }
 
 export type TileKind = 'fog' | 'clear' | 'crater' | 'vein' | 'built'
@@ -170,6 +175,13 @@ export interface GameState {
   shipSlots?: (ShipSlot | null)[]
   targetBody?: BodyId | null
   lastSavedAt?: number
+  /** kazanılan başarımlar (easter egg'ler dahil) */
+  achievements?: string[]
+  /** gizli "Simit & Çay" modu */
+  teaMode?: boolean
+  /** yakıt verimi bonusunun bittiği an (ms, Date.now) */
+  buffUntil?: number
+  issDeliveries?: number
 }
 
 /** Çok oyunculu hazırlığı: serileştirilebilir oyuncu komutları. */
@@ -190,9 +202,12 @@ export type GameCommand =
   | { type: 'buyModule'; bodyId: BodyId; moduleId: string }
   | { type: 'placeGridModule'; bodyId: BodyId; x: number; moduleId: string }
   | { type: 'removeGridModule'; bodyId: BodyId; x: number }
+  | { type: 'rendezvous'; vesselId: number }
 
 export type GameEvent =
   | { type: 'toast'; text: string }
   | { type: 'crash'; name: string; wasActive: boolean; reason: string }
   | { type: 'mission'; id: string; title: string; reward: number }
   | { type: 'soi'; from: BodyId; to: BodyId }
+  | { type: 'explosion'; size: number }
+  | { type: 'achievement'; id: string; title: string; text: string }

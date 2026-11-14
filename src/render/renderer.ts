@@ -1,6 +1,6 @@
 /** Uçuş görünümü ve uzay haritası çizimi (Canvas 2D, 2.5D gölgelendirme). */
 import { partDef } from '../game/data'
-import { MODULES } from '../game/base'
+import { MODULE_BY_ID } from '../game/base'
 import type { Vessel } from '../game/types'
 import { vesselStats } from '../game/vessel'
 import { bodyAbsState, len, stateAtAnomaly, type Vec, wrapPi } from '../flight/orbit'
@@ -227,93 +227,260 @@ function drawPad(ctx: Ctx) {
   ctx.fill()
 }
 
-function drawBaseModules(ctx: Ctx, modules: Record<string, number>, clock: number) {
-  let x = 26
-  for (const m of MODULES) {
-    const n = Math.min(4, modules[m.id] ?? 0)
-    for (let i = 0; i < n; i += 1) {
-      ctx.save()
-      ctx.translate(x, 0)
-      if (m.id === 'habitat' || m.id === 'lab') {
-        const g = ctx.createRadialGradient(-2, -5, 0.5, 0, -2, 7)
-        g.addColorStop(0, '#ffffff')
-        g.addColorStop(0.5, m.id === 'lab' ? '#9fd8ff' : '#d9dee6')
-        g.addColorStop(1, '#5b6470')
-        ctx.fillStyle = g
-        ctx.beginPath()
-        ctx.ellipse(0, 0, 6, 6, 0, Math.PI, 0)
-        ctx.fill()
-        ctx.fillStyle = '#38d9e8'
-        ctx.fillRect(-1.2, -3.4, 2.4, 1.6)
-        ctx.fillStyle = '#3a4048'
-        ctx.fillRect(-6.4, -0.4, 12.8, 1)
-      } else if (m.id === 'solar-farm') {
-        ctx.fillStyle = '#6d7785'
-        ctx.fillRect(-0.3, -3.5, 0.6, 3.5)
-        ctx.save()
-        ctx.translate(0, -3.6)
-        ctx.rotate(-0.35)
-        const g = ctx.createLinearGradient(-4.5, 0, 4.5, 0)
-        g.addColorStop(0, '#14336e')
-        g.addColorStop(1, '#3a7be0')
-        ctx.fillStyle = g
-        ctx.fillRect(-4.5, -0.5, 9, 1)
-        ctx.restore()
-      } else if (m.id === 'drill') {
-        ctx.strokeStyle = '#c3cad2'
-        ctx.lineWidth = 0.5
-        ctx.beginPath()
-        ctx.moveTo(-3, 0)
-        ctx.lineTo(0, -9)
-        ctx.lineTo(3, 0)
-        ctx.moveTo(-1.8, -3.6)
-        ctx.lineTo(1.8, -3.6)
-        ctx.stroke()
-        ctx.fillStyle = '#ffad57'
-        ctx.fillRect(-0.5, -6 + Math.sin(clock * 3 + i) * 1.5, 1, 6)
-      } else if (m.id === 'telemetry' || m.id === 'quantum-relay') {
-        ctx.fillStyle = '#5b6470'
-        ctx.fillRect(-1.2, -5.5, 2.4, 5.5)
-        ctx.strokeStyle = m.id === 'quantum-relay' ? '#38d9e8' : '#dfe4ea'
-        ctx.lineWidth = 0.8
-        ctx.beginPath()
-        ctx.arc(0, -7, 4.2, Math.PI * 0.15, Math.PI * 0.85)
-        ctx.stroke()
-        ctx.fillStyle = m.id === 'quantum-relay' ? '#4ade80' : '#ffad57'
-        ctx.beginPath()
-        ctx.arc(0, -8.5 + Math.sin(clock * 2) * 0.3, 0.9, 0, 6.283)
-        ctx.fill()
-      } else if (m.id === 'datacenter') {
-        ctx.fillStyle = '#1b2b47'
-        ctx.fillRect(-4, -8, 8, 8)
-        ctx.fillStyle = '#38d9e8'
-        for (let r = 0; r < 3; r += 1) ctx.fillRect(-2.5, -6.5 + r * 2.2, 5, 0.9)
-      } else if (m.id === 'biodome') {
-        ctx.fillStyle = 'rgba(74, 222, 128, 0.45)'
-        ctx.beginPath()
-        ctx.ellipse(0, 0, 6.5, 6.5, 0, Math.PI, 0)
-        ctx.fill()
-        ctx.strokeStyle = '#a6f4c5'
-        ctx.lineWidth = 0.6
-        ctx.stroke()
-      } else if (m.id === 'rtg-reactor') {
-        ctx.fillStyle = '#3a4048'
-        ctx.fillRect(-3.5, -7, 7, 7)
-        ctx.fillStyle = '#ffad57'
-        ctx.fillRect(-2, -5.5, 4, 4)
-      } else {
-        const g = ctx.createLinearGradient(-3, 0, 3, 0)
-        g.addColorStop(0, '#6a737d')
-        g.addColorStop(0.4, '#ffffff')
-        g.addColorStop(1, '#6a737d')
-        ctx.fillStyle = g
-        ctx.fillRect(-3, -7, 6, 7)
-        ctx.fillStyle = '#ff8a3d'
-        ctx.fillRect(-3, -4.2, 6, 0.8)
-      }
-      ctx.restore()
-      x += 15
+const spriteCache = new Map<string, HTMLImageElement>()
+function sprite(name: string): HTMLImageElement | null {
+  if (typeof Image === 'undefined') return null
+  let img = spriteCache.get(name)
+  if (!img) {
+    img = new Image()
+    img.src = `/assets/colony/${name}.png`
+    spriteCache.set(name, img)
+  }
+  return img.complete && img.naturalWidth > 0 ? img : null
+}
+
+/** Koloni yapıları: koloni ekranındaki aynı piksel-art görseller yüzeyde de durur. */
+function drawBaseSites(ctx: Ctx, sites: (string | null)[]) {
+  ctx.imageSmoothingEnabled = false
+  sites.forEach((id, i) => {
+    const def = id ? MODULE_BY_ID[id] : null
+    const img = def ? sprite(def.sprite) : null
+    if (!img) return
+    const w = 11
+    const h = (w * img.naturalHeight) / img.naturalWidth
+    ctx.drawImage(img, 28 + i * 13 - w / 2, -h + 0.3, w, h)
+  })
+  ctx.imageSmoothingEnabled = true
+}
+
+/** Rampanın yanındaki su kulesi (egzoza 5 sn maruz kalırsa fırlar). */
+function drawWaterTower(ctx: Ctx, flame: number) {
+  ctx.strokeStyle = '#6d7785'
+  ctx.lineWidth = 0.5
+  ctx.beginPath()
+  ctx.moveTo(-2.6, 0)
+  ctx.lineTo(-1.6, -11)
+  ctx.moveTo(2.6, 0)
+  ctx.lineTo(1.6, -11)
+  ctx.moveTo(-2.2, -4)
+  ctx.lineTo(2.2, -8)
+  ctx.moveTo(2.2, -4)
+  ctx.lineTo(-2.2, -8)
+  ctx.stroke()
+  const g = ctx.createLinearGradient(-3.5, 0, 3.5, 0)
+  g.addColorStop(0, '#7d8791')
+  g.addColorStop(0.4, '#ffffff')
+  g.addColorStop(1, '#6a737d')
+  ctx.fillStyle = g
+  ctx.beginPath()
+  ctx.ellipse(0, -14, 3.6, 3.4, 0, 0, 6.283)
+  ctx.fill()
+  ctx.fillStyle = '#3f8fd8'
+  ctx.fillRect(-3.4, -14.6, 6.8, 1.2)
+  if (flame > 0) {
+    const fg = ctx.createLinearGradient(0, 0, 0, 9 * flame)
+    fg.addColorStop(0, 'rgba(255,255,255,.95)')
+    fg.addColorStop(0.3, 'rgba(160,220,255,.8)')
+    fg.addColorStop(1, 'rgba(120,180,255,0)')
+    ctx.fillStyle = fg
+    ctx.beginPath()
+    ctx.moveTo(-2.4, 0)
+    ctx.lineTo(0, 9 * flame)
+    ctx.lineTo(2.4, 0)
+    ctx.closePath()
+    ctx.fill()
+  }
+}
+
+/** "İstikbal göklerdedir" anıtı. */
+function drawMonument(ctx: Ctx) {
+  const g = ctx.createLinearGradient(-1.4, 0, 1.4, 0)
+  g.addColorStop(0, '#8b949f')
+  g.addColorStop(0.45, '#f1f4f8')
+  g.addColorStop(1, '#6a737d')
+  ctx.fillStyle = g
+  ctx.beginPath()
+  ctx.moveTo(-1.5, 0)
+  ctx.lineTo(-0.9, -12)
+  ctx.lineTo(0, -14)
+  ctx.lineTo(0.9, -12)
+  ctx.lineTo(1.5, 0)
+  ctx.closePath()
+  ctx.fill()
+  ctx.fillStyle = '#4b525b'
+  ctx.fillRect(-3, -0.9, 6, 0.9)
+  ctx.fillStyle = '#e03131'
+  ctx.fillRect(2.2, -9.5, 7.2, 4.2)
+  ctx.fillStyle = '#ffffff'
+  ctx.beginPath()
+  ctx.arc(4.6, -7.4, 1.1, 0, 6.283)
+  ctx.fill()
+  ctx.fillStyle = '#e03131'
+  ctx.beginPath()
+  ctx.arc(4.95, -7.4, 0.88, 0, 6.283)
+  ctx.fill()
+  ctx.fillStyle = '#8b949f'
+  ctx.fillRect(2, -10, 0.3, 10)
+  ctx.fillStyle = '#ffffff'
+  ctx.font = 'bold 1.25px "DM Mono", monospace'
+  ctx.textAlign = 'center'
+  ctx.fillText('İSTİKBAL GÖKLERDEDİR', 0, 2.4)
+}
+
+/** Gökyüzü easter egg'leri: düşen balina + petunya saksısı, sürüklenen kırmızı spor araba. */
+function drawSkyEggs(ctx: Ctx, sim: Sim, view: View, v: Vessel | null) {
+  const clock = sim.clock ?? 0
+  for (const f of sim.fx ?? []) {
+    if (f.kind !== 'whale') continue
+    const age = clock - f.born
+    if (age > 11) continue
+    const y = -90 + (view.h + 200) * Math.min(1, (age / 10) ** 1.6)
+    ctx.save()
+    ctx.translate(view.w * 0.74, y)
+    ctx.rotate(0.5 + Math.sin(age * 1.3) * 0.12)
+    ctx.fillStyle = '#5b7fa6'
+    ctx.beginPath()
+    ctx.ellipse(0, 0, 54, 22, 0, 0, 6.283)
+    ctx.fill()
+    ctx.beginPath()
+    ctx.moveTo(-48, 0)
+    ctx.lineTo(-78, -20)
+    ctx.lineTo(-70, 0)
+    ctx.lineTo(-78, 20)
+    ctx.closePath()
+    ctx.fill()
+    ctx.fillStyle = '#dfe8f2'
+    ctx.beginPath()
+    ctx.ellipse(8, 9, 40, 10, 0, 0, Math.PI)
+    ctx.fill()
+    ctx.fillStyle = '#0b1424'
+    ctx.beginPath()
+    ctx.arc(34, -5, 3, 0, 6.283)
+    ctx.fill()
+    ctx.restore()
+    // petunya saksısı
+    ctx.save()
+    ctx.translate(view.w * 0.74 + 110, y - 60)
+    ctx.rotate(age * 2)
+    ctx.fillStyle = '#b5633c'
+    ctx.beginPath()
+    ctx.moveTo(-9, -4)
+    ctx.lineTo(9, -4)
+    ctx.lineTo(6, 10)
+    ctx.lineTo(-6, 10)
+    ctx.closePath()
+    ctx.fill()
+    ctx.fillStyle = '#3f8a4f'
+    ctx.fillRect(-1, -14, 2, 10)
+    ctx.fillStyle = '#e879c6'
+    for (let i = 0; i < 5; i += 1) {
+      ctx.beginPath()
+      ctx.arc(Math.cos(i * 1.257) * 5, -16 + Math.sin(i * 1.257) * 5, 3.4, 0, 6.283)
+      ctx.fill()
     }
+    ctx.fillStyle = '#fde68a'
+    ctx.beginPath()
+    ctx.arc(0, -16, 2.2, 0, 6.283)
+    ctx.fill()
+    ctx.restore()
+  }
+  // Starman: yüksek irtifada arada bir geçen kırmızı araba
+  if (v && !v.landed && len(v.pos) - BODIES[v.bodyId].radius > 120_000) {
+    const cycle = view.clock % 50
+    if (cycle < 16) {
+      const x = -80 + (view.w + 160) * (cycle / 16)
+      ctx.save()
+      ctx.translate(x, view.h * 0.2 + Math.sin(cycle * 0.7) * 10)
+      ctx.rotate(-0.12 + Math.sin(cycle * 0.4) * 0.08)
+      ctx.fillStyle = '#d7263d'
+      ctx.beginPath()
+      ctx.moveTo(-26, 4)
+      ctx.lineTo(-24, -4)
+      ctx.lineTo(-8, -6)
+      ctx.lineTo(-2, -12)
+      ctx.lineTo(10, -12)
+      ctx.lineTo(16, -5)
+      ctx.lineTo(27, -2)
+      ctx.lineTo(27, 5)
+      ctx.closePath()
+      ctx.fill()
+      ctx.fillStyle = '#12233f'
+      ctx.beginPath()
+      ctx.moveTo(-1, -10.5)
+      ctx.lineTo(8.5, -10.5)
+      ctx.lineTo(13, -5.5)
+      ctx.lineTo(-4, -5.5)
+      ctx.closePath()
+      ctx.fill()
+      ctx.fillStyle = '#f4f6f8'
+      ctx.beginPath()
+      ctx.arc(3, -11.5, 3.6, 0, 6.283)
+      ctx.fill()
+      ctx.fillStyle = '#1b1e23'
+      ctx.fillRect(3.4, -12.6, 2.6, 2)
+      ctx.beginPath()
+      ctx.arc(-15, 6, 5, 0, 6.283)
+      ctx.arc(16, 6, 5, 0, 6.283)
+      ctx.fill()
+      ctx.fillStyle = '#9aa3ad'
+      ctx.beginPath()
+      ctx.arc(-15, 6, 2, 0, 6.283)
+      ctx.arc(16, 6, 2, 0, 6.283)
+      ctx.fill()
+      ctx.restore()
+    }
+  }
+}
+
+/** Patlamalar: ateş topu, şok dalgası, kıvılcımlar ve duman. */
+function drawBooms(ctx: Ctx, sim: Sim, cam: Cam, bodyId: BodyId) {
+  const clock = sim.clock ?? 0
+  for (const f of sim.fx ?? []) {
+    if (f.kind !== 'boom' || f.bodyId !== bodyId) continue
+    const age = clock - f.born
+    const life = 1.25
+    if (age < 0 || age > life) continue
+    const t = age / life
+    const p = toScreen(cam, f)
+    const R = Math.max(10, f.size * cam.z) * (0.4 + 1.3 * (1 - (1 - t) ** 3))
+    ctx.save()
+    ctx.translate(p.x, p.y)
+    ctx.globalAlpha = Math.max(0, 0.55 * (1 - t))
+    ctx.fillStyle = '#3a3a40'
+    for (let i = 0; i < 5; i += 1) {
+      const a = hash(f.born * 7 + i) * 6.283
+      ctx.beginPath()
+      ctx.arc(Math.cos(a) * R * 0.5 * t, Math.sin(a) * R * 0.5 * t - R * 0.5 * t, R * (0.35 + 0.25 * hash(i + f.born)), 0, 6.283)
+      ctx.fill()
+    }
+    ctx.globalCompositeOperation = 'lighter'
+    ctx.globalAlpha = Math.max(0, 1 - t * 1.25)
+    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, R)
+    g.addColorStop(0, 'rgba(255,255,255,1)')
+    g.addColorStop(0.25, 'rgba(255,236,150,.95)')
+    g.addColorStop(0.6, 'rgba(255,130,40,.75)')
+    g.addColorStop(1, 'rgba(200,40,20,0)')
+    ctx.fillStyle = g
+    ctx.beginPath()
+    ctx.arc(0, 0, R, 0, 6.283)
+    ctx.fill()
+    ctx.strokeStyle = 'rgba(255,220,170,.8)'
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    ctx.arc(0, 0, R * (0.6 + t), 0, 6.283)
+    ctx.stroke()
+    ctx.strokeStyle = 'rgba(255,210,120,.95)'
+    ctx.lineWidth = 1.6
+    for (let i = 0; i < 9; i += 1) {
+      const a = hash(f.born * 3 + i * 1.7) * 6.283
+      const d0 = R * (0.3 + t * 1.5)
+      const d1 = d0 + R * 0.35 * (1 - t)
+      ctx.beginPath()
+      ctx.moveTo(Math.cos(a) * d0, Math.sin(a) * d0)
+      ctx.lineTo(Math.cos(a) * d1, Math.sin(a) * d1)
+      ctx.stroke()
+    }
+    ctx.restore()
   }
 }
 
@@ -430,9 +597,26 @@ function drawTerrain(ctx: Ctx, cam: Cam, body: BodyDef, focusTheta: number, sim:
       })
     }
   }
-  if (body.id === 'earth' && cam.z > 0.12) withSurfaceFrame(ctx, cam, body, PAD_ANGLE, () => drawPad(ctx))
+  if (body.id === 'earth' && cam.z > 0.12) {
+    withSurfaceFrame(ctx, cam, body, PAD_ANGLE, () => {
+      drawPad(ctx)
+      ctx.save()
+      ctx.translate(-52, 0)
+      drawMonument(ctx)
+      ctx.restore()
+      const launch = (sim.fx ?? []).find((f) => f.kind === 'tower')
+      const age = launch ? (sim.clock ?? 0) - launch.born : -1
+      if (!sim.towerGone || (age >= 0 && age < 9)) {
+        ctx.save()
+        ctx.translate(36, age >= 0 ? -4 * age * age : 0)
+        drawWaterTower(ctx, age >= 0 ? 1 + 0.2 * Math.sin(age * 40) : 0)
+        ctx.restore()
+      }
+    })
+  }
   const base = sim.gs.bases[body.id]
-  if (base && cam.z > 0.2) withSurfaceFrame(ctx, cam, body, base.siteAngle, () => drawBaseModules(ctx, base.modules, clock))
+  if (base && cam.z > 0.2) withSurfaceFrame(ctx, cam, body, base.siteAngle, () => drawBaseSites(ctx, base.sites ?? []))
+  void clock
 }
 
 function vesselCell(st: ReturnType<typeof vesselStats>, z: number, minPx: number) {
@@ -490,6 +674,8 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
     ctx.fillRect(0, 0, view.w, view.h)
     ctx.globalAlpha = 1
   }
+
+  drawSkyEggs(ctx, sim, view, v)
 
   // gök cisimleri
   const hereAbs = bodyAbsState(bodyId, gs.time).r
@@ -590,6 +776,7 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
       ctx.fillText(o.name, p.x, p.y - (st.comY - st.minY) * cell - 8)
     }
   }
+  drawBooms(ctx, sim, cam, bodyId)
   return frame
 }
 

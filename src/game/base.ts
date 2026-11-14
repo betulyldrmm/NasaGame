@@ -42,7 +42,11 @@ export const MODULES: ModuleDef[] = [
   { id: 'isru', name: 'Yakıt Tesisi', icon: '⛽', sprite: 'isru', mass: 2, cost: 5000, power: -2, income: 0, ore: 0, tier: 3, desc: 'Madenden roket yakıtı üretir (1 t maden → 4 t yakıt).' },
 ]
 
-export const MODULE_BY_ID: Record<string, ModuleDef> = Object.fromEntries(MODULES.map((m) => [m.id, m]))
+/** Yalnızca kargo olarak taşınan, koloniye kurulmayan yük: ISS ikmal paketi. */
+export const ISS_SUPPLY: ModuleDef = { id: 'iss-supplies', name: 'ISS İkmal Kargosu', icon: '📦', sprite: 'battery', mass: 1, cost: 800, power: 0, income: 0, ore: 0, tier: 1, desc: 'ISS\'e kenetlenip teslim et: paket başına 4.500 ₡ kazandırır.' }
+export const ISS_SUPPLY_REWARD = 4500
+
+export const MODULE_BY_ID: Record<string, ModuleDef> = Object.fromEntries([...MODULES, ISS_SUPPLY].map((m) => [m.id, m]))
 
 /** Eski kayıtlardaki kaldırılmış yapı kimlikleri. */
 const LEGACY_IDS: Record<string, string> = { datacenter: 'lab', 'quantum-relay': 'lab' }

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { MODULES } from '../game/base'
+import { audio } from '../audio'
+import { MODULES, ISS_SUPPLY } from '../game/base'
 import { GRID_H, GRID_W, partDef, PARTS, SHIP_PRESETS, SHIP_SLOT_COUNT } from '../game/data'
 import { bump, saveGame, setIdleWarp, sim, useAuthState, useGame } from '../game/store'
 import { isModuleUnlocked, isPartUnlocked, requiredTechForModule, requiredTechForPart } from '../game/tech'
@@ -29,6 +30,9 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
   const setShowTech = (_open: boolean) => undefined
   const [showGrid, setShowGrid] = useState(false)
   const wrapRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    audio.music('build')
+  }, [])
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [cell, setCell] = useState(24)
 
@@ -249,7 +253,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
           ))}
         </div>
         <button className="hud-btn" onClick={() => setShowGrid(true)}>
-          🪐 Grid
+          🏗️ Koloni
         </button>
         <div className="builder-money">
           Bütçe <b>{fmt(gs.money)} ₡</b> <small className="income-sub">+{fmt(passivePerHr)} ₡/sa</small>
@@ -332,7 +336,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
             />
           </div>
           <p className="grid-hint">
-            {sel ? <><b>{sel.name}</b> — {sel.desc} Yerleştirmek için kareye tıkla, bırakmak için sağ tık.</> : 'Paletten parça seç ve kare grid\'e yerleştir. Kilitli parçalar için Teknoloji Ağacını aç.'}
+            {sel ? <><b>{sel.name}</b> — {sel.desc} Yerleştirmek için kareye tıkla, bırakmak için sağ tık.</> : 'Paletten parça seç ve kare grid\'e yerleştir.'}
           </p>
         </section>
 
@@ -362,7 +366,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
             <>
               <h3>Kargo <small>{cargoT.toFixed(1)} / {stats.cargoCap} t</small></h3>
               <ul className="cargo-list">
-                {MODULES.map((m) => {
+                {[ISS_SUPPLY, ...MODULES].map((m) => {
                   const unlocked = isModuleUnlocked(gs, m.id)
                   const req = unlocked ? null : requiredTechForModule(m.id)
                   return (
@@ -392,11 +396,11 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
 
       {showGrid && (
         <div className="dialog-backdrop tech-backdrop" role="presentation" onClick={() => setShowGrid(false)}>
-          <section className="tech-modal panel-card grid-modal" role="dialog" aria-modal="true" aria-label="Koloni Gridi" onClick={(e) => e.stopPropagation()}>
+          <section className="tech-modal panel-card grid-modal" role="dialog" aria-modal="true" aria-label="Koloni" onClick={(e) => e.stopPropagation()}>
             <header className="tech-head">
               <div>
-                <p className="eyebrow"><span /> GEZEGEN YÜZEYİ & ÜS GRİDİ</p>
-                <h2>Koloni Gridi</h2>
+                <p className="eyebrow"><span /> YÜZEY KOLONİSİ</p>
+                <h2>Koloni</h2>
               </div>
               <div className="tech-head-right">
                 <span className="tech-budget">Bütçe: <b>{fmt(gs.money)} ₡</b></span>

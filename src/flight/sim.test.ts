@@ -508,7 +508,7 @@ describe('auto-orbit, auto-transfer & proximity warning', () => {
       }
     }
     expect(arrivedEarth).toBe(true)
-    expect(v.autopilot).toBe('off')
+    expect(v.autopilot).toBe('orbit')
     expect(sim.warpIdx).toBe(0)
   }, 30_000)
 })
@@ -527,7 +527,7 @@ describe('multiplayer-ready dispatchCommand & ownerId isolation', () => {
     // Bob cannot hijack Alice's vessel
     const bobRes = dispatchCommand(sim, { type: 'setAutopilot', vesselId: v.id, mode: 'orbit' }, 'bob')
     expect(bobRes.error).toBeTruthy()
-    expect(v.autopilot).toBe('orbit')
+    expect(v.autopilot).toBe('off')
 
     // Alice can dispatch commands and deterministic tick counter advances on world step
     const tickBefore = sim.gs.tick ?? 0

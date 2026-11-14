@@ -22,7 +22,10 @@ export interface Controls {
 export interface StepResult {
   firing: Map<number, number>
   crash?: string
+  /** çarpma anındaki hız (m/s) */
+  crashSpeed?: number
   touchdown?: boolean
+  touchdownSpeed?: number
 }
 
 const smooth = (a: number, b: number, x: number) => {
@@ -425,8 +428,8 @@ export function stepPhysics(
     if (vr <= 0) {
       const speed = len(v.vel)
       const tilt = Math.abs(wrapPi(v.angle - theta2))
-      if (speed > landingTolerance(st)) return { firing: out.firing, crash: `${speed.toFixed(0)} m/s hızla yüzeye çarptı` }
-      if (tilt > 0.75) return { firing: out.firing, crash: 'yan yattı ve parçalandı' }
+      if (speed > landingTolerance(st)) return { firing: out.firing, crash: `${speed.toFixed(0)} m/s hızla yüzeye çarptı`, crashSpeed: speed }
+      if (tilt > 0.75) return { firing: out.firing, crash: 'yan yattı ve parçalandı', crashSpeed: landingTolerance(st) * 2 }
       v.landed = true
       v.autoLand = false
       v.autopilot = 'off'
@@ -436,7 +439,7 @@ export function stepPhysics(
       v.vel = { x: 0, y: 0 }
       v.angVel = 0
       v.angle = theta2
-      return { firing: out.firing, touchdown: true }
+      return { firing: out.firing, touchdown: true, touchdownSpeed: speed }
     }
   }
   return { firing: out.firing }
