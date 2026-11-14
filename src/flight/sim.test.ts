@@ -363,11 +363,17 @@ describe('colony power & inverse-square law', () => {
     const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
     const gs = sim.gs
     expect(colonyTier(gs.bases.earth)).toBe(1)
-    expect(placePlanetModule(sim, 'earth', 3, 'lab')).not.toBeNull()
+    // Dünya'da yalnızca yer tesisleri kurulur
+    expect(placePlanetModule(sim, 'earth', 3, 'habitat')).not.toBeNull()
+    expect(placePlanetModule(sim, 'earth', 3, 'biodome')).not.toBeNull()
     expect(placePlanetModule(sim, 'earth', 3, 'battery')).toBeNull()
-    expect(colonyTier(gs.bases.earth)).toBe(2)
     expect(placePlanetModule(sim, 'earth', 4, 'lab')).toBeNull()
     expect(placePlanetModule(sim, 'earth', 4, 'lab')).not.toBeNull()
+    // uzay kolonisinde kademe kuralı sürer
+    const m2 = emptyBase(0)
+    gs.bases.mars = m2
+    expect(placePlanetModule(sim, 'mars', 0, 'lab')).not.toBeNull()
+    expect(colonyTier(m2)).toBe(1)
     expect(placePlanetModule(sim, 'moon', 0, 'solar-farm')).not.toBeNull()
     const moon = emptyBase(0)
     moon.stock = { 'solar-farm': 1 }
@@ -597,15 +603,17 @@ describe('ISS, break-up and easter eggs', () => {
         booms += ev.filter((e) => e.type === 'explosion').length
         if (ev.some((e) => e.type === 'crash' && e.wasActive)) crashed = true
         const cur = sim.gs.vessels.find((o) => o.id === v.id)
-        if (cur && cur.breaking && cur.parts.length < n0 && cur.parts.length > 0) sawPartial = true
+        void cur
+        if (sim.gs.vessels.filter((o) => o.debris).length > 3) sawPartial = true
       }
+      expect(sim.gs.vessels.some((o) => o.debris)).toBe(false) // tüm enkaz sonunda patlar
       return { booms, crashed, sawPartial, left: sim.gs.vessels.find((o) => o.id === v.id)?.parts.length ?? 0, n0 }
     }
     const hard = run(60)
     expect(hard.crashed).toBe(true)
     expect(hard.sawPartial).toBe(true)
     expect(hard.booms).toBeGreaterThan(10)
-    const mild = run(10, 0.5)
+    const mild = run(22, 0.5)
     expect(mild.crashed).toBe(false)
     expect(mild.booms).toBeGreaterThan(0)
     expect(mild.left).toBeGreaterThan(0)

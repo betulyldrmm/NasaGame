@@ -595,6 +595,16 @@ function drawFlame(ctx: Ctx, d: PartDef, w: number, c: number, power: number, va
   ctx.restore()
 }
 
+let issImage: HTMLImageElement | null = null
+function issSprite(): HTMLImageElement | null {
+  if (typeof Image === 'undefined') return null
+  if (!issImage) {
+    issImage = new Image()
+    issImage.src = '/assets/iss.png'
+  }
+  return issImage.complete && issImage.naturalWidth > 0 ? issImage : null
+}
+
 export interface VesselDrawOpts {
   firing?: Map<number, number>
   time?: number
@@ -614,6 +624,20 @@ export function drawVesselParts(ctx: Ctx, parts: PartInst[], c: number, opts: Ve
     const z = (k: string) => (k === 'solar' || k === 'leg' ? 0 : k === 'chute' ? 2 : 1)
     return z(ka) - z(kb)
   })
+  // ISS: parçalar yerine tek piksel-art görsel çizilir (kenetlenme kapısı gövdenin altına hizalanır).
+  const issParts = parts.filter((p) => p.def.startsWith('iss-'))
+  const issImg = issParts.length ? issSprite() : null
+  if (issImg) {
+    const x0 = Math.min(...issParts.map((p) => p.x))
+    const x1 = Math.max(...issParts.map((p) => p.x + partDef(p.def).w))
+    const y1 = Math.max(...issParts.map((p) => p.y + partDef(p.def).h))
+    const w = 30 * c
+    const h = (w * issImg.naturalHeight) / issImg.naturalWidth
+    ctx.save()
+    ctx.imageSmoothingEnabled = false
+    ctx.drawImage(issImg, ((x0 + x1) / 2 - st.comX) * c - w / 2, (y1 - st.comY) * c - h * 0.74, w, h)
+    ctx.restore()
+  }
   if (opts.firing) {
     for (const [i, power] of opts.firing) {
       const p = parts[i]
@@ -626,6 +650,7 @@ export function drawVesselParts(ctx: Ctx, parts: PartInst[], c: number, opts: Ve
     }
   }
   for (const i of order) {
+    if (issImg && parts[i]!.def.startsWith('iss-')) continue
     const p = parts[i]!
     const d = partDef(p.def)
     ctx.save()

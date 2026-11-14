@@ -202,7 +202,7 @@ function snapshot(): Hud {
     date: gameDate(gs.time).toLocaleDateString(lang === 'en' ? 'en-GB' : 'tr-TR', { day: 'numeric', month: 'short', year: 'numeric' }),
     dv: 0,
     tol: 7,
-    vessels: gs.vessels.map((o) => ({ id: o.id, name: o.name, body: BODIES[o.bodyId].name + (o.landed ? ' (yüzeyde)' : ''), active: o.id === gs.activeId })),
+    vessels: gs.vessels.filter((o) => !o.debris).map((o) => ({ id: o.id, name: o.name, body: BODIES[o.bodyId].name + (o.landed ? ' (yüzeyde)' : ''), active: o.id === gs.activeId })),
     plan: [],
     targetBody,
     cargo: '',
@@ -355,7 +355,7 @@ export default function FlightScreen({ onBuilder }: Props) {
           window.setTimeout(() => {
             audio.sfx('lose', 0.5)
             setLost(`${e.name}: ${e.reason}.`)
-          }, 1500)
+          }, 3800)
         } else toast(`${e.name}: ${e.reason}.`, 'warn')
       }
     }
@@ -823,20 +823,15 @@ export default function FlightScreen({ onBuilder }: Props) {
               </div>
             )}
             <div className="row">
-              {(['off', 'prograde', 'retrograde'] as SasMode[]).map((m) => (
+              {(['off'] as SasMode[]).map((m) => (
                 <button
                   key={m}
                   className={`hud-btn${hud.sas === m ? ' is-on' : ''}`}
                   onClick={() => act((v) => { v.autopilot = 'off'; v.autoLand = false; v.autopilotNote = undefined; v.sas = m })}
                 >
-                  {m === 'off' ? 'Serbest' : m === 'prograde' ? 'İleri ▲' : 'Geri ▼'}
+                  {m === 'off' ? 'Serbest' : ''}
                 </button>
               ))}
-              {hud.hasLegs && (
-                <button className={`hud-btn${hud.legsOpen ? ' is-on' : ''}`} onClick={() => act((v) => { toggleKind(v, 'leg') })}>
-                  🦵 Ayaklar
-                </button>
-              )}
               {hud.hasChutes && (
                 <button className={`hud-btn${hud.chutesOpen ? ' is-on' : ''}`} onClick={() => act((v) => { toggleKind(v, 'chute') })}>
                   🪂 Paraşüt

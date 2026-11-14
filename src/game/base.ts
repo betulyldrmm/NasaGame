@@ -51,7 +51,10 @@ export const MODULE_BY_ID: Record<string, ModuleDef> = Object.fromEntries([...MO
 /** Eski kayıtlardaki kaldırılmış yapı kimlikleri. */
 const LEGACY_IDS: Record<string, string> = { datacenter: 'lab', 'quantum-relay': 'lab' }
 
-export const STARTER_EARTH_SITES: (string | null)[] = ['solar-farm', 'telemetry', 'habitat', null, null, null, null, null]
+/** Dünya'da yalnızca yer tesisleri kurulur; yaşam küresi, tarla, maden aracı vb. uzay kolonileri içindir. */
+export const EARTH_MODULES = ['solar-farm', 'battery', 'telemetry', 'lab']
+
+export const STARTER_EARTH_SITES: (string | null)[] = ['solar-farm', 'telemetry', 'telemetry', null, null, null, null, null]
 
 export function syncModules(base: Base) {
   const counts: Record<string, number> = {}
