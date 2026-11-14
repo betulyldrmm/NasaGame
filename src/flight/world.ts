@@ -2,25 +2,10 @@
  * Açık dünya simülasyonu: tüm araçlar, zaman hızlandırma, etki alanı (SOI) geçişleri,
  * otopilotlar (yörünge & hedef transferi), gezegen gridi ve komut dağıtıcısı. React'ten bağımsızdır.
  */
-import {
-  addModuleToBaseGrid,
-  baseReport,
-  emptyBase,
-  ensureBaseGrid,
-  MAX_TILE_LEVEL,
-  MODULE_BY_ID,
-  scanNextSector,
-  STARTER_EARTH_MODULES,
-  sweepGridTile,
-  syncBaseModulesFromGrid,
-  tickBase,
-  tileAt,
-  tileRefund,
-  tileUpgradeCost,
-} from '../game/base'
+import { baseReport, colonyTier, emptyBase, ensureSites, MODULE_BY_ID, STARTER_EARTH_SITES, syncModules, tickBase, TIER_HINT } from '../game/base'
 import { DEFAULT_DESIGN, INITIAL_MONEY, partDef } from '../game/data'
 import { MISSION_BY_ID, MISSIONS } from '../game/missions'
-import { baseIncomeMultiplier, hasAutoLandTech, INITIAL_TECH, isModuleUnlocked, isPartUnlocked, orePriceMultiplier, requiredTechForModule, requiredTechForPart, unlockTech } from '../game/tech'
+import { baseIncomeMultiplier, hasAutoLandTech, INITIAL_TECH, isModuleUnlocked, isPartUnlocked, orePriceMultiplier, requiredTechForModule, requiredTechForPart } from '../game/tech'
 import type { AutopilotMode, GameCommand, GameEvent, GameState, PartInst, Vessel } from '../game/types'
 import { activeEngines, cargoMass, freshParts, isConnected, nextStage, splitParts, vesselStats } from '../game/vessel'
 import { BODIES, childrenOf, solarFlux, type BodyId } from '../nasa/bodies'
@@ -52,16 +37,9 @@ export interface Sim {
 }
 
 export function newGame(ownerId = 'local'): GameState {
-  const earth = {
-    modules: { ...STARTER_EARTH_MODULES },
-    ore: 0,
-    siteAngle: PAD_ANGLE,
-    earned: 0,
-    sectorLevel: 0,
-    ownerId,
-  }
-  ensureBaseGrid(earth, 'earth')
-  syncBaseModulesFromGrid(earth)
+  const earth = emptyBase(PAD_ANGLE, ownerId)
+  earth.sites = [...STARTER_EARTH_SITES]
+  syncModules(earth)
   return {
     time: 0,
     tick: 0,
@@ -418,20 +396,15 @@ function updateTransferAutopilot(sim: Sim, v: Vessel, events: GameEvent[]): numb
 
 function triggerProximityArrival(sim: Sim, v: Vessel, bodyId: BodyId, events: GameEvent[]) {
   const b = BODIES[bodyId]
+  // Varışta otopilot kapanmaz: hedefin çevresinde güvenli yörüngeye kendisi girer.
   v.throttle = 0
-  v.autopilot = 'off'
+  v.autopilot = 'orbit'
   v.autoLand = false
-  v.autopilotNote = undefined
+  v.autopilotNote = `${b.name} yörüngesine giriliyor…`
   v.sas = 'retrograde'
   v.approachWarn = bodyId
   if (v.id === sim.gs.activeId) sim.warpIdx = 0
-  const hasAuto = hasAutoLandTech(sim.gs)
-  events.push({
-    type: 'toast',
-    text: hasAuto
-      ? `✓ ${b.name} hedefine ulaşıldı! '🛰️ Yörüngeye Yerleş' veya '🛬 Oto-İniş (L)' kullanabilirsin.`
-      : `⚠ ${b.name} YAKINLAŞMA UYARISI: Otomatik iniş henüz açık değil! '🛰️ Yörünge'ye bas ya da elle (T: Geri + W: Gaz) frenle!`,
-  })
+  events.push({ type: 'toast', text: `✓ ${b.name} hedefine ulaşıldı. Otopilot yörüngeye giriyor; inmek için Oto-İniş'e bas.` })
 }
 
 /** Yamalı konikler: araç hangi cismin etki alanındaysa yalnızca onun çekimini hisseder. */
@@ -512,6 +485,13 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls): GameEvent[]
     if ((ap === 'orbit' || ap === 'transfer') && v.landed) {
       v.throttle = 1
     }
+    // Yörünge otopilotu süzülürken zamanı kendisi hızlandırır, yanışta yavaşlatır.
+    if (ap === 'orbit' && v === active && !v.landed) {
+      const b = BODIES[v.bodyId]
+      const coasting = v.throttle === 0 && Math.hypot(v.pos.x, v.pos.y) - b.radius > b.atmoHeight + 500
+      if (coasting) sim.warpIdx = Math.max(sim.warpIdx, PHYSICS_WARP_MAX_IDX)
+      else if (sim.warpIdx > 2) sim.warpIdx = 2
+    }
   }
 
   if (active && sim.warpIdx > PHYSICS_WARP_MAX_IDX && needsPhysics(active, ctrl)) {
@@ -544,7 +524,7 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls): GameEvent[]
         }
         if (res.touchdown) {
           if (v.bodyId !== 'earth' && BODIES[v.bodyId].landable && !gs.bases[v.bodyId]) {
-            gs.bases[v.bodyId] = emptyBase(Math.atan2(v.pos.y, v.pos.x), v.bodyId, v.ownerId)
+            gs.bases[v.bodyId] = emptyBase(Math.atan2(v.pos.y, v.pos.x), v.ownerId)
           }
           if (isActive) events.push({ type: 'toast', text: `${BODIES[v.bodyId].name} yüzeyine iniş başarılı.` })
           break
@@ -757,26 +737,32 @@ export function recoverVessel(sim: Sim, v: Vessel): GameEvent[] {
   return events
 }
 
-/** İnen aracın kargosundaki modülleri yüzey üssüne kurar. */
+/** İnen aracın kargosundaki yapıları koloni deposuna indirir; oradan yuvalara kurulur. */
 export function deployModules(sim: Sim, v: Vessel): string | null {
   if (!v.landed || v.bodyId === 'earth' || !BODIES[v.bodyId].landable) {
-    return 'Modül kurmak için Dünya dışı bir gezegen veya uydu yüzeyine inmelisin.'
+    return 'Yapıları indirmek için Dünya dışı bir gezegen veya uydu yüzeyine inmelisin.'
   }
   const total = Object.values(v.cargo.modules).reduce((s, n) => s + n, 0)
-  if (!total) return 'Kargoda kurulacak modül yok.'
-  const base = (sim.gs.bases[v.bodyId] ??= emptyBase(Math.atan2(v.pos.y, v.pos.x), v.bodyId, v.ownerId))
-  ensureBaseGrid(base, v.bodyId)
+  if (!total) return 'Kargoda indirilecek yapı yok.'
+  const base = (sim.gs.bases[v.bodyId] ??= emptyBase(Math.atan2(v.pos.y, v.pos.x), v.ownerId))
+  ensureSites(base)
+  const stock = (base.stock ??= {})
   for (const [id, n] of Object.entries(v.cargo.modules)) {
+    if (!MODULE_BY_ID[id]) continue
+    // Boş yuva varsa ve kademe uygunsa doğrudan kur, kalanı depoya koy.
     for (let i = 0; i < n; i += 1) {
-      if (!addModuleToBaseGrid(base, v.bodyId, id, v.ownerId)) {
-        base.modules[id] = (base.modules[id] ?? 0) + 1
-      }
+      const free = base.sites!.indexOf(null)
+      if (free >= 0 && MODULE_BY_ID[id]!.tier <= colonyTier(base)) {
+        base.sites![free] = id
+        syncModules(base)
+      } else stock[id] = (stock[id] ?? 0) + 1
     }
   }
   v.cargo.modules = {}
   return null
 }
 
+/** Dünya'da aynı yapıdan çoğaldıkça fiyat artar. */
 export function earthModuleCost(gs: GameState, moduleId: string): number {
   const m = MODULE_BY_ID[moduleId]
   if (!m) return 0
@@ -784,8 +770,13 @@ export function earthModuleCost(gs: GameState, moduleId: string): number {
   return Math.round(m.cost * (1 + 0.55 * owned))
 }
 
+export function modulePrice(gs: GameState, bodyId: BodyId, moduleId: string): number {
+  if ((gs.bases[bodyId]?.stock?.[moduleId] ?? 0) > 0) return 0
+  return bodyId === 'earth' ? earthModuleCost(gs, moduleId) : (MODULE_BY_ID[moduleId]?.cost ?? 0)
+}
+
 function canEditPlanetBase(gs: GameState, bodyId: BodyId): string | null {
-  if (!BODIES[bodyId]?.landable) return 'Bu gök cisminde üs kurulamaz.'
+  if (!BODIES[bodyId]?.landable) return 'Bu gök cisminde koloni kurulamaz.'
   if (bodyId === 'earth') return null
   if (gs.bases[bodyId]) return null
   const landed = gs.vessels.find((v) => v.landed && v.bodyId === bodyId)
@@ -793,146 +784,52 @@ function canEditPlanetBase(gs: GameState, bodyId: BodyId): string | null {
   return null
 }
 
-/** Gezegen gridindeki sis/krater karesini tarar veya temizler (Moon Sweepers akışı). */
-export function sweepPlanetTile(
-  sim: Sim,
-  bodyId: BodyId,
-  x: number,
-  y: number,
-): { ok: boolean; reward: number; text: string } {
-  const gs = sim.gs
-  const gate = canEditPlanetBase(gs, bodyId)
-  if (gate) return { ok: false, reward: 0, text: gate }
-  const landed = gs.vessels.find((v) => v.landed && v.bodyId === bodyId)
-  const siteAngle = bodyId === 'earth' ? PAD_ANGLE : Math.atan2(landed?.pos.y ?? 0, landed?.pos.x ?? 1)
-  const base = (gs.bases[bodyId] ??= emptyBase(siteAngle, bodyId, gs.ownerId))
-  const res = sweepGridTile(base, bodyId, x, y, baseIncomeMultiplier(gs, bodyId))
-  if (res.ok) {
-    gs.money += res.reward
-    base.earned += res.reward
-  }
-  return res
-}
-
-/** Gezegen gridindeki seçili açık kareye doğrudan modül kurar. */
-export function placePlanetModule(
-  sim: Sim,
-  bodyId: BodyId,
-  x: number,
-  y: number,
-  moduleId: string,
-  ownerId = sim.gs.ownerId ?? 'local',
-): string | null {
+/** Seçilen yuvaya yapı kurar. Depoda varsa ücretsiz, yoksa bütçeden ödenir. */
+export function placePlanetModule(sim: Sim, bodyId: BodyId, slot: number, moduleId: string, ownerId = sim.gs.ownerId ?? 'local'): string | null {
   const gs = sim.gs
   const m = MODULE_BY_ID[moduleId]
-  if (!m) return 'Bilinmeyen modül.'
-  if (bodyId === 'earth' && (moduleId === 'drill' || moduleId === 'isru')) {
-    return 'Sondaj ve ISRU yalnızca Dünya dışı gezegenlerde kurulur.'
-  }
+  if (!m) return 'Bilinmeyen yapı.'
+  if (bodyId === 'earth' && (moduleId === 'drill' || moduleId === 'isru')) return 'Maden Aracı ve Yakıt Tesisi yalnızca Dünya dışında kurulur.'
   const gate = canEditPlanetBase(gs, bodyId)
   if (gate) return gate
-  if (!isModuleUnlocked(gs, moduleId)) {
-    const t = requiredTechForModule(moduleId)
-    return `Önce "${t?.name ?? 'Teknoloji'}" araştırmasını açmalısın.`
-  }
   const landed = gs.vessels.find((v) => v.landed && v.bodyId === bodyId)
   const siteAngle = bodyId === 'earth' ? PAD_ANGLE : Math.atan2(landed?.pos.y ?? 0, landed?.pos.x ?? 1)
-  const base = (gs.bases[bodyId] ??= emptyBase(siteAngle, bodyId, ownerId))
-  const grid = ensureBaseGrid(base, bodyId)
-  const tile = tileAt(grid, x, y)
-  if (!tile || (tile.kind !== 'clear' && tile.kind !== 'vein')) {
-    return 'Kurulum için açık (düz veya damarlı) bir kare seç.'
-  }
-  const price = bodyId === 'earth' ? earthModuleCost(gs, moduleId) : m.cost
+  const base = (gs.bases[bodyId] ??= emptyBase(siteAngle, ownerId))
+  const sites = ensureSites(base)
+  if (m.tier > colonyTier(base)) return TIER_HINT[m.tier] ?? 'Bu yapı henüz açılmadı.'
+  if (slot < 0 || slot >= sites.length || sites[slot]) return 'Boş bir yuva seç.'
+  const price = modulePrice(gs, bodyId, moduleId)
   if (gs.money < price) return `${price.toLocaleString('tr-TR')} ₡ gerekli.`
+  if (price === 0 && base.stock?.[moduleId]) base.stock[moduleId]! -= 1
   gs.money -= price
-  tile.kind = 'built'
-  tile.moduleId = moduleId
-  tile.level = 1
-  tile.ownerId = ownerId
-  syncBaseModulesFromGrid(base)
+  sites[slot] = moduleId
+  syncModules(base)
   return null
 }
 
-/** Griddeki mevcut modülü bir üst seviyeye (Lv.1 → Lv.5) yükseltir. */
-export function upgradePlanetModule(sim: Sim, bodyId: BodyId, x: number, y: number): string | null {
+/** Yuvadaki yapıyı söker (%60 iade). */
+export function removePlanetModule(sim: Sim, bodyId: BodyId, slot: number): { error?: string; refund?: number } {
   const gs = sim.gs
   const base = gs.bases[bodyId]
-  if (!base) return 'Bu gezegende üs yok.'
-  const grid = ensureBaseGrid(base, bodyId)
-  const tile = tileAt(grid, x, y)
-  if (!tile || tile.kind !== 'built' || !tile.moduleId) return 'Yükseltilecek yapı seçilmedi.'
-  const def = MODULE_BY_ID[tile.moduleId]
-  if (!def) return 'Bilinmeyen yapı.'
-  const cur = tile.level ?? 1
-  if (cur >= MAX_TILE_LEVEL) return `Bu yapı zaten son seviye (Lv.${MAX_TILE_LEVEL}).`
-  const price = tileUpgradeCost(def, cur)
-  if (gs.money < price) return `Yükseltme için ${price.toLocaleString('tr-TR')} ₡ gerekli.`
-  gs.money -= price
-  tile.level = cur + 1
-  syncBaseModulesFromGrid(base)
-  return null
-}
-
-/** Griddeki modülü söker (%60 iade) ve altındaki zemin türünü korur. */
-export function removePlanetModule(sim: Sim, bodyId: BodyId, x: number, y: number): { error?: string; refund?: number } {
-  const gs = sim.gs
-  const base = gs.bases[bodyId]
-  if (!base) return { error: 'Bu gezegende üs yok.' }
-  const grid = ensureBaseGrid(base, bodyId)
-  const tile = tileAt(grid, x, y)
-  if (!tile || tile.kind !== 'built' || !tile.moduleId) return { error: 'Sökülecek yapı yok.' }
-  const def = MODULE_BY_ID[tile.moduleId]
-  const refund = def ? tileRefund(def, tile.level ?? 1) : 0
+  if (!base) return { error: 'Bu gezegende koloni yok.' }
+  const sites = ensureSites(base)
+  const id = sites[slot]
+  if (!id) return { error: 'Sökülecek yapı yok.' }
+  const refund = Math.round((MODULE_BY_ID[id]?.cost ?? 0) * 0.6)
   gs.money += refund
-  tile.kind = tile.under === 'vein' ? 'vein' : 'clear'
-  delete tile.moduleId
-  delete tile.level
-  syncBaseModulesFromGrid(base)
+  sites[slot] = null
+  syncModules(base)
   return { refund }
 }
 
-/** Sektör tamamen temizlendiğinde yeni tarama turu açar (+%12 gezegen bonusu). */
-export function scanPlanetSector(sim: Sim, bodyId: BodyId): { ok: boolean; reward: number; text: string } {
-  const gs = sim.gs
-  const base = gs.bases[bodyId]
-  if (!base) return { ok: false, reward: 0, text: 'Önce üs kurmalısın.' }
-  const res = scanNextSector(base, bodyId, baseIncomeMultiplier(gs, bodyId))
-  if (res.ok) {
-    gs.money += res.reward
-    base.earned += res.reward
-  }
-  return res
-}
-
-/** Dünya veya iniş yapılmış bir gezegen/uydu üssüne doğrudan modül kurar. */
+/** İlk boş yuvaya yapı kurar. */
 export function buyBaseModule(sim: Sim, bodyId: BodyId, moduleId: string): string | null {
-  const gs = sim.gs
-  const m = MODULE_BY_ID[moduleId]
-  if (!m) return 'Bilinmeyen modül.'
-  if (bodyId === 'earth' && (moduleId === 'drill' || moduleId === 'isru')) {
-    return 'Sondaj ve ISRU yalnızca Dünya dışı gezegenlerde kurulur.'
-  }
-  if (!BODIES[bodyId].landable) return 'Bu gök cisminde üs kurulamaz.'
-  const landed = gs.vessels.find((v) => v.landed && v.bodyId === bodyId)
-  if (bodyId !== 'earth' && !landed) return 'Önce bu yüzeye bir araç indirmelisin.'
-  if (!isModuleUnlocked(gs, moduleId)) {
-    const t = requiredTechForModule(moduleId)
-    return `Önce "${t?.name ?? 'Teknoloji'}" araştırmasını açmalısın.`
-  }
-  const price = bodyId === 'earth' ? earthModuleCost(gs, moduleId) : m.cost
-  if (gs.money < price) return `${price.toLocaleString('tr-TR')} ₡ gerekli.`
-  gs.money -= price
-  const siteAngle = bodyId === 'earth' ? PAD_ANGLE : Math.atan2(landed!.pos.y, landed!.pos.x)
-  const base = (gs.bases[bodyId] ??= emptyBase(siteAngle, bodyId, gs.ownerId))
-  ensureBaseGrid(base, bodyId)
-  if (!addModuleToBaseGrid(base, bodyId, moduleId, gs.ownerId)) {
-    base.modules[moduleId] = (base.modules[moduleId] ?? 0) + 1
-  }
-  return null
+  const base = sim.gs.bases[bodyId]
+  const slot = base ? ensureSites(base).indexOf(null) : 0
+  if (slot < 0) return 'Kolonide boş yuva kalmadı.'
+  return placePlanetModule(sim, bodyId, slot, moduleId)
 }
 
-/** Dünya yer kontrol üssüne doğrudan pasif gelir modülü satın alır. */
 export const buyEarthModule = (sim: Sim, moduleId: string): string | null => buyBaseModule(sim, 'earth', moduleId)
 
 export function loadOre(sim: Sim, v: Vessel): string | null {
@@ -1129,38 +1026,18 @@ export function dispatchCommand(
       gs.targetBody = cmd.bodyId
       return { events }
     }
-    case 'unlockTech': {
-      const err = unlockTech(gs, cmd.techId)
-      return err ? { events, error: err } : { events: [{ type: 'toast', text: `Araştırma tamamlandı: ${cmd.techId}` }] }
-    }
     case 'buyModule': {
       const err = buyBaseModule(sim, cmd.bodyId, cmd.moduleId)
       return err ? { events, error: err } : { events }
     }
-    case 'sweepTile': {
-      const res = sweepPlanetTile(sim, cmd.bodyId, cmd.x, cmd.y)
-      if (!res.ok) return { events, error: res.text }
-      events.push({ type: 'toast', text: res.text })
-      return { events }
-    }
     case 'placeGridModule': {
-      const err = placePlanetModule(sim, cmd.bodyId, cmd.x, cmd.y, cmd.moduleId, actorId)
-      return err ? { events, error: err } : { events }
-    }
-    case 'upgradeGridModule': {
-      const err = upgradePlanetModule(sim, cmd.bodyId, cmd.x, cmd.y)
+      const err = placePlanetModule(sim, cmd.bodyId, cmd.x, cmd.moduleId, actorId)
       return err ? { events, error: err } : { events }
     }
     case 'removeGridModule': {
-      const res = removePlanetModule(sim, cmd.bodyId, cmd.x, cmd.y)
+      const res = removePlanetModule(sim, cmd.bodyId, cmd.x)
       if (res.error) return { events, error: res.error }
       if (res.refund) events.push({ type: 'toast', text: `Yapı söküldü: +${res.refund.toLocaleString('tr-TR')} ₡ iade.` })
-      return { events }
-    }
-    case 'scanSector': {
-      const res = scanPlanetSector(sim, cmd.bodyId)
-      if (!res.ok) return { events, error: res.text }
-      events.push({ type: 'toast', text: res.text })
       return { events }
     }
     default: {

@@ -125,7 +125,11 @@ export interface Base {
   /** üssün yüzeydeki açısal konumu (rad) */
   siteAngle: number
   earned: number
-  /** 4×4 gezegen yüzeyi gridi */
+  /** koloni yuvaları: her yuvada bir yapı kimliği ya da boş */
+  sites?: (string | null)[]
+  /** kargoyla getirilip henüz kurulmamış yapılar */
+  stock?: Record<string, number>
+  /** eski 4×4 grid (yalnızca eski kayıtları okumak için) */
   grid?: PlanetTile[]
   /** tamamlanan sektör tarama sayısı (her temizlikte artar) */
   sectorLevel?: number
@@ -184,12 +188,8 @@ export type GameCommand =
   | { type: 'loadOre'; vesselId: number }
   | { type: 'refuelAtBase'; vesselId: number }
   | { type: 'buyModule'; bodyId: BodyId; moduleId: string }
-  | { type: 'sweepTile'; bodyId: BodyId; x: number; y: number }
-  | { type: 'placeGridModule'; bodyId: BodyId; x: number; y: number; moduleId: string }
-  | { type: 'upgradeGridModule'; bodyId: BodyId; x: number; y: number }
-  | { type: 'removeGridModule'; bodyId: BodyId; x: number; y: number }
-  | { type: 'scanSector'; bodyId: BodyId }
-  | { type: 'unlockTech'; techId: string }
+  | { type: 'placeGridModule'; bodyId: BodyId; x: number; moduleId: string }
+  | { type: 'removeGridModule'; bodyId: BodyId; x: number }
 
 export type GameEvent =
   | { type: 'toast'; text: string }

@@ -2,14 +2,13 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { MODULES } from '../game/base'
 import { GRID_H, GRID_W, partDef, PARTS, SHIP_PRESETS, SHIP_SLOT_COUNT } from '../game/data'
 import { bump, saveGame, setIdleWarp, sim, useAuthState, useGame } from '../game/store'
-import { hasAffordableTech, isModuleUnlocked, isPartUnlocked, requiredTechForModule, requiredTechForPart } from '../game/tech'
+import { isModuleUnlocked, isPartUnlocked, requiredTechForModule, requiredTechForPart } from '../game/tech'
 import type { PartCategory, PartInst } from '../game/types'
 import { canPlace, cargoMass, estimateDeltaV, partAt, vesselStats } from '../game/vessel'
 import { designCost, launchDesign, totalPassiveIncomePerHour, validateDesign } from '../flight/world'
 import { drawPart } from '../render/partArt'
 import PartIcon from './PartIcon'
-import PlanetGridPanel from './PlanetGridPanel'
-import TechTreeModal from './TechTreeModal'
+import PlanetGridPanel from './ColonyPanel'
 
 const CATEGORIES: PartCategory[] = ['Komuta', 'Yakıt', 'Motorlar', 'Kademe', 'Güç', 'İniş', 'Kargo']
 const IDLE_WARPS = [1, 5, 25]
@@ -27,7 +26,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
   const [mirror, setMirror] = useState(true)
   const [hover, setHover] = useState<{ x: number; y: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [showTech, setShowTech] = useState(false)
+  const setShowTech = (_open: boolean) => undefined
   const [showGrid, setShowGrid] = useState(false)
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -59,7 +58,6 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
   const problem = validateDesign(design, gs.designCargo, gs)
   const twr = stages[0]?.twr ?? 0
   const passivePerHr = totalPassiveIncomePerHour(gs)
-  const techReady = hasAffordableTech(gs)
 
   const mirrorX = (x: number, w: number) => GRID_W - x - w
 
@@ -250,9 +248,6 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
             </button>
           ))}
         </div>
-        <button className={`hud-btn${techReady ? ' has-ready' : ''}`} onClick={() => setShowTech(true)}>
-          🧬 Teknoloji ({gs.techDone.length}){techReady ? ' •' : ''}
-        </button>
         <button className="hud-btn" onClick={() => setShowGrid(true)}>
           🪐 Grid
         </button>
@@ -394,7 +389,6 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
         </aside>
       </div>
 
-      {showTech && <TechTreeModal onClose={() => setShowTech(false)} />}
 
       {showGrid && (
         <div className="dialog-backdrop tech-backdrop" role="presentation" onClick={() => setShowGrid(false)}>

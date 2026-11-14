@@ -561,3 +561,59 @@ kbd { background: #1b2b47; border: 1px solid #8296b355; border-bottom-width: 2px
 .tile-inspector-head { display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; }
 .tile-inspector-head small { font-size: 11px; color: var(--color-muted); }
 .tile-inspector-btns { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+/* ───────── Koloni sahnesi ───────── */
+.colony { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.colony-top { display: flex; gap: 10px; flex-wrap: wrap; align-items: stretch; }
+.colony-planet { display: flex; align-items: center; gap: 10px; background: #123c44; border: 2px solid #3d7f86; border-radius: 10px; padding: 6px 10px; }
+.colony-planet small { display: block; font: 500 9px 'DM Mono', monospace; letter-spacing: .14em; text-transform: uppercase; color: #9fd6d2; }
+.colony-planet b { font-size: 17px; min-width: 70px; display: block; text-align: center; }
+.colony-arrow { width: 30px; height: 30px; border-radius: 7px; border: 2px solid #3d7f86; background: #0d2a31; color: #dff; cursor: pointer; }
+.colony-arrow:hover { background: #17505a; }
+.colony-stats { flex: 1; min-width: 260px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; background: #0f2f3a; border: 2px solid #3d7f86; border-radius: 10px; padding: 8px 12px; }
+.colony-stat { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; font: 500 12px 'DM Mono', monospace; }
+.colony-stat.plain { grid-template-columns: auto 1fr; } .colony-stat.plain b { text-align: right; }
+.colony-stat span { color: #bfe3e6; white-space: nowrap; }
+.colony-stat i { height: 9px; background: #06161c; border-radius: 5px; overflow: hidden; display: block; }
+.colony-stat em { display: block; height: 100%; border-radius: 5px; }
+.colony-stat em.sun { background: linear-gradient(90deg, #f59e0b, #fde68a); } .colony-stat em.ok { background: #4ade80; } .colony-stat em.bad { background: #fb7185; }
+.colony-scene { position: relative; height: 250px; border-radius: 12px; overflow: hidden; border: 2px solid #33404f; image-rendering: pixelated; }
+.colony-sky { position: absolute; inset: 0; background: radial-gradient(1px 1px at 12% 18%, #fff 50%, transparent 51%), radial-gradient(1px 1px at 31% 42%, #cfe 50%, transparent 51%), radial-gradient(2px 2px at 58% 12%, #fff 50%, transparent 51%), radial-gradient(1px 1px at 77% 33%, #fff 50%, transparent 51%), radial-gradient(1px 1px at 90% 9%, #cdf 50%, transparent 51%), radial-gradient(1px 1px at 44% 26%, #fff 50%, transparent 51%), linear-gradient(#070a18, #10142a); }
+.colony-earth .colony-sky { background: linear-gradient(#3f8fd8, #a9d8ff 70%); }
+.colony-mars .colony-sky { background: linear-gradient(#7a4a36, #e0a578 75%); }
+.colony-moon .colony-sky::after { content: ''; position: absolute; right: 9%; top: 12%; width: 54px; height: 54px; border-radius: 50%; background: radial-gradient(circle at 35% 35%, #8fd0ff, #2f7fd0 55%, #123a70); box-shadow: inset -8px -6px 0 #0006; }
+.colony-hills { position: absolute; left: -2%; right: -2%; bottom: 62px; height: 70px; background: #6b6862; clip-path: polygon(0 100%, 0 60%, 8% 30%, 15% 55%, 24% 40%, 33% 62%, 45% 48%, 56% 66%, 66% 35%, 74% 58%, 85% 42%, 93% 60%, 100% 45%, 100% 100%); opacity: .75; }
+.colony-earth .colony-hills { background: #3f8a4f; } .colony-mars .colony-hills { background: #9a4f33; }
+.colony-ground { position: absolute; left: 0; right: 0; bottom: 0; height: 74px; background: linear-gradient(#8a857c 0 6px, #6f6a63 6px 14px, #57534e 14px); }
+.colony-earth .colony-ground { background: linear-gradient(#6fbf5a 0 6px, #4c9a4a 6px 14px, #5c4a34 14px); }
+.colony-mars .colony-ground { background: linear-gradient(#e08a5c 0 6px, #b8603c 6px 14px, #7a3b24 14px); }
+.colony-cable { position: absolute; left: 4%; right: 4%; bottom: 52px; height: 4px; background: repeating-linear-gradient(90deg, #4fb8ff 0 10px, #f5c542 10px 14px); border-radius: 2px; }
+.colony-cable.is-low { background: repeating-linear-gradient(90deg, #7a2f3d 0 10px, #3a2228 10px 14px); }
+.colony-slots { position: absolute; left: 2%; right: 2%; bottom: 56px; display: grid; grid-template-columns: repeat(8, 1fr); align-items: end; gap: 4px; }
+.colony-slot { position: relative; height: 150px; background: none; border: 0; padding: 0; display: flex; align-items: flex-end; justify-content: center; cursor: pointer; }
+.colony-slot img { width: 100%; max-height: 150px; object-fit: contain; object-position: bottom; image-rendering: pixelated; filter: drop-shadow(0 3px 0 #0005); }
+.colony-slot img.is-off { filter: grayscale(1) brightness(.55); }
+.colony-slot.is-selected img { filter: drop-shadow(0 0 0 #fff) drop-shadow(0 0 6px #38d9e8); }
+.colony-plus { width: 100%; height: 34px; border: 2px dashed #ffffff40; border-radius: 6px; display: grid; place-items: center; color: #ffffff70; font-size: 16px; background: #0003; }
+.colony-slot.is-target .colony-plus { border-color: #4ade80; color: #4ade80; background: #4ade8022; animation: colonyPulse 1s infinite alternate; }
+.colony-slot.is-hover .colony-plus { background: #4ade8055; height: 50px; }
+@keyframes colonyPulse { to { background: #4ade8044; } }
+.colony-nopower { position: absolute; top: 34%; left: 50%; transform: translateX(-50%); background: #fb7185; color: #2a0610; font: 700 11px 'DM Mono', monospace; padding: 2px 5px; border-radius: 5px; white-space: nowrap; }
+.colony-locked { position: absolute; inset: 0; display: grid; place-items: center; background: #050a16c0; text-align: center; padding: 20px; font-weight: 700; }
+.colony-info { min-height: 44px; display: flex; gap: 10px; align-items: center; justify-content: space-between; font-size: 12.5px; line-height: 1.45; background: #0b1424; border: 1px solid #8296b333; border-radius: 9px; padding: 8px 12px; color: #cfd8e6; }
+.colony-info.warn { border-color: var(--color-orange); }
+.colony-build { background: #2f3f4b; border: 2px solid #5d7384; border-radius: 12px; padding: 8px 10px 10px; }
+.colony-build h3 { margin: 0 0 8px; font: 500 11px 'DM Mono', monospace; letter-spacing: .16em; text-transform: uppercase; color: #d6f4ff; text-align: center; }
+.colony-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; }
+.colony-card { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 4px; border-radius: 9px; border: 2px solid transparent; background: #24323d; cursor: grab; text-align: center; color: var(--color-text); }
+.colony-card:hover:not(:disabled) { border-color: #38d9e8; }
+.colony-card.is-picked { border-color: #4ade80; background: #1d3a34; }
+.colony-card:disabled { cursor: not-allowed; }
+.colony-card.is-locked { opacity: .55; } .colony-card.is-poor .price { color: var(--color-error); }
+.colony-card-art { position: relative; height: 54px; width: 100%; display: flex; align-items: flex-end; justify-content: center; }
+.colony-card-art img { max-width: 92%; max-height: 54px; image-rendering: pixelated; }
+.colony-lock { position: absolute; right: 6px; bottom: 0; font-size: 16px; }
+.colony-card b { font-size: 11px; line-height: 1.15; }
+.colony-card small { font: 10px 'DM Mono', monospace; color: var(--color-muted); line-height: 1.25; }
+.colony-card small.ok { color: var(--color-success); }
+@media (max-width: 640px) { .colony-slots { grid-template-columns: repeat(4, 1fr); row-gap: 0; } .colony-slot { height: 96px; } .colony-scene { height: 290px; } }

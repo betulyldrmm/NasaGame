@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { MODULE_BY_ID } from '../game/base'
 import { MISSIONS } from '../game/missions'
 import { bump, saveGame, sim, useAuthState } from '../game/store'
-import { hasAffordableTech, hasAutoLandTech } from '../game/tech'
 import type { AutopilotMode, GameEvent, SasMode, Vessel } from '../game/types'
 import { activeEngines, cargoMass, estimateDeltaV, fuelGroups, vesselStats } from '../game/vessel'
 import { partDef } from '../game/data'
@@ -29,8 +28,7 @@ import {
 } from '../flight/world'
 import { BODIES, type BodyId, gameDate } from '../nasa/bodies'
 import { createView, type FlightFrame, type MapFrame, pickPart, pickVesselFlight, renderFlight, renderMap } from '../render/renderer'
-import PlanetGridPanel from './PlanetGridPanel'
-import TechTreeModal from './TechTreeModal'
+import PlanetGridPanel from './ColonyPanel'
 
 const DESTINATIONS: BodyId[] = ['moon', 'earth', 'mercury', 'venus', 'mars', 'ceres', 'ganymede', 'titan']
 const QUICK_WARPS = [
@@ -182,7 +180,7 @@ function snapshot(): Hud {
     autopilot: 'off',
     autopilotNote: '',
     approachWarn: null,
-    hasAutoLand: hasAutoLandTech(gs),
+    hasAutoLand: true,
     sas: 'off',
     warp: WARPS[sim.warpIdx]!,
     warpIdx: sim.warpIdx,
@@ -204,7 +202,7 @@ function snapshot(): Hud {
     chutesOpen: false,
     hasSolar: false,
     solarOpen: false,
-    canTech: hasAffordableTech(gs),
+    canTech: false,
   }
   if (!v) return base
   const st = vesselStats(v.parts, v.cargo)
@@ -297,7 +295,7 @@ export default function FlightScreen({ onBuilder }: Props) {
   const [lost, setLost] = useState<string | null>(null)
   const [panel, setPanel] = useState<'missions' | 'base' | 'help' | null>(null)
   const [confirmDel, setConfirmDel] = useState<{ id: number; name: string } | null>(null)
-  const [showTech, setShowTech] = useState(false)
+  const setShowTech = (_open: boolean) => undefined
   const toastId = useRef(0)
   const spaceThrottle = useRef<{ vesselId: number; previousThrottle: number } | null>(null)
 
@@ -356,11 +354,6 @@ export default function FlightScreen({ onBuilder }: Props) {
 
   const toggleAutopilot = useCallback(
     (mode: 'orbit' | 'transfer' | 'land') => {
-      if (mode === 'land' && !hasAutoLandTech(sim.gs)) {
-        setShowTech(true)
-        toast('Otomatik İniş Bilgisayarı için "Gelişmiş İniş" araştırmasını açmalısın.', 'warn')
-        return
-      }
       const v = activeVessel(sim.gs)
       if (!v) return
       const cur = effectiveAutopilot(v)
@@ -624,7 +617,6 @@ export default function FlightScreen({ onBuilder }: Props) {
         <button className={`hud-btn${isMap ? ' is-on' : ''}`} onClick={toggleMap}>{isMap ? 'Uçuş (M)' : 'Harita (M)'}</button>
         <button className="hud-btn" onClick={() => setPanel(panel === 'missions' ? null : 'missions')}>🎯 Görevler</button>
         <button className="hud-btn" onClick={() => setPanel(panel === 'base' ? null : 'base')}>🪐 Koloni Gridi</button>
-        <button className={`hud-btn${hud.canTech ? ' has-ready' : ''}`} onClick={() => setShowTech(true)}>🧬 Ar-Ge{hud.canTech ? ' •' : ''}</button>
         <button className="hud-btn" onClick={() => setPanel(panel === 'help' ? null : 'help')}>?</button>
         <span className="hud-money" title="Saatlik toplam pasif gelir (zaman hızlandırmada gelir en fazla 5× artar)">
           {fmt(hud.money)} ₡ <small className="income-sub">+{fmt(hud.passivePerHr)}/sa</small>
@@ -866,7 +858,7 @@ export default function FlightScreen({ onBuilder }: Props) {
           <ul className="help-list">
             <li><kbd>W</kbd>/<kbd>S</kbd> itki ±, <kbd>Z</kbd> tam itki, <kbd>X</kbd> motoru kes</li>
             <li><kbd>A</kbd>/<kbd>D</kbd> döndür · <kbd>T</kbd> yön kilidi (ileri / geri / radyal)</li>
-            <li><kbd>L</kbd> Otomatik İniş Bilgisayarı (Teknoloji Ağacıyla açılır)</li>
+            <li><kbd>L</kbd> Otomatik İniş Bilgisayarı</li>
             <li><kbd>Boşluk</kbd> basılı tut: motor itkisi · kademeyi ayırmak için adaptöre tıkla</li>
             <li><kbd>M</kbd> uzay haritası · tekerlek: yakınlaş/uzaklaş · sürükle: kaydır</li>
             <li><kbd>,</kbd>/<kbd>.</kbd> zamanı yavaşlat / hızlandır (fizikte 25×, yörüngede 100.000×)</li>
@@ -921,7 +913,6 @@ export default function FlightScreen({ onBuilder }: Props) {
         </div>
       )}
 
-      {showTech && <TechTreeModal onClose={() => setShowTech(false)} />}
     </main>
   )
 }

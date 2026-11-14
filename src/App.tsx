@@ -1,11 +1,9 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { effectiveIncomeDt, tickBasesOnly, totalPassiveIncomePerHour } from './flight/world'
-import { hasAffordableTech } from './game/tech'
 import AuthScreen from './components/AuthScreen'
 import BuilderScreen from './components/BuilderScreen'
 import IntroCutscene from './components/IntroCutscene'
-import PlanetGridPanel from './components/PlanetGridPanel'
-import TechTreeModal from './components/TechTreeModal'
+import PlanetGridPanel from './components/ColonyPanel'
 import { bump, clearOfflineGain, initAuth, logoutAccount, resetGame, saveGame, setIdleWarp, sim, useAuthState, useGame } from './game/store'
 import { messages } from './i18n/tr'
 
@@ -19,7 +17,7 @@ function App() {
   const gs = useGame()
   const auth = useAuthState()
   const [dialog, setDialog] = useState<Dialog>(null)
-  const [showTech, setShowTech] = useState(false)
+  const setShowTech = (_open: boolean) => undefined
   const [showGrid, setShowGrid] = useState(false)
   const [showCutscene, setShowCutscene] = useState(false)
   const [screen, setScreen] = useState<'home' | 'assembly' | 'flight'>('home')
@@ -70,7 +68,6 @@ function App() {
   }
 
   const passivePerHr = totalPassiveIncomePerHour(gs)
-  const techReady = hasAffordableTech(gs)
 
   return (
     <main className="app-shell">
@@ -138,9 +135,6 @@ function App() {
                 Uçuşa devam et
               </button>
             )}
-            <button className={`button button-secondary${techReady ? ' has-ready' : ''}`} onClick={() => setShowTech(true)}>
-              🧬 Teknoloji Ağacı ({gs.techDone.length}){techReady ? ' •' : ''}
-            </button>
             <button className="button button-secondary" onClick={() => setShowGrid(true)}>
               🪐 Koloni Gridi
             </button>
@@ -205,7 +199,6 @@ function App() {
         />
       )}
 
-      {showTech && <TechTreeModal onClose={() => setShowTech(false)} />}
 
       {showGrid && (
         <div className="dialog-backdrop tech-backdrop" role="presentation" onClick={() => setShowGrid(false)}>
