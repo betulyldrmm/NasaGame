@@ -88,3 +88,22 @@ Kademe Δv'si Tsiolkovsky denklemiyle hesaplanır: `Δv = Isp · g₀ · ln(m₀
 ## 6. Doğrulama
 
 `npm test` şunları sınar: Ay/Dünya kütle ve yarıçap oranlarının gerçek değerlerle eşleşmesi, Kepler ilerleticinin bir periyot sonunda başlangıç noktasına dönmesi, hazır roketin basit bir otomatik pilotla Dünya yörüngesine girmesi ve Hohmann yakmasıyla Ay'ın etki alanına ulaşması, genişletilmiş Güneş Sistemi cisimlerinin (Merkür, Venüs, Ceres, Jüpiter/Ganimed, Satürn/Titan) tutarlı yörünge/SOI/iniş özellikleri, Dünya başlangıç pasif gelir üssü, teknoloji ağacı kilitleri/çarpanları, `25×` fizik zaman hızlandırması ve `autoLand` ile Ay'a güvenli iniş.
+
+## 7. Koloni, ISS ve yeni mekaniklerde NASA verisi (15 Kasım 2026 sürümü)
+
+| Oyundaki yer | Kullanılan NASA verisi / kavramı | Kaynak | Nasıl kullanıldı |
+|---|---|---|---|
+| Koloni ekranındaki "Güneş ışığı %" göstergesi ve güneş paneli üretimi | Ters kare yasası; Mars'ın Güneş'e uzaklığı 1,5237 AU; Mars'ta güneş ışınımı Dünya'dakinin ≈ %43'ü (586 / 1361 W/m²) | NASA mission-viz gezegen yörünge tablosu (yarı-büyük eksen, dış merkezlik); NSSDC Mars Fact Sheet | `solarFlux = 1 / r²` (`src/nasa/bodies.ts`). Panel gücü bu çarpanla ölçeklenir (`baseReport`, `src/game/base.ts`). Mars'ın yörüngesi eliptik olduğu için oran oyunda yaklaşık %36–52 arasında değişir. |
+| "Ay'da tek panel maden aracını çalıştırır, Mars'ta yetmez" kuralı | Aynı veri | Aynı | Panel 4 birim üretir, maden aracı 3 birim ister. Ay'da 4,0 ≥ 3; Mars'ta 4 × 0,43 ≈ 1,7 < 3. `sim.test.ts` bunu sınar. |
+| Reaktör ve RTG'nin Güneş'ten bağımsız olması | Dış gezegen görevlerinde radyoizotop güç kullanımı | NASA RPS programı (genel bilgi) | `constantPower` işaretli yapılar 1/r² çarpanından etkilenmez. |
+| ISS'in yörüngesi ve buluşma otopilotu | Dairesel yörünge hızı `v = √(μ/r)`, Hohmann transferi, vis-viva | NASA mission-viz "Earth Orbits" ve "Elliptical Orbit Design" dersleri; NSSDC Dünya verileri | ISS 75 km irtifada dairesel yörüngeye konur (`ensureStation`). Buluşma için gereken Δv Hohmann formülüyle hesaplanıp Tsiolkovsky denklemiyle yakıttan düşülür (`rendezvousStation`). |
+| ISS görseli ve ikmal görevi | ISS'in modül + güneş kanadı yapısı, ticari ikmal görevleri | NASA ISS sayfaları (genel bilgi) | Ana modül, kenetlenme kapısı ve iki güneş kanadı; ikmal kargosu teslim edilince ödeme yapılır. |
+| "ERR 1202: EXEC OVERFLOW" alarmı | Apollo 11 iniş bilgisayarının 1202 program alarmı | NASA Apollo 11 görev kayıtları | 100 m altında kontrollere aşırı yüklenilirse irtifa göstergesi kapanır. |
+| "Margaret Hamilton" başarımı | Apollo uçuş yazılımının yöneticisi | NASA tarihçesi | İlk başarılı inişte verilir. |
+| Transfer otopilotunun varışta yörüngeye girmesi | Yörünge yakalama yanışı (enberide geri yönde yakma) | NASA mission-viz Earth–Moon görev görselleştirmesi | Hedefin etki alanına girince otopilot kapanmak yerine yakalama yanışını kendisi yapar. |
+
+**Ölçek notu.** Gerçek ISS yaklaşık 400 km irtifadadır. Oyunda gezegen yarıçapları 1/20 ölçeklendiği için bu ≈ 20 km eder ve 30 km'lik oyun atmosferinin içinde kalır; bu yüzden ISS 75 km'ye yerleştirildi (oyun varsayımı).
+
+**Oyun varsayımı olanlar.** Koloni yapılarının güç, gelir ve fiyat değerleri; ISS ikmal ödülü; buluşma otopilotunun aracı doğrudan istasyonun yanına taşıması (yakıt bedeli gerçek formülle hesaplanır, ancak faz bekleme süresi atlanır).
+
+**Okunamayan kaynak.** Space Apps "Resources" sekmesi otomatik erişime kapalı olduğu için içeriği bu sürümde de okunamadı. Sayfadaki bağlantılar elle paylaşılırsa bu tabloya eklenebilir.

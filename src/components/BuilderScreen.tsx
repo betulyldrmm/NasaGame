@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { MODULES } from '../game/base'
+import { audio } from '../audio'
+import { MODULES, ISS_SUPPLY } from '../game/base'
 import { GRID_H, GRID_W, partDef, PARTS, SHIP_PRESETS, SHIP_SLOT_COUNT } from '../game/data'
 import { bump, saveGame, setIdleWarp, sim, useAuthState, useGame } from '../game/store'
-import { hasAffordableTech, isModuleUnlocked, isPartUnlocked, requiredTechForModule, requiredTechForPart } from '../game/tech'
+import { isModuleUnlocked, isPartUnlocked, requiredTechForModule, requiredTechForPart } from '../game/tech'
 import type { PartCategory, PartInst } from '../game/types'
 import { canPlace, cargoMass, estimateDeltaV, partAt, vesselStats } from '../game/vessel'
 import { designCost, launchDesign, totalPassiveIncomePerHour, validateDesign } from '../flight/world'
 import { drawPart } from '../render/partArt'
 import PartIcon from './PartIcon'
-import PlanetGridPanel from './PlanetGridPanel'
-import TechTreeModal from './TechTreeModal'
+import PlanetGridPanel from './ColonyPanel'
 
 const CATEGORIES: PartCategory[] = ['Komuta', 'Yakıt', 'Motorlar', 'Kademe', 'Güç', 'İniş', 'Kargo']
 const IDLE_WARPS = [1, 5, 25]
@@ -27,9 +27,12 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
   const [mirror, setMirror] = useState(true)
   const [hover, setHover] = useState<{ x: number; y: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [showTech, setShowTech] = useState(false)
+  const setShowTech = (_open: boolean) => undefined
   const [showGrid, setShowGrid] = useState(false)
   const wrapRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    audio.music('build')
+  }, [])
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [cell, setCell] = useState(24)
 
@@ -59,7 +62,6 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
   const problem = validateDesign(design, gs.designCargo, gs)
   const twr = stages[0]?.twr ?? 0
   const passivePerHr = totalPassiveIncomePerHour(gs)
-  const techReady = hasAffordableTech(gs)
 
   const mirrorX = (x: number, w: number) => GRID_W - x - w
 
@@ -229,7 +231,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
     writeSlots(slots.map((s, j) => (j === i ? { name: name.slice(0, 18), design: design.map((p) => ({ def: p.def, x: p.x, y: p.y })), cargo: { ...gs.designCargo } } : s)))
   }
   const clearSlot = (i: number) => {
-    if (window.confirm(`"${slots[i]?.name}" slotu boşaltılsın mı?`)) writeSlots(slots.map((s, j) => (j === i ? null : s)))
+    if (window.confirm('Bu slot boşaltılsın mı?')) writeSlots(slots.map((s, j) => (j === i ? null : s)))
   }
   const sel = selected ? partDef(selected) : null
 
@@ -250,11 +252,8 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
             </button>
           ))}
         </div>
-        <button className={`hud-btn${techReady ? ' has-ready' : ''}`} onClick={() => setShowTech(true)}>
-          🧬 Teknoloji ({gs.techDone.length}){techReady ? ' •' : ''}
-        </button>
         <button className="hud-btn" onClick={() => setShowGrid(true)}>
-          🪐 Grid
+          🏗️ Koloni
         </button>
         <div className="builder-money">
           Bütçe <b>{fmt(gs.money)} ₡</b> <small className="income-sub">+{fmt(passivePerHr)} ₡/sa</small>
@@ -311,7 +310,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
             <span className="ship-bar-label">Gemilerim</span>
             {slots.map((slot, i) => (
               <span key={i} className={`ship-slot${slot ? ' is-filled' : ''}`}>
-                <button className="ship-slot-load" disabled={!slot} title={slot ? `${slot.name} tasarımını yükle` : 'Boş slot'} onClick={() => slot && loadShip(slot.design, slot.cargo)}>
+                <button className="ship-slot-load" disabled={!slot} title={slot ? 'Tasarımı yükle' : 'Boş slot'} onClick={() => slot && loadShip(slot.design, slot.cargo)}>
                   {slot ? slot.name : `Slot ${i + 1}`}
                 </button>
                 <button title="Şu anki tasarımı bu slota kaydet" aria-label={`Slot ${i + 1}: kaydet`} disabled={!design.length} onClick={() => saveSlot(i)}>💾</button>
@@ -337,7 +336,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
             />
           </div>
           <p className="grid-hint">
-            {sel ? <><b>{sel.name}</b> — {sel.desc} Yerleştirmek için kareye tıkla, bırakmak için sağ tık.</> : 'Paletten parça seç ve kare grid\'e yerleştir. Kilitli parçalar için Teknoloji Ağacını aç.'}
+            {sel ? <><b>{sel.name}</b> — {sel.desc} Yerleştirmek için kareye tıkla, bırakmak için sağ tık.</> : 'Paletten parça seç ve kare grid\'e yerleştir.'}
           </p>
         </section>
 
@@ -367,7 +366,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
             <>
               <h3>Kargo <small>{cargoT.toFixed(1)} / {stats.cargoCap} t</small></h3>
               <ul className="cargo-list">
-                {MODULES.map((m) => {
+                {[ISS_SUPPLY, ...MODULES].map((m) => {
                   const unlocked = isModuleUnlocked(gs, m.id)
                   const req = unlocked ? null : requiredTechForModule(m.id)
                   return (
@@ -394,15 +393,14 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
         </aside>
       </div>
 
-      {showTech && <TechTreeModal onClose={() => setShowTech(false)} />}
 
       {showGrid && (
         <div className="dialog-backdrop tech-backdrop" role="presentation" onClick={() => setShowGrid(false)}>
-          <section className="tech-modal panel-card grid-modal" role="dialog" aria-modal="true" aria-label="Koloni Gridi" onClick={(e) => e.stopPropagation()}>
+          <section className="tech-modal panel-card grid-modal" role="dialog" aria-modal="true" aria-label="Koloni" onClick={(e) => e.stopPropagation()}>
             <header className="tech-head">
               <div>
-                <p className="eyebrow"><span /> GEZEGEN YÜZEYİ & ÜS GRİDİ</p>
-                <h2>Koloni Gridi</h2>
+                <p className="eyebrow"><span /> YÜZEY KOLONİSİ</p>
+                <h2>Koloni</h2>
               </div>
               <div className="tech-head-right">
                 <span className="tech-budget">Bütçe: <b>{fmt(gs.money)} ₡</b></span>

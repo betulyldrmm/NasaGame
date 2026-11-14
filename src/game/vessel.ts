@@ -200,6 +200,12 @@ export interface EngineOutput {
  * Yakıt akışı sabittir: ṁ = F_vak / (Isp_vak · g0). Atmosferde Isp düşer → itki düşer.
  * Bu yüzden vakum motorları uzayda verimli ama kalkışta güçsüzdür.
  */
+/** Geçici yakıt verimi bonusu ("İstikbal Göklerdedir" selamı): Isp çarpanı. */
+let ispBoost = 1
+export function setIspBoost(mult: number) {
+  ispBoost = mult
+}
+
 export function runEngines(parts: PartInst[], throttle: number, pressure: number, dt: number, ecAvailable: number): EngineOutput {
   const firing = new Map<number, number>()
   let thrust = 0
@@ -208,7 +214,7 @@ export function runEngines(parts: PartInst[], throttle: number, pressure: number
   const groups = fuelGroups(parts)
   for (const i of activeEngines(parts)) {
     const d = partDef(parts[i]!.def)
-    const flow = (d.thrust! / (d.ispVac! * G0)) * throttle
+    const flow = (d.thrust! / (d.ispVac! * ispBoost * G0)) * throttle
     let frac = 1
     if (d.ecUse) {
       const need = d.ecUse * throttle * dt
@@ -224,7 +230,7 @@ export function runEngines(parts: PartInst[], throttle: number, pressure: number
     for (const t of tanks) t.fuel = Math.max(0, (t.fuel ?? 0) - used * ((t.fuel ?? 0) / avail))
     const power = (used / (flow * dt)) * throttle
     const isp = d.ispVac! + (d.ispSL! - d.ispVac!) * Math.min(1, Math.max(0, pressure))
-    thrust += (used / dt) * isp * G0
+    thrust += (used / dt) * isp * ispBoost * G0
     firing.set(i, power)
   }
   return { thrust, firing, ecUsed }

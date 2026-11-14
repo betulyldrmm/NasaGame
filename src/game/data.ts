@@ -44,7 +44,21 @@ export const PARTS: PartDef[] = [
   { id: 'cargo-lg', name: 'Büyük Kargo Gövdesi', kind: 'cargo', category: 'Kargo', w: 2, h: 3, mass: 0.8, cargoCap: 10, cost: 1400, desc: '10 t modül veya maden taşır; büyük koloniler kurmak için.' },
 ]
 
-export const PART_BY_ID: Record<string, PartDef> = Object.fromEntries(PARTS.map((p) => [p.id, p]))
+/** ISS parçaları: montaj paletinde görünmez, yalnızca istasyonu oluşturur. */
+export const STATION_PARTS: PartDef[] = [
+  { id: 'iss-core', name: 'ISS Ana Modül', kind: 'station', category: 'Komuta', w: 2, h: 3, mass: 4, cost: 0, ecCap: 200, desc: 'Uluslararası Uzay İstasyonu ana modülü.' },
+  { id: 'iss-node', name: 'ISS Kenetlenme Kapısı', kind: 'station', category: 'Komuta', w: 2, h: 1, mass: 1, cost: 0, desc: 'Gemilerin kenetlendiği kapı.' },
+  { id: 'iss-wing', name: 'ISS Güneş Kanadı', kind: 'station', category: 'Komuta', w: 4, h: 2, mass: 1, cost: 0, desc: 'İstasyonun güneş panelleri.' },
+]
+export const ISS_DESIGN: PartInst[] = [
+  { def: 'iss-wing', x: 0, y: 0 },
+  { def: 'iss-core', x: 4, y: 0 },
+  { def: 'iss-wing', x: 6, y: 0 },
+  { def: 'iss-node', x: 4, y: 3 },
+]
+export const ISS_ALTITUDE_M = 75_000
+
+export const PART_BY_ID: Record<string, PartDef> = Object.fromEntries([...PARTS, ...STATION_PARTS].map((p) => [p.id, p]))
 
 export function partDef(id: string): PartDef {
   const d = PART_BY_ID[id]

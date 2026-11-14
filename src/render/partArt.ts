@@ -464,6 +464,66 @@ function drawProbe(ctx: Ctx, d: PartDef, w: number, h: number, c: number) {
   ctx.fill()
 }
 
+/** ISS parçaları: ana modül, kenetlenme kapısı ve güneş kanatları. */
+function drawStation(ctx: Ctx, id: string, w: number, h: number, c: number) {
+  if (id === 'iss-wing') {
+    ctx.fillStyle = '#8b949f'
+    ctx.fillRect(0, h * 0.46, w, h * 0.08)
+    for (let i = 0; i < 4; i += 1) {
+      const x = w * (0.02 + i * 0.245)
+      const g = ctx.createLinearGradient(x, 0, x + w * 0.22, h)
+      g.addColorStop(0, '#2c5fb8')
+      g.addColorStop(0.5, '#14336e')
+      g.addColorStop(1, '#c9973a')
+      ctx.fillStyle = g
+      rr(ctx, x, h * 0.04, w * 0.22, h * 0.92, c * 0.04)
+      ctx.fill()
+      ctx.strokeStyle = '#dfe4ea'
+      ctx.lineWidth = Math.max(0.5, c * 0.03)
+      ctx.stroke()
+      ctx.strokeStyle = 'rgba(190,215,255,.35)'
+      for (let k = 1; k < 6; k += 1) {
+        ctx.beginPath()
+        ctx.moveTo(x, h * (0.04 + (0.92 * k) / 6))
+        ctx.lineTo(x + w * 0.22, h * (0.04 + (0.92 * k) / 6))
+        ctx.stroke()
+      }
+    }
+    return
+  }
+  if (id === 'iss-node') {
+    rr(ctx, w * 0.12, 0, w * 0.76, h * 0.7, c * 0.06)
+    ctx.fillStyle = metal(ctx, 0, w, STEEL)
+    ctx.fill()
+    outline(ctx, c)
+    rr(ctx, w * 0.02, h * 0.62, w * 0.96, h * 0.38, c * 0.08)
+    ctx.fillStyle = metal(ctx, 0, w, DARK)
+    ctx.fill()
+    outline(ctx, c)
+    ctx.fillStyle = '#4ade80'
+    ctx.fillRect(w * 0.44, h * 0.72, w * 0.12, h * 0.16)
+    return
+  }
+  rr(ctx, 0.02 * c, 0, w - 0.04 * c, h, c * 0.22)
+  ctx.fillStyle = metal(ctx, 0, w, WHITE)
+  ctx.fill()
+  outline(ctx, c)
+  ctx.fillStyle = metal(ctx, 0, w, GOLD)
+  ctx.fillRect(0.02 * c, h * 0.44, w - 0.04 * c, h * 0.12)
+  for (const y of [0.18, 0.72]) {
+    ctx.fillStyle = '#12305c'
+    ctx.beginPath()
+    ctx.arc(w * 0.32, h * y, c * 0.17, 0, Math.PI * 2)
+    ctx.arc(w * 0.68, h * y, c * 0.17, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.fillStyle = '#8fd0ff'
+    ctx.beginPath()
+    ctx.arc(w * 0.3, h * y - c * 0.04, c * 0.06, 0, Math.PI * 2)
+    ctx.arc(w * 0.66, h * y - c * 0.04, c * 0.06, 0, Math.PI * 2)
+    ctx.fill()
+  }
+}
+
 export interface PartDrawOpts {
   /** parça gövdenin solunda mı (yan parçalar aynalanır) */
   flip?: boolean
@@ -495,6 +555,7 @@ export function drawPart(ctx: Ctx, p: PartInst, c: number, opts: PartDrawOpts = 
     case 'rtg': drawRtg(ctx, w, h, c); break
     case 'battery': drawBattery(ctx, w, h, c); break
     case 'cargo': drawCargo(ctx, w, h, c); break
+    case 'station': drawStation(ctx, d.id, w, h, c); break
   }
   ctx.restore()
 }

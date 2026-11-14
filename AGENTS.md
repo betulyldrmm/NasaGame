@@ -12,7 +12,9 @@
    - `src/flight/predict.ts` — yörünge tahmini.
    - `src/game/vessel.ts` — grid bağlantısı, yakıt grupları, motorlar, Δv.
 3. **NASA sabitleri tek yerde**: Gerçek değerler `REAL`, ölçek kararları `SCALE` içinde durur. Değişiklikler `docs/nasa-data-usage.md` raporuna işlenir.
-4. **Görseller prosedürel ve 2.5D**: Parçalar ve gezegenler Canvas 2D gradyanlarıyla çizilir (`src/render/`). Piksel-art kuralı kaldırılmıştır.
+4. **Görseller**: Roket parçaları ve gezegenler Canvas 2D gradyanlarıyla çizilir (`src/render/`). Koloni yapıları `public/assets/colony/` altındaki piksel-art görsellerdir.
+6. **Dil**: Kaynak metinler Türkçedir; varsayılan dil İngilizcedir. Yeni bir Türkçe metin eklediğinde çevirisini `src/i18n/en.ts` sözlüğüne ekle (sayılar ve gök cismi adları otomatik eşleşir).
+7. **Koloni**: Yapılar `MODULES` içinde tanımlanır; elektrik yuva sırasıyla dağıtılır ve güneş paneli üretimi `solarFlux` (1/r²) ile ölçeklenir. Teknoloji ağacı yoktur; yapılar `colonyTier` ile açılır.
 5. **Birimler**: metre, saniye, ton, kilonewton; 1 grid karesi = 1 m.
 
 ## 2. Dizin haritası
@@ -21,7 +23,9 @@
 - `src/flight/` — fizik, yörünge, dünya simülasyonu, testler.
 - `src/game/` — tipler, parça kataloğu, araç yapısı, görevler, üs ekonomisi, kayıt (`store.ts`).
 - `src/render/` — parça çizimleri ve uçuş/harita çizimi.
-- `src/components/` — `BuilderScreen` (grid montaj), `FlightScreen` (uçuş, harita, HUD, paneller), `IntroCutscene`.
+- `src/components/` — `BuilderScreen` (grid montaj), `FlightScreen` (uçuş, harita, HUD), `ColonyPanel` (sürükle-bırak koloni), `SettingsCorner` (dil, ses).
+- `src/i18n/` — çeviri katmanı ve İngilizce sözlük.
+- `src/audio.ts`, `public/audio/` — müzik ve ses efektleri.
 - `server/index.mjs` — bağımlılıksız Node.js sunucusu (statik dosyalar + `/api/save`).
 
 ## 3. Doğrulama

@@ -1,12 +1,11 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { effectiveIncomeDt, tickBasesOnly, totalPassiveIncomePerHour } from './flight/world'
-import { hasAffordableTech } from './game/tech'
 import AuthScreen from './components/AuthScreen'
 import BuilderScreen from './components/BuilderScreen'
 import IntroCutscene from './components/IntroCutscene'
-import PlanetGridPanel from './components/PlanetGridPanel'
-import TechTreeModal from './components/TechTreeModal'
+import PlanetGridPanel from './components/ColonyPanel'
 import { bump, clearOfflineGain, initAuth, logoutAccount, resetGame, saveGame, setIdleWarp, sim, useAuthState, useGame } from './game/store'
+import { audio } from './audio'
 import { messages } from './i18n/tr'
 
 const FlightScreen = lazy(() => import('./components/FlightScreen'))
@@ -19,7 +18,7 @@ function App() {
   const gs = useGame()
   const auth = useAuthState()
   const [dialog, setDialog] = useState<Dialog>(null)
-  const [showTech, setShowTech] = useState(false)
+  const setShowTech = (_open: boolean) => undefined
   const [showGrid, setShowGrid] = useState(false)
   const [showCutscene, setShowCutscene] = useState(false)
   const [screen, setScreen] = useState<'home' | 'assembly' | 'flight'>('home')
@@ -27,6 +26,10 @@ function App() {
   useEffect(() => {
     void initAuth()
   }, [])
+
+  useEffect(() => {
+    if (screen === 'home') audio.music('menu')
+  }, [screen])
 
   // Yeni girişte tamamen yeni hesapsa intro sinematiğini aç
   useEffect(() => {
@@ -70,7 +73,6 @@ function App() {
   }
 
   const passivePerHr = totalPassiveIncomePerHour(gs)
-  const techReady = hasAffordableTech(gs)
 
   return (
     <main className="app-shell">
@@ -127,8 +129,8 @@ function App() {
             <span>.</span>
           </h1>
           <p className="intro">
-            Kare grid üzerinde roketini kur; Dünya'daki başlangıç telemetri üssünden gelen pasif gelirle teknoloji ağacını aç. Merkür, Venüs, Ay, Mars, Ceres, Ganimed ve Titan'a inip koloni kur!
-          </p>
+            Kare grid üzerinde roketini kur, Dünya'dan kalk ve yörüngeye yerleş. ISS'e kargo götür, Ay'a ve Mars'a in, güneş enerjisiyle çalışan koloniler kur.
+            </p>
           <div className="actions">
             <button className="button button-primary" onClick={() => setScreen('assembly')}>
               <span aria-hidden="true">＋</span> {messages.newMission}
@@ -138,11 +140,8 @@ function App() {
                 Uçuşa devam et
               </button>
             )}
-            <button className={`button button-secondary${techReady ? ' has-ready' : ''}`} onClick={() => setShowTech(true)}>
-              🧬 Teknoloji Ağacı ({gs.techDone.length}){techReady ? ' •' : ''}
-            </button>
             <button className="button button-secondary" onClick={() => setShowGrid(true)}>
-              🪐 Koloni Gridi
+              🏗️ Koloni
             </button>
             <button
               className="button button-secondary"
@@ -205,15 +204,14 @@ function App() {
         />
       )}
 
-      {showTech && <TechTreeModal onClose={() => setShowTech(false)} />}
 
       {showGrid && (
         <div className="dialog-backdrop tech-backdrop" role="presentation" onClick={() => setShowGrid(false)}>
-          <section className="tech-modal panel-card grid-modal" role="dialog" aria-modal="true" aria-label="Koloni Gridi" onClick={(e) => e.stopPropagation()}>
+          <section className="tech-modal panel-card grid-modal" role="dialog" aria-modal="true" aria-label="Koloni" onClick={(e) => e.stopPropagation()}>
             <header className="tech-head">
               <div>
-                <p className="eyebrow"><span /> GEZEGEN YÜZEYİ & ÜS GRİDİ</p>
-                <h2>Koloni Gridi</h2>
+                <p className="eyebrow"><span /> YÜZEY KOLONİSİ</p>
+                <h2>Koloni</h2>
               </div>
               <div className="tech-head-right">
                 <span className="tech-budget">Bütçe: <b>{fmt(gs.money)} ₡</b></span>

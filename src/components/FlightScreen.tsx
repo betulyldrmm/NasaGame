@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { MODULE_BY_ID } from '../game/base'
 import { MISSIONS } from '../game/missions'
+import { audio } from '../audio'
+import { lang } from '../i18n'
 import { bump, saveGame, sim, useAuthState } from '../game/store'
-import { hasAffordableTech, hasAutoLandTech } from '../game/tech'
 import type { AutopilotMode, GameEvent, SasMode, Vessel } from '../game/types'
 import { activeEngines, cargoMass, estimateDeltaV, fuelGroups, vesselStats } from '../game/vessel'
 import { partDef } from '../game/data'
@@ -26,17 +27,21 @@ import {
   toggleKind,
   totalPassiveIncomePerHour,
   WARPS,
+  isStationVessel,
+  noteRcsPulse,
+  rendezvousStation,
 } from '../flight/world'
 import { BODIES, type BodyId, gameDate } from '../nasa/bodies'
 import { createView, type FlightFrame, type MapFrame, pickPart, pickVesselFlight, renderFlight, renderMap } from '../render/renderer'
-import PlanetGridPanel from './PlanetGridPanel'
-import TechTreeModal from './TechTreeModal'
+import PlanetGridPanel from './ColonyPanel'
 
 const DESTINATIONS: BodyId[] = ['moon', 'earth', 'mercury', 'venus', 'mars', 'ceres', 'ganymede', 'titan']
 const QUICK_WARPS = [
   { label: '1×', idx: 0 },
   { label: '25×', idx: 4 },
 ]
+
+const ACH_NAMES: Record<string, string> = { hamilton: 'Margaret Hamilton', 'dont-panic': "Don't Panic", 'water-tower': 'Su Kulesi Fırlatıldı', istikbal: 'İstikbal Göklerdedir', cay: 'Çaylar Şirketten' }
 
 const fmt = (n: number) => Math.round(n).toLocaleString('tr-TR')
 const km = (m: number) => (Math.abs(m) >= 1e7 ? `${(m / 1e6).toFixed(2)} Mm` : Math.abs(m) >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${m.toFixed(0)} m`)
@@ -79,6 +84,12 @@ interface Hud {
   cargo: string
   twr: number
   dockName: string | null
+  issDist: number | null
+  issRel: number
+  canRendezvous: boolean
+  tea: boolean
+  buff: boolean
+  achievements: string[]
   missionNext: string
   hasLegs: boolean
   legsOpen: boolean
@@ -182,13 +193,13 @@ function snapshot(): Hud {
     autopilot: 'off',
     autopilotNote: '',
     approachWarn: null,
-    hasAutoLand: hasAutoLandTech(gs),
+    hasAutoLand: true,
     sas: 'off',
     warp: WARPS[sim.warpIdx]!,
     warpIdx: sim.warpIdx,
     money: gs.money,
     passivePerHr: totalPassiveIncomePerHour(gs),
-    date: gameDate(gs.time).toLocaleDateString('tr-TR', { day: 'numeric', month: 'short', year: 'numeric' }),
+    date: gameDate(gs.time).toLocaleDateString(lang === 'en' ? 'en-GB' : 'tr-TR', { day: 'numeric', month: 'short', year: 'numeric' }),
     dv: 0,
     tol: 7,
     vessels: gs.vessels.map((o) => ({ id: o.id, name: o.name, body: BODIES[o.bodyId].name + (o.landed ? ' (yüzeyde)' : ''), active: o.id === gs.activeId })),
@@ -197,6 +208,12 @@ function snapshot(): Hud {
     cargo: '',
     twr: 0,
     dockName: null,
+    issDist: null,
+    issRel: 0,
+    canRendezvous: false,
+    tea: !!gs.teaMode,
+    buff: !!gs.buffUntil && Date.now() < gs.buffUntil,
+    achievements: gs.achievements ?? [],
     missionNext: MISSIONS.find((m) => !gs.missionsDone.includes(m.id))?.title ?? 'Tüm görevler tamamlandı',
     hasLegs: false,
     legsOpen: false,
@@ -204,7 +221,7 @@ function snapshot(): Hud {
     chutesOpen: false,
     hasSolar: false,
     solarOpen: false,
-    canTech: hasAffordableTech(gs),
+    canTech: false,
   }
   if (!v) return base
   const st = vesselStats(v.parts, v.cargo)
@@ -270,6 +287,15 @@ function snapshot(): Hud {
       return thrust / (st.mass * (body.mu / (s.r * s.r)))
     })(),
     dockName: dockCandidate(gs, v)?.name ?? null,
+    ...(() => {
+      const iss = gs.vessels.find((o) => o.id !== v.id && isStationVessel(o))
+      if (!iss || iss.bodyId !== v.bodyId || v.landed || isStationVessel(v)) return { issDist: null, issRel: 0, canRendezvous: false }
+      return {
+        issDist: Math.hypot(iss.pos.x - v.pos.x, iss.pos.y - v.pos.y),
+        issRel: Math.hypot(iss.vel.x - v.vel.x, iss.vel.y - v.vel.y),
+        canRendezvous: el.e < 1 && el.rp > body.radius + body.atmoHeight,
+      }
+    })(),
     hasLegs: st.legs > 0,
     legsOpen: st.legs > 0 && st.legsDeployed >= st.legs,
     hasChutes: st.chutes > 0,
@@ -295,10 +321,19 @@ export default function FlightScreen({ onBuilder }: Props) {
   const [isMap, setIsMap] = useState(false)
   const [toasts, setToasts] = useState<{ id: number; text: string; kind: string }[]>([])
   const [lost, setLost] = useState<string | null>(null)
+  const [alarm, setAlarm] = useState(false)
+  const spam = useRef<number[]>([])
+  const typed = useRef('')
   const [panel, setPanel] = useState<'missions' | 'base' | 'help' | null>(null)
   const [confirmDel, setConfirmDel] = useState<{ id: number; name: string } | null>(null)
-  const [showTech, setShowTech] = useState(false)
+  const setShowTech = (_open: boolean) => undefined
   const toastId = useRef(0)
+  useEffect(() => {
+    if (hud.landed) setAlarm(false)
+  }, [hud.landed])
+  useEffect(() => {
+    audio.music(null)
+  }, [])
   const spaceThrottle = useRef<{ vesselId: number; previousThrottle: number } | null>(null)
 
   const toast = useCallback((text: string, kind = 'info') => {
@@ -312,9 +347,16 @@ export default function FlightScreen({ onBuilder }: Props) {
       if (e.type === 'toast') toast(e.text)
       else if (e.type === 'mission') toast(`Görev tamamlandı: ${e.title}  +${fmt(e.reward)} ₡`, 'mission')
       else if (e.type === 'soi') toast(`${BODIES[e.to].name} etki alanına girildi (${BODIES[e.from].name} → ${BODIES[e.to].name}).`)
+      else if (e.type === 'explosion') audio.sfx('explosion', Math.min(0.9, 0.35 + e.size * 0.05))
+      else if (e.type === 'achievement') toast(`🏆 Başarım: ${e.title} — ${e.text}`, 'mission')
       else if (e.type === 'crash') {
-        if (e.wasActive) setLost(`${e.name} ${e.reason}.`)
-        else toast(`${e.name} ${e.reason}.`, 'warn')
+        if (e.wasActive) {
+          // Patlamalar görünsün diye kayıp ekranı biraz gecikir.
+          window.setTimeout(() => {
+            audio.sfx('lose', 0.5)
+            setLost(`${e.name}: ${e.reason}.`)
+          }, 1500)
+        } else toast(`${e.name}: ${e.reason}.`, 'warn')
       }
     }
   }, [toast])
@@ -356,11 +398,6 @@ export default function FlightScreen({ onBuilder }: Props) {
 
   const toggleAutopilot = useCallback(
     (mode: 'orbit' | 'transfer' | 'land') => {
-      if (mode === 'land' && !hasAutoLandTech(sim.gs)) {
-        setShowTech(true)
-        toast('Otomatik İniş Bilgisayarı için "Gelişmiş İniş" araştırmasını açmalısın.', 'warn')
-        return
-      }
       const v = activeVessel(sim.gs)
       if (!v) return
       const cur = effectiveAutopilot(v)
@@ -394,6 +431,24 @@ export default function FlightScreen({ onBuilder }: Props) {
       if (e.repeat) return
       keys.current.add(k)
       const v = activeVessel(sim.gs)
+      // Gizli mod: uçuşta "cay" yaz → Simit & Çay telemetrisi
+      if (k.length === 1) {
+        typed.current = (typed.current + k).slice(-3)
+        if (typed.current === 'cay' || typed.current === 'çay') {
+          sim.gs.teaMode = !sim.gs.teaMode
+          typed.current = ''
+          toast(sim.gs.teaMode ? '🫖 Gizli mod açıldı: Simit & Çay telemetrisi. Çayı dökmeden (2 m/s altında) in!' : 'Simit & Çay modu kapandı.', 'mission')
+        }
+      }
+      // 1202 alarmı: 100 m altında kontrollere abanırsan iniş bilgisayarı taşar
+      if (v && !v.landed && ['a', 'd', 'w', 's', 'z', 'x', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(k)) {
+        const now = performance.now()
+        spam.current = [...spam.current.filter((t) => now - t < 2500), now]
+        if (spam.current.length >= 12 && situation(v).alt < 100) {
+          spam.current = []
+          setAlarm(true)
+        }
+      }
       if (k === 'm') toggleMap()
       else if (k === '.') sim.warpIdx = Math.min(WARPS.length - 1, sim.warpIdx + 1)
       else if (k === ',') sim.warpIdx = Math.max(0, sim.warpIdx - 1)
@@ -407,7 +462,7 @@ export default function FlightScreen({ onBuilder }: Props) {
       }
       else if (k === 'z') v.throttle = 1
       else if (k === 'x') { spaceThrottle.current = null; v.throttle = 0; v.autoLand = false; v.autopilot = 'off'; v.autopilotNote = undefined }
-      else if (k === 'r') v.rcsOn = !v.rcsOn
+      else if (k === 'r') { v.rcsOn = !v.rcsOn; handle(noteRcsPulse(sim, v)) }
       else if (k === 't') v.sas = (['off', 'prograde', 'retrograde', 'radial'] as SasMode[])[((['off', 'prograde', 'retrograde', 'radial'] as SasMode[]).indexOf(v.sas) + 1) % 4]!
       else if (k === 'p') { const o = toggleKind(v, 'chute'); if (o !== null) toast(`Paraşütler ${o ? 'açıldı' : 'kapandı'}`) }
       else if (k === 'g') { const o = toggleKind(v, 'leg'); if (o !== null) toast(`İniş ayakları ${o ? 'açıldı' : 'kapandı'}`) }
@@ -496,6 +551,10 @@ export default function FlightScreen({ onBuilder }: Props) {
       }
       view.rcsTx = v?.rcsOn ? ctrl.tx : 0
       const events = stepWorld(sim, dt, ctrl)
+      {
+        const av = activeVessel(sim.gs)
+        audio.rocket(av && (sim.firing.get(av.id)?.size ?? 0) > 0 ? av.throttle : 0)
+      }
       if (events.length) handle(events)
       const cur = activeVessel(sim.gs)
       if (n % 3 === 0) patchesRef.current = cur && !cur.landed ? predictTrajectory(cur.bodyId, cur.pos, cur.vel, sim.gs.time) : []
@@ -511,6 +570,7 @@ export default function FlightScreen({ onBuilder }: Props) {
     raf = requestAnimationFrame(loop)
     return () => {
       cancelAnimationFrame(raf)
+      audio.rocket(0)
       window.removeEventListener('resize', resize)
       void saveGame(true)
       bump()
@@ -617,14 +677,15 @@ export default function FlightScreen({ onBuilder }: Props) {
 
   return (
     <main className="flight">
+      {alarm && !hud.landed && <div className="alarm-1202" role="alert">ERR 1202: EXEC OVERFLOW<small>İrtifa göstergesi devre dışı — göz kararı in!</small></div>}
+      {hud.tea && <div className="tea-glass" title="Çayı dökme!">🍵</div>}
       <canvas ref={canvasRef} className="flight-canvas" onWheel={onWheel} onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={() => (drag.current = null)} />
 
       <div className="hud hud-tl">
         <button className="hud-btn" onClick={onBuilder}>☰ Montaj</button>
         <button className={`hud-btn${isMap ? ' is-on' : ''}`} onClick={toggleMap}>{isMap ? 'Uçuş (M)' : 'Harita (M)'}</button>
         <button className="hud-btn" onClick={() => setPanel(panel === 'missions' ? null : 'missions')}>🎯 Görevler</button>
-        <button className="hud-btn" onClick={() => setPanel(panel === 'base' ? null : 'base')}>🪐 Koloni Gridi</button>
-        <button className={`hud-btn${hud.canTech ? ' has-ready' : ''}`} onClick={() => setShowTech(true)}>🧬 Ar-Ge{hud.canTech ? ' •' : ''}</button>
+        <button className="hud-btn" onClick={() => setPanel(panel === 'base' ? null : 'base')}>🏗️ Koloni</button>
         <button className="hud-btn" onClick={() => setPanel(panel === 'help' ? null : 'help')}>?</button>
         <span className="hud-money" title="Saatlik toplam pasif gelir (zaman hızlandırmada gelir en fazla 5× artar)">
           {fmt(hud.money)} ₡ <small className="income-sub">+{fmt(hud.passivePerHr)}/sa</small>
@@ -656,13 +717,14 @@ export default function FlightScreen({ onBuilder }: Props) {
           {hud.has && (
             <>
               <span className="big">{BODIES[hud.body].name}</span>
-              <span>Yükseklik</span><b>{km(hud.alt)}</b>
+              <span>Yükseklik</span><b className={alarm ? 'warn' : ''}>{alarm ? '— — —' : km(hud.alt)}</b>
               <span>Hız</span><b>{hud.speed.toFixed(1)} m/s</b>
               <span>Dikey</span><b className={hud.vr < -hud.tol && hud.alt < 2000 ? 'bad' : ''}>{hud.vr.toFixed(1)} m/s</b>
               {hud.apo !== null && <><span>Öte nokta</span><b>{km(hud.apo)}</b></>}
               {hud.peri !== null && <><span>Enberi</span><b className={hud.peri < 0 ? 'warn' : ''}>{km(hud.peri)}</b></>}
               <span>Kalan Δv</span><b>{fmt(hud.dv)} m/s</b>
               <span>TWR</span><b className={hud.twr >= 1.2 ? 'ok' : hud.twr >= 1 ? 'warn' : hud.landed ? 'bad' : ''}>{hud.twr.toFixed(2)}</b>
+              {hud.issDist !== null && <><span>ISS</span><b>{km(hud.issDist)} · {hud.issRel.toFixed(0)} m/s</b></>}
             </>
           )}
         </div>
@@ -672,15 +734,15 @@ export default function FlightScreen({ onBuilder }: Props) {
       {hud.has && (
         <>
           <div className="hud hud-bl">
-            <div className="gauge"><span>Kademe yakıtı</span><i><em style={{ width: pct(hud.stageFuel, hud.stageCap) }} /></i><small>{hud.stageFuel.toFixed(1)} t</small></div>
-            <div className="gauge"><span>Toplam yakıt</span><i><em style={{ width: pct(hud.fuel, hud.fuelCap) }} /></i><small>{hud.fuel.toFixed(1)} t</small></div>
+            <div className="gauge"><span>{hud.tea ? '🫖 Dem' : 'Kademe yakıtı'}</span><i><em style={{ width: pct(hud.stageFuel, hud.stageCap) }} /></i><small>{hud.stageFuel.toFixed(1)} t</small></div>
+            <div className="gauge"><span>{hud.tea ? '♨️ Sıcak Su' : 'Toplam yakıt'}</span><i><em style={{ width: pct(hud.fuel, hud.fuelCap) }} /></i><small>{hud.fuel.toFixed(1)} t</small></div>
             <div className="gauge ec"><span>Elektrik</span><i><em style={{ width: pct(hud.ec, hud.ecCap) }} /></i><small>{hud.ec.toFixed(0)}</small></div>
             {hud.cargo && <div className="cargo-line">Kargo: {hud.cargo}</div>}
             <div className="vessel-list">
               {hud.vessels.map((o) => (
                 <div key={o.id} className="vessel-row">
                   <button className={o.active ? 'is-on' : ''} onClick={() => switchTo(o.id)}>{o.name}<small>{o.body}</small></button>
-                  <button className="vessel-del" title={`${o.name} aracını sil`} aria-label={`${o.name} aracını sil`} onClick={() => setConfirmDel({ id: o.id, name: o.name })}>🗑</button>
+                  {o.name !== 'ISS' && <button className="vessel-del" title="Aracı sil" aria-label="Aracı sil" onClick={() => setConfirmDel({ id: o.id, name: o.name })}>🗑</button>}
                 </div>
               ))}
             </div>
@@ -785,6 +847,9 @@ export default function FlightScreen({ onBuilder }: Props) {
                   ☀️ Panel
                 </button>
               )}
+              {hud.canRendezvous && !hud.dockName && (
+                <button className="hud-btn" title="Yakıt harcayarak ISS'in yanına gider; son kenetlenme sende." onClick={() => act((v) => { const err = rendezvousStation(sim, v); return err ?? [{ type: 'toast', text: 'Buluşma tamamlandı: ISS 22 m önünde. Kenetlen düğmesine bas.' }] })}>🛰️ ISS'e git</button>
+              )}
               {hud.dockName && (
                 <button
                   className="hud-btn recover"
@@ -834,12 +899,14 @@ export default function FlightScreen({ onBuilder }: Props) {
               )
             })}
           </ul>
+          <h3 className="ach-title">Başarımlar ({hud.achievements.length})</h3>
+          <p className="base-note">{hud.achievements.length ? hud.achievements.map((a) => ACH_NAMES[a] ?? a).join(' · ') : 'Henüz başarım yok. Evrende gizli sürprizler var…'}</p>
         </aside>
       )}
 
       {panel === 'base' && (
         <aside className="side-panel">
-          <header><h2>🪐 Koloni Gridi</h2><button onClick={() => setPanel(null)}>×</button></header>
+          <header><h2>🏗️ Koloni</h2><button onClick={() => setPanel(null)}>×</button></header>
           <PlanetGridPanel
             initialBody={hud.body}
             onNotify={(msg, kind) => toast(msg, kind)}
@@ -866,7 +933,7 @@ export default function FlightScreen({ onBuilder }: Props) {
           <ul className="help-list">
             <li><kbd>W</kbd>/<kbd>S</kbd> itki ±, <kbd>Z</kbd> tam itki, <kbd>X</kbd> motoru kes</li>
             <li><kbd>A</kbd>/<kbd>D</kbd> döndür · <kbd>T</kbd> yön kilidi (ileri / geri / radyal)</li>
-            <li><kbd>L</kbd> Otomatik İniş Bilgisayarı (Teknoloji Ağacıyla açılır)</li>
+            <li><kbd>L</kbd> Otomatik İniş Bilgisayarı</li>
             <li><kbd>Boşluk</kbd> basılı tut: motor itkisi · kademeyi ayırmak için adaptöre tıkla</li>
             <li><kbd>M</kbd> uzay haritası · tekerlek: yakınlaş/uzaklaş · sürükle: kaydır</li>
             <li><kbd>,</kbd>/<kbd>.</kbd> zamanı yavaşlat / hızlandır (fizikte 25×, yörüngede 100.000×)</li>
@@ -892,7 +959,7 @@ export default function FlightScreen({ onBuilder }: Props) {
                   setHud(snapshot())
                   void saveGame(true)
                   bump()
-                  toast(`${confirmDel.name} silindi.`)
+                  toast('Araç silindi.')
                 }}
               >
                 Evet, sil
@@ -921,7 +988,6 @@ export default function FlightScreen({ onBuilder }: Props) {
         </div>
       )}
 
-      {showTech && <TechTreeModal onClose={() => setShowTech(false)} />}
     </main>
   )
 }

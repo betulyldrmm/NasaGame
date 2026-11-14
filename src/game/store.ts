@@ -1,8 +1,8 @@
 /** Tekil oyun durumu, hesap oturumu ve hesaba özel kalıcılık. */
 import { useSyncExternalStore } from 'react'
 import { SHIP_SLOT_COUNT } from './data'
-import { ensureBaseGrid, STARTER_EARTH_MODULES, syncBaseModulesFromGrid } from './base'
-import { INITIAL_TECH, TECH_MIGRATION } from './tech'
+import { emptyBase, ensureSites, STARTER_EARTH_SITES, syncModules } from './base'
+import { INITIAL_TECH } from './tech'
 import type { GameCommand, GameState } from './types'
 import type { BodyId } from '../nasa/bodies'
 import { PAD_ANGLE } from '../flight/physics'
@@ -84,26 +84,21 @@ export function normalizeGameState(raw: unknown): GameState {
     ...gs,
     bases: { ...(gs.bases ?? {}) },
     missionsDone: Array.isArray(gs.missionsDone) ? [...gs.missionsDone] : [],
-    techDone: Array.isArray(gs.techDone) && gs.techDone.length
-      ? [...new Set([INITIAL_TECH, ...gs.techDone.map((id) => TECH_MIGRATION[id] ?? id)])]
-      : [INITIAL_TECH],
+    techDone: [INITIAL_TECH],
     designCargo: gs.designCargo ? { ...gs.designCargo } : {},
     targetBody: gs.targetBody ?? 'moon',
     shipSlots: Array.from({ length: SHIP_SLOT_COUNT }, (_, i) => (Array.isArray(gs.shipSlots) ? gs.shipSlots[i] ?? null : null)),
   }
   if (!merged.bases.earth) {
-    merged.bases.earth = {
-      modules: { ...STARTER_EARTH_MODULES },
-      ore: 0,
-      siteAngle: PAD_ANGLE,
-      earned: 0,
-    }
+    merged.bases.earth = emptyBase(PAD_ANGLE)
+    merged.bases.earth.sites = [...STARTER_EARTH_SITES]
+    syncModules(merged.bases.earth)
   }
   for (const id of Object.keys(merged.bases) as BodyId[]) {
     const b = merged.bases[id]
     if (b) {
-      ensureBaseGrid(b, id)
-      syncBaseModulesFromGrid(b)
+      ensureSites(b)
+      syncModules(b)
     }
   }
   const now = Date.now()
