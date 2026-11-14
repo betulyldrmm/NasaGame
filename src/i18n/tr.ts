@@ -1,0 +1,16 @@
+export const messages = {
+  title: 'Space Mission Design Game',
+  eyebrow: 'KEŞİF BAŞLIYOR',
+  status: 'SİSTEMLER ÇEVRİM İÇİ',
+  description: 'Bir uzay görevini tasarla. Roketini kur, hedefini seç ve keşfedilmemiş dünyalara doğru yola çık. Bilim ve keşif, senin kontrolünde.',
+  newMission: 'Yeni Görev',
+  howToPlay: 'Nasıl Oynanır?',
+  footnote: 'HER GÖREV BİR KEŞİFLE BAŞLAR',
+  footer: 'FAZ 01  ·  HAZIRLIK AŞAMASI',
+  dialogEyebrow: 'GÖREV KONTROLÜ',
+  comingSoon: 'Görev hazırlığı sürüyor',
+  missionInfo: 'Görev tasarım ekranı bir sonraki geliştirme aşamasında açılacak. Şimdilik görev sistemleri hazırlanıyor.',
+  instructions: 'Bir hedef seç, görevine uygun roket bileşenlerini bir araya getir ve kalkış koşullarını kontrol et. Her tercih görevinin başarısını ve bütçeni etkiler.',
+  gotIt: 'Anlaşıldı',
+  close: 'Pencereyi kapat',
+} as const
