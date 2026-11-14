@@ -11,6 +11,8 @@ export interface RocketEngine {
   id: string
   name: string
   thrustN: number
+  /** Assumed propellant mass flow in kilograms per second (kg/s); a game input, not measured engine data. */
+  fuelConsumptionKgPerSecond: number
   dryMassKg: number
   costCredits: number
 }
@@ -37,6 +39,8 @@ export interface Planet {
   name: string
   /** Surface gravitational acceleration in metres per second squared (m/s²). */
   gravityMps2: number
+  /** Distance from Sun in AU (for 1/r² solar power). */
+  distanceAU?: number
 }
 
 export interface Mission {

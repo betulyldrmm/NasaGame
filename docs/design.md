@@ -1,38 +1,20 @@
-# Tasarım notları
+# Space Mission Design Game — Mimari ve Tasarım Yol Haritası
 
-## Faz 1 altyapısı
+## Tamamlanan Özellikler (Faz 1 + Faz 2)
 
-React + TypeScript + Vite uygulaması, oyun veri tipleri ve React'ten bağımsız kütle/TWR/maliyet hesaplamaları oluşturuldu. NASA kaynakları ve bilimsel sınırlamalar `nasa-data-usage.md` içindedir.
-
-## Faz 2: roket montajı (uygulandı)
-
-- Ana menüden montaj ekranına geçiş ve menüye dönüş.
-- Katalog tabanlı gövde, motor, yakıt tankı ve kargo seçimi.
-- Zustand ile montaj durumunun yönetimi; yapılandırma `RocketConfiguration` biçiminde Phaser sahnesine aktarılabilecek şekilde sunulur.
-- Kargo yuvası sınırı ve gövde küçültülünce kapasiteye göre fazla kargonun çıkarılması.
-- Her seçimde anlık toplam kütle, itki, Dünya yüzeyinde TWR, maliyet ve bütçe bakiyesi.
-- TWR renk eşikleri: `< 1,0` kırmızı, `1,0–<1,2` sarı, `≥ 1,2` yeşil. Bu eşikler oyunlaştırılmış bilgilendirmedir; uçuş başarısını garanti etmez.
-- Basit, kodla çizilmiş pixel-art roket önizlemesi; seçili gövde boyu ve kargo görünümü değişir.
-
-Parça kütleleri, itki ve maliyetler oyun varsayımıdır. Başlangıç kredisi bu fazda harcanmaz.
-
-## Faz 2.5: 2.5D roket önizlemesi (uygulandı)
-
-- React Three Fiber + Three.js Canvas yalnızca roket önizleme alanında kullanılır; React 19 ile uyumlu Fiber v9 seçildi.
-- Sabit ortografik kamera, düşük segmentli gövde/motor/koni geometrileri, parça halkaları, kargo şekilleri, ışık ve gölge ile 2.5D sunum.
-- Gövde yuvası, motor tipi, yakıt tankı ve kargo görsel boyutları mevcut Zustand montaj seçimlerinden türetilir.
-- Talep üzerine render; WebGL erişilemezse önceki SVG 2D önizlemesi gösterilir.
-- Uçuş simülasyonu, orbit kamera kontrolü ve gameplay fiziği bu aşamada eklenmedi.
-
-## Gelecek fazlar
-
-- Gezegen seçimine bağlı TWR ve daha ayrıntılı görev bağlamı
-- Delta-V kapasitesi
-- Ay/Mars iniş sistemleri
-- Phaser tabanlı 2D uçuş sahnesi
-- Görev başarısı/başarısızlığı, ödül ve bütçe kaybı
-- Koloni kurma ve kaynak üretimi
-
-## Mimari yön
-
-Katalog `src/game/data.ts`, tipler `src/game/types.ts`, saf hesaplamalar `src/game/calculations.ts`, Zustand montaj durumu `src/game/assemblyStore.ts` içindedir. React ekranı bunları tüketir; görsel sahne oyun durumunu kullanabilir ama React bileşenlerine bağımlı olmamalıdır. Arayüz metinleri `src/i18n` altında tutulur.
+- **Modüler Roket Montaj Ekranı (VAB)**: Gövde (1, 2, 4 kargo yuvalı), motor, yakıt tankı, aerodinamik kanatçık (Fin), iniş sistemi ve koloni modülü seçimi.
+- **Canlı Kalkış Gücü (TWR) İbresi**: `< 1.0` Kırmızı (Kalkamaz), `1.0–1.19` Sarı (Riskli/Yavaş), `≥ 1.2` Yeşil (Güvenli Kalkış).
+- **Ağırlık Merkezi (CoM - Sarı Daire) ve Basınç Merkezi (CoP - Mavi Üçgen)**: Roket şeması üzerinde canlı hareket eden denge sembolleri ve T+5. saniyede atmosferik takla (spin) mekaniği.
+- **Tsiolkovsky Roket Denklemi ve Delta-V**: $\Delta v = I_{sp} \times g_0 \times \ln(m_0 / m_f)$ hesabı ve transfer yörüngesinde yakıt bitmesi simülasyonu.
+- **Gezegen Atmosferleri, Yerçekimleri ve $1/r^2$ Güneş Yasası**:
+  - Dünya LEO ($9.81\text{ m/s}^2$, $1.0\text{ AU}$)
+  - Ay ($1.62\text{ m/s}^2$, $1.0\text{ AU}$, 0 bar vakum — paraşüt çalışmaz, ters itki gerekir)
+  - Mars ($3.71\text{ m/s}^2$, $1.52\text{ AU}$, $\%43.3$ güneş verimi, ince atmosfer — ısı kalkanı + skycrane gerekir)
+  - Europa ($1.315\text{ m/s}^2$, $5.20\text{ AU}$, $\%3.7$ güneş verimi — RTG nükleer jeneratör ve ters itki gerekir)
+- **60 FPS HTML5 Canvas Uçuş Simülatörü**: Paralaks yıldız katmanları, rampa duman/sarsıntı efekti, rampa iptal (`Pad Abort`) butonu, T+5s takla ve infilak, yörünge transferi ve yüzey inişi.
+- **Ekonomi, Kademeli Maliyet Kaybı ve Anti-Softlock**:
+  - Rampada iptal veya kalkamama durumunda yalnızca **%15 yakıt maliyeti** yanar.
+  - Uçuş sırasında patlama/kaybolmada **%100 üretim maliyeti** kaybedilir.
+  - Her yeni hata türü **+35 Telemetri Bilim Puanı (XP)** kazandırır (Ar-Ge laboratuvarında yeni motorlar ve RTG açılır).
+  - Bütçe bittiğinde **NASA Acil Araştırma Fonu (+450 ₡)** devreye girer.
+- **2D Kesit (Terraria Stili) Gezegen Koloni Üssü**: Yüzey enerji hattı, biyo-kubbe sera katı, yaşam/komuta katı ve yeraltı maden galerisi; net enerji $< 0$ olduğunda **Blackout (Şalter İndirme)** mekaniği.

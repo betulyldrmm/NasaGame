@@ -9,12 +9,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@react-three/fiber": "^9.8.1",
-    "@types/three": "^0.180.0",
     "phaser": "^3.90.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "three": "^0.180.0",
     "zustand": "^5.0.8"
   },
   "devDependencies": {

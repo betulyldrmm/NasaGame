@@ -10,9 +10,9 @@ export const ROCKET_BODIES: RocketBody[] = [
 ]
 
 export const ROCKET_ENGINES: RocketEngine[] = [
-  { id: 'engine-spark', name: 'Spark', thrustN: 30_000, dryMassKg: 250, costCredits: 100 },
-  { id: 'engine-voyager', name: 'Voyager', thrustN: 75_000, dryMassKg: 500, costCredits: 210 },
-  { id: 'engine-titan', name: 'Titan', thrustN: 150_000, dryMassKg: 900, costCredits: 380 },
+  { id: 'engine-spark', name: 'Spark', thrustN: 30_000, fuelConsumptionKgPerSecond: 10.2, dryMassKg: 250, costCredits: 100 },
+  { id: 'engine-voyager', name: 'Voyager', thrustN: 75_000, fuelConsumptionKgPerSecond: 25.5, dryMassKg: 500, costCredits: 210 },
+  { id: 'engine-titan', name: 'Titan', thrustN: 150_000, fuelConsumptionKgPerSecond: 51, dryMassKg: 900, costCredits: 380 },
 ]
 
 export const FUEL_TANKS: FuelTank[] = [
@@ -30,7 +30,7 @@ export const PAYLOADS: Payload[] = [
 
 /** Mean/representative surface gravity, rounded for gameplay; see docs/nasa-data-usage.md. */
 export const PLANETS: Planet[] = [
-  { id: 'earth', name: 'Dünya', gravityMps2: 9.81 },
-  { id: 'moon', name: 'Ay', gravityMps2: 1.62 },
-  { id: 'mars', name: 'Mars', gravityMps2: 3.71 },
+  { id: 'earth', name: 'Dünya', gravityMps2: 9.81, distanceAU: 1.0 },
+  { id: 'moon', name: 'Ay', gravityMps2: 1.62, distanceAU: 1.0 },
+  { id: 'mars', name: 'Mars', gravityMps2: 3.71, distanceAU: 1.52 },
 ]

@@ -1,18 +1,13 @@
-# NASA veri kullanımı
+# NASA Veri Kullanımı ve Bilimsel Kaynak Kaydı
 
-| NASA kaynağı | Veri ve ilgili mekanik | Birimler | Durum |
+| NASA Kaynağı | Oyunda Kullanılan Veri ve Mekanik | Birimler | Durum |
 |---|---|---|---|
-| [NASA Planetary Fact Sheet](https://nssdc.gsfc.nasa.gov/planetary/factsheet/) | Dünya, Ay ve Mars yüzey yerçekimi; ileride hedefe bağlı TWR | m/s² | Entegre edildi; oyun değerleri yuvarlandı |
-| [NASA Moon: By the Numbers](https://science.nasa.gov/moon/by-the-numbers/) | Ay yüzey yerçekimi için çapraz başvuru | m/s² | Doğrulama kaynağı |
-| [NASA Glenn: Free Falling Objects](https://www1.grc.nasa.gov/beginners-guide-to-aeronautics/free-falling-objects/) | Ağırlık ve ivme kavramları; TWR eğitim açıklaması | m/s², N | Planlandı |
-| [NASA Mission Visualization](https://nasa.github.io/mission-viz/) / [kaynak deposu](https://github.com/nasa/mission-viz) | İleride yörünge görselleştirme yaklaşımına başvuru | Uygulanamaz | Kaynak incelendi; Faz 2'de veri kullanılmadı |
+| [NASA NSSDC Planetary Fact Sheet](https://nssdc.gsfc.nasa.gov/planetary/factsheet/) | Dünya ($9.81\text{ m/s}^2$), Ay ($1.62\text{ m/s}^2$), Mars ($3.71\text{ m/s}^2$) ve Europa ($1.315\text{ m/s}^2$) yüzey yerçekimi ivmeleri, atmosfer basınçları (bar) ve Güneş uzaklıkları (AU) | $\text{m/s}^2$, $\text{AU}$, $\text{bar}$ | Tam entegre edildi |
+| [NASA JPL Solar System Dynamics](https://ssd.jpl.nasa.gov/) | Gezegenlerarası transfer yörüngeleri ve kademeli $\Delta v$ gereksinimleri | $\text{m/s}$ | Tam entegre edildi (oyun ölçekli) |
+| [NASA Glenn Research Center — Beginner's Guide to Rockets](https://www1.grc.nasa.gov/beginners-guide-to-aeronautics/) | TWR ($F / m \cdot g$), Tsiolkovsky Roket Denklemi ($\Delta v = I_{sp} \cdot g_0 \cdot \ln(m_0/m_f)$) ve CoM / CoP aerodinamik kararlılık kuralları | $\text{N}$, $\text{kg}$, $\text{s}$ | Tam entegre edildi |
 
-## Bilimsel veriler ve oyun varsayımları
+## Oyunlaştırılmış Varsayımlar ve Bilimsel Notlar
 
-Gezegen katalog değerleri NASA kaynaklarındaki yaklaşık yüzey yerçekimlerinden alınmıştır: Dünya 9,81 m/s², Ay 1,62 m/s² ve Mars 3,71 m/s². Faz 2 TWR ekranı istekte belirtildiği üzere yalnızca Dünya değeri olan 9,81 m/s² ile hesaplanır.
-
-Gövde, motor, yakıt ve kargo kütleleri; motor itkileri; parça fiyatları; 1.000 kredi bütçe ve TWR renk eşikleri oyunlaştırılmış varsayımlardır. Bunlar NASA donanım performans verisi değildir. İtki N (arayüzde kN), kütle kg, yerçekimi m/s² ve maliyet oyun kredisi olarak tutulur.
-
-## Bilimsel sınırlılıklar
-
-TWR, basit itki / (kütle × yerçekimi) oranıdır. Atmosfer, sürükleme, itki eğrisi, yakıt tüketimi sırasında değişen kütle, kademeler, yörünge ve iniş dinamiği modellenmez. TWR eşikleri yalnızca oyun içi eğitim göstergesidir ve görev başarısını ya da gerçek uçuş güvenliğini garanti etmez. Proje içinde PDF rehberi yoktur; PDF içeriği incelenemedi.
+- Gezegen yüzey yerçekimleri, atmosfer tipleri (Ay/Europa 0 bar vakum; Mars 0.006 bar ince $\text{CO}_2$) ve Güneş'e uzaklığa bağlı $1/r^2$ güneş enerjisi verimi (1 AU = %100, Mars 1.52 AU = %43.3, Europa 5.2 AU = %3.7) doğrudan NASA NSSDC verilerine dayanır.
+- Gövde, motor, yakıt tankı kütleleri ve kredi maliyetleri 48 saatlik eğitici oyun döngüsü için ölçeklendirilmiştir.
+- Her hata ve başarı bilgi kartının (`LearningCardModal`) altında ilgili resmi NASA kaynağı referans gösterilmiştir.
