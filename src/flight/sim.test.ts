@@ -257,3 +257,49 @@ describe('25x warp & auto-land', () => {
     expect(lander.parts.some((p) => p.def === 'leg' && p.deployed)).toBe(true)
   })
 })
+
+describe('ship presets, delete and docking', () => {
+  it('presets are valid, launchable and have usable delta-v', async () => {
+    const { SHIP_PRESETS } = await import('../game/data')
+    const { validateDesign, designCost, deleteVessel, dockCandidate, dockVessels, decouple } = await import('./world')
+    const { isConnected: conn, estimateDeltaV: dvOf, vesselStats: stats } = await import('../game/vessel')
+    const gs = newGame()
+    for (const p of SHIP_PRESETS) {
+      const full = p.id === 'atlas' ? 8 : 0
+      const st = dvOf(p.design, full)
+      console.log(p.name, designCost(p.design, {}), st.map((s) => `${s.dv.toFixed(0)}@${s.twr.toFixed(2)}`))
+      expect(validateDesign(p.design, {}, gs)).toBeNull()
+      expect(conn(p.design)).toBe(true)
+      expect(st[0]!.twr).toBeGreaterThan(1.2)
+      expect(st.reduce((a, s) => a + s.dv, 0)).toBeGreaterThan(p.id === 'atlas' ? 3900 : 5000)
+      expect(designCost(p.design, {})).toBeLessThan(40000)
+    }
+    // sil + kenetlen
+    const sim: Sim = { gs, warpIdx: 0, firing: new Map() }
+    expect(launchDesign(sim)).toBeNull()
+    const a = activeVessel(gs)!
+    a.landed = false
+    a.pos = { x: 0, y: BODIES.earth.radius + 60_000 }
+    a.vel = { x: -1600, y: 0 }
+    const ev = stageNext(sim, a)
+    expect(ev.length).toBe(1)
+    expect(gs.vessels.length).toBe(3)
+    const booster = gs.vessels.find((v) => v.id !== a.id)!
+    expect(dockCandidate(gs, a)).not.toBeNull()
+    const partsBefore = a.parts.length + booster.parts.length
+    dockVessels(sim, a, booster)
+    expect(gs.vessels.length).toBe(2)
+    expect(a.parts.length).toBe(partsBefore + 1)
+    expect(conn(a.parts)).toBe(true)
+    expect(stats(a.parts).hasCommand).toBe(true)
+    // adaptörle yeniden ayrılabilir
+    const dec = a.parts.findIndex((p) => p.def === 'decoupler' && p.y === Math.min(...a.parts.filter((q) => q.def === 'decoupler').map((q) => q.y)))
+    decouple(sim, a, [dec])
+    expect(gs.vessels.length).toBe(3)
+    const other = gs.vessels.find((v) => v.id !== a.id)!
+    expect(deleteVessel(sim, other.id)).toBe(true)
+    expect(gs.vessels.length).toBe(2)
+    expect(deleteVessel(sim, a.id)).toBe(true)
+    expect(gs.activeId).not.toBe(a.id)
+  })
+})

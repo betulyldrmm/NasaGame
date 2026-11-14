@@ -81,3 +81,63 @@ export const DEFAULT_DESIGN: PartInst[] = [
   { def: 'tank-l', x: 9, y: 20 },
   { def: 'hawk', x: 9, y: 23 },
 ]
+
+export const SHIP_SLOT_COUNT = 5
+
+/** Pioneer: ucuz, iki kademeli; Dünya yörüngesi ve Ay yakın geçişi için. */
+const PIONEER_DESIGN: PartInst[] = [
+  { def: 'chute', x: 6, y: 9 },
+  { def: 'capsule', x: 6, y: 10 },
+  { def: 'tank-m', x: 6, y: 12 },
+  { def: 'leg', x: 5, y: 13 },
+  { def: 'leg', x: 8, y: 13 },
+  { def: 'frontier', x: 6, y: 14 },
+  { def: 'decoupler', x: 6, y: 16 },
+  { def: 'tank-l', x: 6, y: 17 },
+  { def: 'tank-xl', x: 6, y: 20 },
+  { def: 'titan', x: 6, y: 24 },
+]
+
+/** Atlas Kargo: iki kargo gövdeli (8 t) ağır Ay yük taşıyıcısı. */
+const ATLAS_DESIGN: PartInst[] = [
+  { def: 'capsule', x: 6, y: 0 },
+  { def: 'cargo', x: 6, y: 2 },
+  { def: 'solar', x: 5, y: 2 },
+  { def: 'solar', x: 8, y: 2 },
+  { def: 'cargo', x: 6, y: 4 },
+  { def: 'tank-l', x: 6, y: 6 },
+  { def: 'leg', x: 5, y: 8 },
+  { def: 'leg', x: 8, y: 8 },
+  { def: 'frontier', x: 6, y: 9 },
+  { def: 'decoupler', x: 6, y: 11 },
+  { def: 'tank-xl', x: 6, y: 12 },
+  { def: 'hawk', x: 6, y: 16 },
+  { def: 'decoupler', x: 6, y: 18 },
+  { def: 'tank-xl', x: 6, y: 19 },
+  { def: 'tank-xl', x: 6, y: 23 },
+  { def: 'titan', x: 6, y: 27 },
+  { def: 'radial', x: 5, y: 24 },
+  { def: 'radial', x: 8, y: 24 },
+  { def: 'nose', x: 3, y: 18 },
+  { def: 'tank-l', x: 3, y: 20 },
+  { def: 'tank-xl', x: 3, y: 23 },
+  { def: 'titan', x: 3, y: 27 },
+  { def: 'nose', x: 9, y: 18 },
+  { def: 'tank-l', x: 9, y: 20 },
+  { def: 'tank-xl', x: 9, y: 23 },
+  { def: 'titan', x: 9, y: 27 },
+]
+
+export interface ShipPreset {
+  id: string
+  name: string
+  desc: string
+  design: PartInst[]
+}
+
+/** Hızlı başlangıç için hazır gemiler (yalnızca başlangıç teknolojisindeki parçalar). */
+export const SHIP_PRESETS: ShipPreset[] = [
+  { id: 'selene', name: 'Selene I', desc: 'Üç kademeli Ay gidiş-dönüş roketi, 4 t kargo.', design: DEFAULT_DESIGN },
+  { id: 'pioneer', name: 'Pioneer', desc: 'Ucuz ve hafif: Dünya yörüngesi, Ay yakın geçişi.', design: PIONEER_DESIGN },
+  { id: 'atlas', name: 'Atlas Kargo', desc: 'Ağır yük taşıyıcı: Ay\'a 8 t üs modülü indirir.', design: ATLAS_DESIGN },
+]

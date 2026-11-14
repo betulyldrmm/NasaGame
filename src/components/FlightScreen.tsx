@@ -4,10 +4,10 @@ import { MISSIONS } from '../game/missions'
 import { bump, saveGame, sim, useAuthState } from '../game/store'
 import { baseIncomeMultiplier, hasAutoLandTech, isModuleUnlocked, orePriceMultiplier, requiredTechForModule } from '../game/tech'
 import type { GameEvent, SasMode, Vessel } from '../game/types'
-import { cargoMass, estimateDeltaV, fuelGroups, nextStage, vesselStats } from '../game/vessel'
+import { activeEngines, cargoMass, estimateDeltaV, fuelGroups, nextStage, vesselStats } from '../game/vessel'
 import { partDef } from '../game/data'
 import { bodyAbsState, bodyRelState, elementsFromState, hohmann, len, wrapPi } from '../flight/orbit'
-import { type Controls, landingTolerance, situation } from '../flight/physics'
+import { type Controls, landingTolerance, pressureRatio, situation } from '../flight/physics'
 import { type Patch, predictTrajectory } from '../flight/predict'
 import {
   activeVessel,
@@ -18,6 +18,9 @@ import {
   recoverVessel,
   refuelAtBase,
   setActive,
+  deleteVessel,
+  dockCandidate,
+  dockVessels,
   stageNext,
   stepWorld,
   toggleKind,
@@ -75,6 +78,8 @@ interface Hud {
   targetBody: BodyId
   cargo: string
   stageLeft: number
+  twr: number
+  dockName: string | null
   missionNext: string
 }
 
@@ -184,6 +189,8 @@ function snapshot(): Hud {
     targetBody,
     cargo: '',
     stageLeft: 0,
+    twr: 0,
+    dockName: null,
     missionNext: MISSIONS.find((m) => !gs.missionsDone.includes(m.id))?.title ?? 'Tüm görevler tamamlandı',
   }
   if (!v) return base
@@ -241,6 +248,16 @@ function snapshot(): Hud {
     plan: transferPlan(v, gs.time, targetBody),
     cargo: mods.join(', '),
     stageLeft: nextStage(v.parts).length,
+    twr: (() => {
+      // anlık itki/ağırlık: çalışabilir motorların bu basınçtaki itkisi ÷ (kütle × yerel çekim)
+      const p = Math.min(1, Math.max(0, pressureRatio(body, s.altSea)))
+      const thrust = activeEngines(v.parts).reduce((a, i) => {
+        const d = partDef(v.parts[i]!.def)
+        return a + (d.thrust! * (d.ispVac! + (d.ispSL! - d.ispVac!) * p)) / d.ispVac!
+      }, 0)
+      return thrust / (st.mass * (body.mu / (s.r * s.r)))
+    })(),
+    dockName: dockCandidate(gs, v)?.name ?? null,
   }
 }
 
@@ -261,6 +278,7 @@ export default function FlightScreen({ onBuilder }: Props) {
   const [toasts, setToasts] = useState<{ id: number; text: string; kind: string }[]>([])
   const [lost, setLost] = useState<string | null>(null)
   const [panel, setPanel] = useState<'missions' | 'base' | 'help' | null>(null)
+  const [confirmDel, setConfirmDel] = useState<{ id: number; name: string } | null>(null)
   const [showTech, setShowTech] = useState(false)
   const toastId = useRef(0)
 
@@ -551,6 +569,7 @@ export default function FlightScreen({ onBuilder }: Props) {
               {hud.apo !== null && <><span>Öte nokta</span><b>{km(hud.apo)}</b></>}
               {hud.peri !== null && <><span>Enberi</span><b className={hud.peri < 0 ? 'warn' : ''}>{km(hud.peri)}</b></>}
               <span>Kalan Δv</span><b>{fmt(hud.dv)} m/s</b>
+              <span>İtki/Ağırlık</span><b className={hud.twr >= 1.2 ? 'ok' : hud.twr >= 1 ? 'warn' : hud.landed ? 'bad' : ''}>{hud.twr.toFixed(2)}</b>
               <span>Kütle</span><b>{hud.mass.toFixed(1)} t</b>
             </>
           )}
@@ -565,13 +584,14 @@ export default function FlightScreen({ onBuilder }: Props) {
             <div className="gauge"><span>Toplam yakıt</span><i><em style={{ width: pct(hud.fuel, hud.fuelCap) }} /></i><small>{hud.fuel.toFixed(1)} t</small></div>
             <div className="gauge ec"><span>Elektrik</span><i><em style={{ width: pct(hud.ec, hud.ecCap) }} /></i><small>{hud.ec.toFixed(0)}</small></div>
             {hud.cargo && <div className="cargo-line">Kargo: {hud.cargo}</div>}
-            {hud.vessels.length > 1 && (
-              <div className="vessel-list">
-                {hud.vessels.map((o) => (
-                  <button key={o.id} className={o.active ? 'is-on' : ''} onClick={() => switchTo(o.id)}>{o.name}<small>{o.body}</small></button>
-                ))}
-              </div>
-            )}
+            <div className="vessel-list">
+              {hud.vessels.map((o) => (
+                <div key={o.id} className="vessel-row">
+                  <button className={o.active ? 'is-on' : ''} onClick={() => switchTo(o.id)}>{o.name}<small>{o.body}</small></button>
+                  <button className="vessel-del" title={`${o.name} aracını sil`} aria-label={`${o.name} aracını sil`} onClick={() => setConfirmDel({ id: o.id, name: o.name })}>🗑</button>
+                </div>
+              ))}
+            </div>
           </div>
 
           <div className="hud hud-bc">
@@ -605,6 +625,7 @@ export default function FlightScreen({ onBuilder }: Props) {
                   {hasAutoLandTech(sim.gs) ? `🤖 Oto-İniş ${hud.autoLand ? 'AÇIK' : '(L)'}` : '🤖 Oto-İniş 🔒'}
                 </button>
               )}
+              {hud.dockName && <button className="hud-btn recover" onClick={() => act((v) => { const o = dockCandidate(sim.gs, v); return o ? dockVessels(sim, v, o) : null })}>Kenetlen: {hud.dockName}</button>}
               <button className="hud-btn stage" disabled={!hud.stageLeft} onClick={() => act((v) => stageNext(sim, v))}>Kademe ayır (Boşluk)</button>
               {hud.landed && hud.body === 'earth' && <button className="hud-btn recover" onClick={() => act((v) => recoverVessel(sim, v))}>Aracı kurtar</button>}
               {hud.landed && hud.body !== 'earth' && <button className="hud-btn recover" onClick={() => setPanel('base')}>{baseBody.name} üssü</button>}
@@ -755,7 +776,32 @@ export default function FlightScreen({ onBuilder }: Props) {
         </aside>
       )}
 
-      {(lost || !hud.has) && (
+      {confirmDel && (
+        <div className="dialog-backdrop" role="presentation" onClick={() => setConfirmDel(null)}>
+          <section className="dialog" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+            <h2>Aracı sil</h2>
+            <p><b>{confirmDel.name}</b> kalıcı olarak silinecek; parça iadesi yapılmaz. Onaylıyor musunuz?</p>
+            <div className="row">
+              <button
+                className="button button-primary danger"
+                onClick={() => {
+                  deleteVessel(sim, confirmDel.id)
+                  setConfirmDel(null)
+                  setHud(snapshot())
+                  void saveGame(true)
+                  bump()
+                  toast(`${confirmDel.name} silindi.`)
+                }}
+              >
+                Evet, sil
+              </button>
+              <button className="button button-secondary" onClick={() => setConfirmDel(null)}>Vazgeç</button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {!confirmDel && (lost || !hud.has) && (
         <div className="dialog-backdrop">
           <section className="dialog">
             <h2>{lost ? 'Araç kaybedildi' : 'Aktif araç yok'}</h2>

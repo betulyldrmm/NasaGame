@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { MODULES } from '../game/base'
-import { DEFAULT_DESIGN, GRID_H, GRID_W, partDef, PARTS } from '../game/data'
+import { GRID_H, GRID_W, partDef, PARTS, SHIP_PRESETS, SHIP_SLOT_COUNT } from '../game/data'
 import { bump, saveGame, setIdleWarp, sim, useAuthState, useGame } from '../game/store'
 import { isModuleUnlocked, isPartUnlocked, requiredTechForModule, requiredTechForPart } from '../game/tech'
 import type { PartCategory, PartInst } from '../game/types'
@@ -209,6 +209,27 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
     onFly()
   }
 
+  const slots = Array.from({ length: SHIP_SLOT_COUNT }, (_, i) => gs.shipSlots?.[i] ?? null)
+  const writeSlots = (next: typeof slots) => {
+    sim.gs.shipSlots = next
+    void saveGame(true)
+    bump()
+  }
+  const loadShip = (d: PartInst[], cargo: Record<string, number>) => {
+    sim.gs.designCargo = { ...cargo }
+    setSelected(null)
+    setDesign(d.map((p) => ({ def: p.def, x: p.x, y: p.y })))
+  }
+  const saveSlot = (i: number) => {
+    const name = window.prompt('Gemi adı:', slots[i]?.name ?? `Gemim ${i + 1}`)?.trim()
+    if (!name) return
+    writeSlots(slots.map((s, j) => (j === i ? { name: name.slice(0, 18), design: design.map((p) => ({ def: p.def, x: p.x, y: p.y })), cargo: { ...gs.designCargo } } : s)))
+  }
+  const clearSlot = (i: number) => {
+    if (window.confirm(`"${slots[i]?.name}" slotu boşaltılsın mı?`)) writeSlots(slots.map((s, j) => (j === i ? null : s)))
+  }
+  const needThrust = (stats.mass + cargoT) * 9.8 * 1.2
+
   const sel = selected ? partDef(selected) : null
 
   return (
@@ -274,8 +295,23 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
           <div className="grid-tools">
             <button className={`hud-btn${mirror ? ' is-on' : ''}`} onClick={() => setMirror(!mirror)}>⇄ Simetri {mirror ? 'açık' : 'kapalı'}</button>
             <button className="hud-btn" onClick={() => setSelected(null)} disabled={!selected}>✋ Taşı / sil modu</button>
-            <button className="hud-btn" onClick={() => setDesign(DEFAULT_DESIGN.map((p) => ({ ...p })))}>Selene I (hazır)</button>
             <button className="hud-btn" onClick={() => setDesign([])}>Temizle</button>
+          </div>
+          <div className="ship-bar">
+            <span className="ship-bar-label">Hazır gemiler</span>
+            {SHIP_PRESETS.map((s) => (
+              <button key={s.id} className="hud-btn" title={s.desc} onClick={() => loadShip(s.design, {})}>{s.name}</button>
+            ))}
+            <span className="ship-bar-label">Gemilerim</span>
+            {slots.map((slot, i) => (
+              <span key={i} className={`ship-slot${slot ? ' is-filled' : ''}`}>
+                <button className="ship-slot-load" disabled={!slot} title={slot ? `${slot.name} tasarımını yükle` : 'Boş slot'} onClick={() => slot && loadShip(slot.design, slot.cargo)}>
+                  {slot ? slot.name : `Slot ${i + 1}`}
+                </button>
+                <button title="Şu anki tasarımı bu slota kaydet" aria-label={`Slot ${i + 1}: kaydet`} disabled={!design.length} onClick={() => saveSlot(i)}>💾</button>
+                {slot && <button title="Slotu boşalt" aria-label={`Slot ${i + 1}: sil`} onClick={() => clearSlot(i)}>✕</button>}
+              </span>
+            ))}
           </div>
           <div className="grid-wrap" ref={wrapRef}>
             <canvas
@@ -304,10 +340,15 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
           <dl>
             <div><dt>Kütle</dt><dd>{(stats.mass + cargoT).toFixed(2)} t</dd></div>
             <div><dt>Kalkış itkisi</dt><dd>{fmt(stages[0]?.thrust ?? 0)} kN</dd></div>
-            <div><dt>İtki / Ağırlık (Dünya)</dt><dd className={twr >= 1.2 ? 'ok' : twr >= 1 ? 'warn' : 'bad'}>{twr.toFixed(2)}</dd></div>
+            <div><dt>İtki / Ağırlık (TWR)</dt><dd className={twr >= 1.2 ? 'ok' : twr >= 1 ? 'warn' : 'bad'}>{twr.toFixed(2)}</dd></div>
+            <div><dt>Gereken itki (TWR 1,2)</dt><dd>{fmt(needThrust)} kN</dd></div>
             <div><dt>Toplam Δv</dt><dd>{fmt(totalDv)} m/s</dd></div>
             <div><dt>Maliyet</dt><dd className={cost > gs.money ? 'bad' : ''}>{fmt(cost)} ₡</dd></div>
           </dl>
+          <div className="twr-meter" title="1,0 altı kalkamaz · 1,2 ve üstü güvenli">
+            <i><em className={twr >= 1.2 ? 'ok' : twr >= 1 ? 'warn' : 'bad'} style={{ width: `${Math.min(100, (twr / 2.4) * 100)}%` }} /></i>
+            <small>{twr < 1 ? `Kalkamaz: ${fmt(needThrust - (stages[0]?.thrust ?? 0))} kN daha itki gerek ya da kütle azalt` : twr < 1.2 ? 'Kalkar ama yavaş: yakıtın çoğu yerçekimine gider' : 'Kalkış için yeterli itki'}</small>
+          </div>
           <h3>Kademeler</h3>
           <ol className="stage-list">
             {stages.map((s, i) => (
