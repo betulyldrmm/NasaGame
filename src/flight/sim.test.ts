@@ -67,7 +67,6 @@ describe('default rocket', () => {
         if (el.e < 1 && el.rp > earth.radius + 40_000) { v.throttle = 0; phase = 3; break }
       }
       // yakıtı biten kademeyi at
-      const st = vesselStats(v.parts)
       if (v.throttle > 0 && sim.firing.get(v.id)?.size === 0) stageNext(sim, v)
       const ev = stepWorld(sim, 1 / 60, ctrl)
       for (const e of ev) if (e.type === 'crash' && e.wasActive) throw new Error(e.reason)
