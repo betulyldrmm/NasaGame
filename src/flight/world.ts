@@ -437,6 +437,7 @@ export function clickPart(sim: Sim, v: Vessel, index: number): GameEvent[] {
     case 'solar':
     case 'leg':
     case 'chute':
+      if (d.kind === 'leg' && p.deployProgress === undefined) p.deployProgress = p.deployed ? 1 : 0
       p.deployed = !p.deployed
       return [{ type: 'toast', text: `${d.name}: ${p.deployed ? 'açıldı' : 'kapandı'}` }]
     case 'engine':
@@ -450,7 +451,10 @@ export function clickPart(sim: Sim, v: Vessel, index: number): GameEvent[] {
 export function toggleKind(v: Vessel, kind: 'solar' | 'leg' | 'chute') {
   const items = v.parts.filter((p) => partDef(p.def).kind === kind)
   const open = !items.every((p) => p.deployed)
-  for (const p of items) p.deployed = open
+  for (const p of items) {
+    if (kind === 'leg' && p.deployProgress === undefined) p.deployProgress = p.deployed ? 1 : 0
+    p.deployed = open
+  }
   return items.length ? open : null
 }
 

@@ -34,7 +34,7 @@ export const PARTS: PartDef[] = [
   { id: 'solar-xl', name: 'Geniş Güneş Paneli', kind: 'solar', category: 'Güç', w: 1, h: 3, mass: 0.12, ecGen: 15, cost: 1300, desc: 'Yüksek çıkışlı açılır güneş kanadı.' },
   { id: 'rtg', name: 'RTG Nükleer Pil', kind: 'rtg', category: 'Güç', w: 1, h: 2, mass: 0.25, ecGen: 4, cost: 2600, desc: 'Güneş\'ten bağımsız sürekli elektrik üretir (Jüpiter/Satürn için ideal).' },
   { id: 'battery', name: 'Batarya', kind: 'battery', category: 'Güç', w: 2, h: 1, mass: 0.2, ecCap: 240, cost: 350, desc: 'Elektrik depolar.' },
-  { id: 'rcs', name: 'RCS İticisi', kind: 'rcs', category: 'Güç', w: 1, h: 1, mass: 0.05, cost: 220, desc: 'Yan iticiler: R ile aç; Q/E ile yatay öteleme. Görselde kısa hava akışı püskürtür.' },
+  { id: 'rcs', name: 'RCS İticisi', kind: 'rcs', category: 'Güç', w: 1, h: 1, mass: 0.05, cost: 220, desc: 'Yan iticiler: R ile aç; I/J/K/L ile öteleme. Görselde kısa hava akışı püskürtür.' },
   // İniş
   { id: 'chute', name: 'Paraşüt', kind: 'chute', category: 'İniş', w: 2, h: 1, mass: 0.1, cost: 300, desc: 'Yalnızca atmosferde çalışır (Dünya, Venüs, Mars, Titan).' },
   { id: 'leg', name: 'İniş Ayağı', kind: 'leg', category: 'İniş', w: 1, h: 2, mass: 0.08, legTolerance: 14, cost: 180, desc: '14 m/s hıza kadar sert inişlere dayanır.' },

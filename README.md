@@ -30,11 +30,11 @@ Geliştirmede `npm run dev` hesap API sunucusunu otomatik başlatır ve boş bir
 | W / S, Z, X | İtkiyi artır / azalt, tam itki, motoru kes |
 | A / D | Döndür |
 | T | Yön kilidi: ileri / geri / radyal |
-| Boşluk | Sıradaki kademeyi ayır |
+| Boşluk | Basılı tut: motor itkisi; kademeyi ayırmak için adaptöre tıkla |
 | M | Uzay haritası |
 | , / . | Zamanı yavaşlat / hızlandır |
 | P, G, O | Paraşüt, iniş ayakları, güneş panelleri |
-| R, sonra Q / E | RCS ile sola / sağa öteleme (RCS parçası gerekir; yukarı-aşağı hareket yok) |
+| R, sonra I / J / K / L | RCS öteleme (RCS parçası gerekir) |
 | Tab | Sonraki araca geç |
 
 Parçaya tıklamak da çalışır: adaptör ayrılır, panel açılır, motor açılıp kapanır.

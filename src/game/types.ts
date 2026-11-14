@@ -59,6 +59,8 @@ export interface PartInst {
   on?: boolean
   /** paraşüt / güneş paneli / iniş ayağı açık mı */
   deployed?: boolean
+  /** İniş ayağı açılma animasyonunun 0..1 ilerlemesi. */
+  deployProgress?: number
 }
 
 export type SasMode = 'off' | 'prograde' | 'retrograde' | 'radial'

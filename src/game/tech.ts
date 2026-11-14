@@ -66,7 +66,7 @@ export const TECHS: TechNode[] = [
     icon: '🤖',
     cost: 8000,
     requires: ['adv-landing'],
-    desc: 'Yörüngeden alçalırken aracı dikey tutup gazı ayarlayarak güvenli iniş yapar.',
+    desc: 'Yörüngeden alçalırken aracı dikey tutup motor itkisini ayarlayarak güvenli iniş yapar.',
     effects: ['Uçuş HUD\'ında Oto-İniş (L) modu açılır'],
   },
   {

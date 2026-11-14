@@ -4,7 +4,7 @@ import { MISSIONS } from '../game/missions'
 import { bump, saveGame, sim, useAuthState } from '../game/store'
 import { baseIncomeMultiplier, hasAutoLandTech, isModuleUnlocked, orePriceMultiplier, requiredTechForModule } from '../game/tech'
 import type { GameEvent, SasMode, Vessel } from '../game/types'
-import { activeEngines, cargoMass, estimateDeltaV, fuelGroups, nextStage, vesselStats } from '../game/vessel'
+import { activeEngines, cargoMass, estimateDeltaV, fuelGroups, vesselStats } from '../game/vessel'
 import { partDef } from '../game/data'
 import { bodyAbsState, bodyRelState, elementsFromState, hohmann, len, wrapPi } from '../flight/orbit'
 import { type Controls, landingTolerance, pressureRatio, situation } from '../flight/physics'
@@ -21,7 +21,6 @@ import {
   deleteVessel,
   dockCandidate,
   dockVessels,
-  stageNext,
   stepWorld,
   toggleKind,
   totalPassiveIncomePerHour,
@@ -63,8 +62,6 @@ interface Hud {
   landable: boolean
   autoLand: boolean
   sas: SasMode
-  rcs: boolean
-  hasRcs: boolean
   warp: number
   warpIdx: number
   money: number
@@ -77,7 +74,6 @@ interface Hud {
   plan: string[]
   targetBody: BodyId
   cargo: string
-  stageLeft: number
   twr: number
   dockName: string | null
   missionNext: string
@@ -174,8 +170,6 @@ function snapshot(): Hud {
     landable: true,
     autoLand: false,
     sas: 'off',
-    rcs: false,
-    hasRcs: false,
     warp: WARPS[sim.warpIdx]!,
     warpIdx: sim.warpIdx,
     money: gs.money,
@@ -188,7 +182,6 @@ function snapshot(): Hud {
     plan: [],
     targetBody,
     cargo: '',
-    stageLeft: 0,
     twr: 0,
     dockName: null,
     missionNext: MISSIONS.find((m) => !gs.missionsDone.includes(m.id))?.title ?? 'Tüm görevler tamamlandı',
@@ -240,14 +233,11 @@ function snapshot(): Hud {
     landable: body.landable,
     autoLand: !!v.autoLand,
     sas: v.sas,
-    rcs: v.rcsOn,
-    hasRcs: st.rcs > 0,
     dv: estimateDeltaV(v.parts, cargoMass(v.cargo)).reduce((a, x) => a + x.dv, 0),
     mass: st.mass,
     tol: landingTolerance(st),
     plan: transferPlan(v, gs.time, targetBody),
     cargo: mods.join(', '),
-    stageLeft: nextStage(v.parts).length,
     twr: (() => {
       // anlık itki/ağırlık: çalışabilir motorların bu basınçtaki itkisi ÷ (kütle × yerel çekim)
       const p = Math.min(1, Math.max(0, pressureRatio(body, s.altSea)))
@@ -281,6 +271,7 @@ export default function FlightScreen({ onBuilder }: Props) {
   const [confirmDel, setConfirmDel] = useState<{ id: number; name: string } | null>(null)
   const [showTech, setShowTech] = useState(false)
   const toastId = useRef(0)
+  const spaceThrottle = useRef<{ vesselId: number; previousThrottle: number } | null>(null)
 
   const toast = useCallback((text: string, kind = 'info') => {
     const id = (toastId.current += 1)
@@ -360,9 +351,15 @@ export default function FlightScreen({ onBuilder }: Props) {
       else if (k === '.') sim.warpIdx = Math.min(WARPS.length - 1, sim.warpIdx + 1)
       else if (k === ',') sim.warpIdx = Math.max(0, sim.warpIdx - 1)
       else if (!v) return
-      else if (k === ' ') handle(stageNext(sim, v))
+      else if (k === ' ') {
+        if (!spaceThrottle.current) {
+          spaceThrottle.current = { vesselId: v.id, previousThrottle: v.throttle }
+          v.autoLand = false
+          v.throttle = 1
+        }
+      }
       else if (k === 'z') v.throttle = 1
-      else if (k === 'x') { v.throttle = 0; v.autoLand = false }
+      else if (k === 'x') { spaceThrottle.current = null; v.throttle = 0; v.autoLand = false }
       else if (k === 'r') v.rcsOn = !v.rcsOn
       else if (k === 't') v.sas = (['off', 'prograde', 'retrograde', 'radial'] as SasMode[])[((['off', 'prograde', 'retrograde', 'radial'] as SasMode[]).indexOf(v.sas) + 1) % 4]!
       else if (k === 'p') { const o = toggleKind(v, 'chute'); if (o !== null) toast(`Paraşütler ${o ? 'açıldı' : 'kapandı'}`) }
@@ -374,8 +371,19 @@ export default function FlightScreen({ onBuilder }: Props) {
         if (list.length > 1) switchTo(list[(list.findIndex((o) => o.id === v.id) + 1) % list.length]!.id)
       }
     }
-    const up = (e: KeyboardEvent) => keys.current.delete(e.key.length === 1 ? e.key.toLowerCase() : e.key)
-    const blur = () => keys.current.clear()
+    const releaseSpace = () => {
+      const pulse = spaceThrottle.current
+      if (!pulse) return
+      const vessel = sim.gs.vessels.find((ship) => ship.id === pulse.vesselId)
+      if (vessel) vessel.throttle = pulse.previousThrottle
+      spaceThrottle.current = null
+    }
+    const up = (e: KeyboardEvent) => {
+      const key = e.key.length === 1 ? e.key.toLowerCase() : e.key
+      keys.current.delete(key)
+      if (key === ' ') releaseSpace()
+    }
+    const blur = () => { keys.current.clear(); releaseSpace() }
     window.addEventListener('keydown', down)
     window.addEventListener('keyup', up)
     window.addEventListener('blur', blur)
@@ -414,8 +422,8 @@ export default function FlightScreen({ onBuilder }: Props) {
       const v = activeVessel(sim.gs)
       const ctrl: Controls = {
         rotate: (k.has('d') || k.has('ArrowRight') ? 1 : 0) - (k.has('a') || k.has('ArrowLeft') ? 1 : 0),
-        tx: (k.has('e') ? 1 : 0) - (k.has('q') ? 1 : 0),
-        ty: 0,
+        tx: (k.has('l') ? 1 : 0) - (k.has('j') ? 1 : 0),
+        ty: (k.has('i') ? 1 : 0) - (k.has('k') ? 1 : 0),
       }
       if (v) {
         if (k.has('w') || k.has('ArrowUp') || k.has('Shift')) {
@@ -425,6 +433,14 @@ export default function FlightScreen({ onBuilder }: Props) {
         if (k.has('s') || k.has('ArrowDown') || k.has('Control')) {
           v.autoLand = false
           v.throttle = Math.max(0, v.throttle - dt * 0.8)
+        }
+      }
+      for (const ship of sim.gs.vessels) {
+        for (const part of ship.parts) {
+          if (partDef(part.def).kind !== 'leg') continue
+          const target = part.deployed ? 1 : 0
+          if (part.deployProgress === undefined) part.deployProgress = target
+          else part.deployProgress += Math.sign(target - part.deployProgress) * Math.min(Math.abs(target - part.deployProgress), dt * 2.2)
         }
       }
       view.rcsTx = v?.rcsOn ? ctrl.tx : 0
@@ -538,6 +554,7 @@ export default function FlightScreen({ onBuilder }: Props) {
         <span className="hud-money">
           {fmt(hud.money)} ₡ <small className="income-sub">+{fmt(hud.passivePerHr)}/sa</small>
         </span>
+        <button className="hud-btn" title="Geçici test kredisi" onClick={() => { sim.gs.money += 100_000; setHud(snapshot()); bump(); void saveGame(true) }}>+100.000 ₡</button>
         {auth.user && <span className="hud-user">👤 {auth.user.username}</span>}
       </div>
 
@@ -615,19 +632,27 @@ export default function FlightScreen({ onBuilder }: Props) {
             )}
             {isMap && hud.plan.map((p) => <div key={p} className="plan">{p}</div>)}
             <div className="row">
-              {(['off', 'prograde', 'retrograde', 'radial'] as SasMode[]).map((m) => (
+              {(['off', 'prograde', 'retrograde'] as SasMode[]).map((m) => (
                 <button key={m} className={`hud-btn${hud.sas === m ? ' is-on' : ''}`} onClick={() => act((v) => { v.sas = m })}>
                   {m === 'off' ? 'Serbest' : m === 'prograde' ? 'İleri ▲' : m === 'retrograde' ? 'Geri ▼' : 'Radyal'}
                 </button>
               ))}
-              {hud.hasRcs && <button className={`hud-btn${hud.rcs ? ' is-on' : ''}`} onClick={() => act((v) => { v.rcsOn = !v.rcsOn })}>RCS</button>}
               {!hud.landed && hud.landable && (
                 <button className={`hud-btn${hud.autoLand ? ' is-on' : ''}`} onClick={toggleAutoLand}>
                   {hasAutoLandTech(sim.gs) ? `🤖 Oto-İniş ${hud.autoLand ? 'AÇIK' : '(L)'}` : '🤖 Oto-İniş 🔒'}
                 </button>
               )}
-              {hud.dockName && <button className="hud-btn recover" onClick={() => act((v) => { const o = dockCandidate(sim.gs, v); return o ? dockVessels(sim, v, o) : null })}>Kenetlen: {hud.dockName}</button>}
-              <button className="hud-btn stage" disabled={!hud.stageLeft} onClick={() => act((v) => stageNext(sim, v))}>Kademe ayır (Boşluk)</button>
+              {hud.dockName && (
+                <button
+                  className="hud-btn recover"
+                  onClick={() => act((v) => {
+                    const target = dockCandidate(sim.gs, v)
+                    return target ? dockVessels(sim, v, target) : null
+                  })}
+                >
+                  Kenetlen: {hud.dockName}
+                </button>
+              )}
               {hud.landed && hud.body === 'earth' && <button className="hud-btn recover" onClick={() => act((v) => recoverVessel(sim, v))}>Aracı kurtar</button>}
               {hud.landed && hud.body !== 'earth' && <button className="hud-btn recover" onClick={() => setPanel('base')}>{baseBody.name} üssü</button>}
             </div>
@@ -763,14 +788,14 @@ export default function FlightScreen({ onBuilder }: Props) {
         <aside className="side-panel">
           <header><h2>Kontroller</h2><button onClick={() => setPanel(null)}>×</button></header>
           <ul className="help-list">
-            <li><kbd>W</kbd>/<kbd>S</kbd> gaz ±, <kbd>Z</kbd> tam gaz, <kbd>X</kbd> motoru kes</li>
+            <li><kbd>W</kbd>/<kbd>S</kbd> itki ±, <kbd>Z</kbd> tam itki, <kbd>X</kbd> motoru kes</li>
             <li><kbd>A</kbd>/<kbd>D</kbd> döndür · <kbd>T</kbd> yön kilidi (ileri / geri / radyal)</li>
             <li><kbd>L</kbd> Otomatik İniş Bilgisayarı (Teknoloji Ağacıyla açılır)</li>
-            <li><kbd>Boşluk</kbd> sıradaki kademeyi ayır — ya da adaptöre tıkla</li>
+            <li><kbd>Boşluk</kbd> basılı tut: motor itkisi · kademeyi ayırmak için adaptöre tıkla</li>
             <li><kbd>M</kbd> uzay haritası · tekerlek: yakınlaş/uzaklaş · sürükle: kaydır</li>
             <li><kbd>,</kbd>/<kbd>.</kbd> zamanı yavaşlat / hızlandır (fizikte 25×, yörüngede 100.000×)</li>
             <li><kbd>P</kbd> paraşüt · <kbd>G</kbd> iniş ayakları · <kbd>O</kbd> güneş panelleri</li>
-            <li><kbd>R</kbd> RCS'yi aç · <kbd>Q</kbd>/<kbd>E</kbd> ile sola/sağa kay (RCS parçası gerekir)</li>
+            <li><kbd>R</kbd> RCS'yi aç · <kbd>I</kbd>/<kbd>K</kbd> ileri/geri · <kbd>J</kbd>/<kbd>L</kbd> sola/sağa</li>
             <li><kbd>Tab</kbd> ya da araca tıkla: başka gemiye geç</li>
           </ul>
           <p className="base-note">Gezegen ipucu: Haritada hedef seç (Venüs, Merkür, Mars, Ceres, Ganimed, Titan), transfer penceresinde yak ve iniş öncesi Oto-İniş veya paraşüt/ayakları aç!</p>

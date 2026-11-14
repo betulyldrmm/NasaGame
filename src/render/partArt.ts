@@ -284,14 +284,16 @@ function drawChute(ctx: Ctx, w: number, h: number, c: number, open: boolean, t: 
   outline(ctx, c)
 }
 
-function drawLeg(ctx: Ctx, d: PartDef, w: number, h: number, c: number, open: boolean) {
+function drawLeg(ctx: Ctx, d: PartDef, w: number, h: number, c: number, deployment: number) {
   const heavy = d.id === 'heavy-leg'
+  const open = Math.max(0, Math.min(1, deployment))
+  const extension = open * open * (3 - 2 * open)
   // gövde solda (x=0), ayak dışa doğru açılır
   ctx.lineCap = 'round'
   ctx.strokeStyle = heavy ? '#9a6530' : '#6b7480'
   ctx.lineWidth = c * (heavy ? 0.22 : 0.16)
-  const fx = open ? w * (heavy ? 1.3 : 1.15) : w * 0.3
-  const fy = open ? h * (heavy ? 1.24 : 1.18) : h * 0.96
+  const fx = w * 0.3 + (w * (heavy ? 1.3 : 1.15) - w * 0.3) * extension
+  const fy = h * 0.96 + (h * (heavy ? 1.24 : 1.18) - h * 0.96) * extension
   ctx.beginPath()
   ctx.moveTo(c * 0.05, h * 0.12)
   ctx.lineTo(fx, fy)
@@ -487,7 +489,7 @@ export function drawPart(ctx: Ctx, p: PartInst, c: number, opts: PartDrawOpts = 
     case 'decoupler': drawDecoupler(ctx, w, h, c); break
     case 'radialDecoupler': drawRadial(ctx, w, h, c); break
     case 'chute': drawChute(ctx, w, h, c, !!p.deployed, opts.time ?? 0); break
-    case 'leg': drawLeg(ctx, d, w, h, c, !!p.deployed); break
+    case 'leg': drawLeg(ctx, d, w, h, c, p.deployProgress ?? (p.deployed ? 1 : 0)); break
     case 'rcs': drawRcs(ctx, w, h, c, !!opts.rcsPulse, opts.time ?? 0, !!opts.flip); break
     case 'solar': drawSolar(ctx, w, h, c, !!p.deployed); break
     case 'rtg': drawRtg(ctx, w, h, c); break
