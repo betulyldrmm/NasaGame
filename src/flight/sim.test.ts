@@ -1,0 +1,114 @@
+import { describe, expect, it } from 'vitest'
+import { DEFAULT_DESIGN } from '../game/data'
+import { estimateDeltaV, isConnected, vesselStats } from '../game/vessel'
+import { BODIES } from '../nasa/bodies'
+import { elementsFromState, hohmann, len, propagate, wrapPi } from './orbit'
+import { situation } from './physics'
+import { predictTrajectory } from './predict'
+import { activeVessel, launchDesign, newGame, type Sim, stageNext, stepWorld } from './world'
+
+const ctrl = { rotate: 0, tx: 0, ty: 0 }
+
+describe('nasa bodies', () => {
+  it('keeps real ratios', () => {
+    expect(BODIES.moon.mu / BODIES.earth.mu).toBeCloseTo(0.0123, 3)
+    expect(BODIES.moon.radius / BODIES.earth.radius).toBeCloseTo(1737.4 / 6371, 4)
+    expect(BODIES.mars.orbit!.a / BODIES.earth.orbit!.a).toBeCloseTo(1.5237, 3)
+    expect(BODIES.moon.soi).toBeLessThan(BODIES.moon.orbit!.a)
+    expect(BODIES.earth.soi).toBeGreaterThan(BODIES.moon.orbit!.a * 1.2)
+    console.log('SOI km', BODIES.earth.soi / 1e3, BODIES.moon.soi / 1e3, BODIES.mars.soi / 1e3, 'moon a', BODIES.moon.orbit!.a / 1e3)
+  })
+})
+
+describe('kepler', () => {
+  it('returns to start after one period', () => {
+    const mu = BODIES.earth.mu
+    const r = { x: 400e3, y: 0 }
+    const v = { x: 100, y: 1700 }
+    const el = elementsFromState(r, v, mu)
+    const s = propagate(r, v, mu, el.period)
+    expect(len({ x: s.r.x - r.x, y: s.r.y - r.y })).toBeLessThan(1)
+    const h = propagate(r, { x: 0, y: -3000 }, mu, 500)
+    const back = propagate(h.r, { x: -h.v.x, y: -h.v.y }, mu, 500)
+    expect(len({ x: back.r.x - r.x, y: back.r.y - r.y })).toBeLessThan(1)
+  })
+})
+
+describe('default rocket', () => {
+  it('is connected and has enough delta-v', () => {
+    expect(isConnected(DEFAULT_DESIGN)).toBe(true)
+    const stages = estimateDeltaV(DEFAULT_DESIGN)
+    console.log(stages.map((s) => `${s.dv.toFixed(0)} m/s twr ${s.twr.toFixed(2)}`), vesselStats(DEFAULT_DESIGN).cost)
+    expect(stages[0]!.twr).toBeGreaterThan(1.2)
+    expect(stages.reduce((s, x) => s + x.dv, 0)).toBeGreaterThan(5000)
+  })
+
+  it('reaches orbit and the Moon with a simple autopilot', () => {
+    const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
+    expect(launchDesign(sim)).toBeNull()
+    const v = activeVessel(sim.gs)!
+    v.throttle = 1
+    const earth = BODIES.earth
+    const target = earth.radius + 50_000
+    let phase = 0
+    for (let i = 0; i < 60 * 60 * 30 && sim.gs.activeId; i += 1) {
+      const s = situation(v)
+      const el = elementsFromState(v.pos, v.vel, earth.mu)
+      const up = Math.atan2(v.pos.y, v.pos.x)
+      if (phase === 0) {
+        const tilt = Math.min(1, Math.max(0, (s.altSea - 500) / 16_000)) * 1.5
+        v.angle = up - tilt
+        if (s.altSea > 1000 && el.e < 1 && el.ra > target) { v.throttle = 0; phase = 1 }
+      } else if (phase === 1) {
+        v.angle = Math.atan2(v.vel.y, v.vel.x)
+        if (s.altSea > earth.atmoHeight && s.r > el.ra - 3000) { v.throttle = 1; phase = 2 }
+      } else if (phase === 2) {
+        v.angle = up - Math.PI / 2 + Math.max(-0.6, Math.min(0.6, -s.vr * 0.01))
+        if (el.e < 1 && el.rp > earth.radius + 40_000) { v.throttle = 0; phase = 3; break }
+      }
+      // yakıtı biten kademeyi at
+      const st = vesselStats(v.parts)
+      if (v.throttle > 0 && sim.firing.get(v.id)?.size === 0) stageNext(sim, v)
+      if (i === 5400 && st.fuel > 0) { /* noop */ }
+      const ev = stepWorld(sim, 1 / 60, ctrl)
+      for (const e of ev) if (e.type === 'crash' && e.wasActive) throw new Error(e.reason)
+    }
+    const el = elementsFromState(v.pos, v.vel, earth.mu)
+    console.log('orbit', (el.rp - earth.radius) / 1e3, (el.ra - earth.radius) / 1e3, 'fuel', vesselStats(v.parts).fuel, 'parts', v.parts.length, 't', sim.gs.time, 'dv left', estimateDeltaV(v.parts.map((p) => ({ ...p }))).map((s) => s.dv))
+    expect(phase).toBe(3)
+    expect(sim.gs.missionsDone).toContain('earth-orbit')
+
+    // Hohmann ile Ay'a: doğru faz açısını bekle, prograde yak
+    const moon = BODIES.moon
+    const r1 = len(v.pos)
+    const plan = hohmann(earth.mu, r1, moon.orbit!.a, moon.orbit!.n)
+    let burned = false
+    for (let i = 0; i < 400000 && v.bodyId === 'earth'; i += 1) {
+      if (!burned) {
+        const m = (await0(sim.gs.time))
+        const phaseNow = wrapPi(m - Math.atan2(v.pos.y, v.pos.x))
+        sim.warpIdx = 3
+        if (Math.abs(wrapPi(phaseNow - plan.phase)) < 0.02) {
+          const sp = len(v.vel)
+          const k = (sp + plan.dv1) / sp
+          v.vel = { x: v.vel.x * k, y: v.vel.y * k }
+          burned = true
+          const patches = predictTrajectory(v.bodyId, v.pos, v.vel, sim.gs.time)
+          console.log('patches', patches.map((p) => `${p.bodyId}:${p.end}:${p.points.length}`))
+          expect(patches.some((p) => p.bodyId === 'moon')).toBe(true)
+          sim.warpIdx = 5
+        }
+      }
+      stepWorld(sim, 1 / 60, ctrl)
+    }
+    expect(v.bodyId).toBe('moon')
+    expect(sim.gs.missionsDone).toContain('moon-soi')
+  })
+})
+
+function await0(t: number) {
+  const s = BODIES.moon.orbit!
+  // Ay'ın anlık açısı
+  const E = s.M0 + s.n * t
+  return E + s.argp + 2 * s.e * Math.sin(E)
+}

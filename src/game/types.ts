@@ -1,61 +1,117 @@
-/** Game-facing quantities use SI units unless the property name says otherwise. */
-export interface RocketBody {
+import type { BodyId } from '../nasa/bodies'
+
+/** Birimler: kütle ton (t), itki kilonewton (kN), uzunluk metre, 1 grid karesi = 1 m. */
+export type PartKind =
+  | 'command'
+  | 'nose'
+  | 'tank'
+  | 'engine'
+  | 'decoupler'
+  | 'radialDecoupler'
+  | 'chute'
+  | 'leg'
+  | 'rcs'
+  | 'solar'
+  | 'battery'
+  | 'cargo'
+
+export type PartCategory = 'Komuta' | 'Yakıt' | 'Motorlar' | 'Kademe' | 'Güç' | 'İniş' | 'Kargo'
+
+export interface PartDef {
   id: string
   name: string
-  cargoSlots: number
-  dryMassKg: number
-  costCredits: number
+  kind: PartKind
+  category: PartCategory
+  /** grid karesi cinsinden boyut */
+  w: number
+  h: number
+  /** kuru kütle (t) */
+  mass: number
+  cost: number
+  desc: string
+  /** tank: yakıt kapasitesi (t) */
+  fuel?: number
+  /** motor: vakum itkisi (kN) */
+  thrust?: number
+  /** motor: özgül itki (s) vakumda / deniz seviyesinde */
+  ispVac?: number
+  ispSL?: number
+  /** iyon motoru: elektrik tüketimi (birim/s) */
+  ecUse?: number
+  /** batarya / komuta: elektrik kapasitesi */
+  ecCap?: number
+  /** güneş paneli: 1 AU'da üretim (birim/s) */
+  ecGen?: number
+  /** kargo gövdesi: kapasite (t) */
+  cargoCap?: number
 }
 
-export interface RocketEngine {
-  id: string
+export interface PartInst {
+  def: string
+  x: number
+  y: number
+  /** tank: kalan yakıt (t) */
+  fuel?: number
+  /** motor açık/kapalı */
+  on?: boolean
+  /** paraşüt / güneş paneli / iniş ayağı açık mı */
+  deployed?: boolean
+}
+
+export type SasMode = 'off' | 'prograde' | 'retrograde' | 'radial'
+
+export interface Cargo {
+  modules: Record<string, number>
+  ore: number
+  oreFrom: BodyId | null
+}
+
+export interface Vessel {
+  id: number
   name: string
-  thrustN: number
-  /** Assumed propellant mass flow in kilograms per second (kg/s); a game input, not measured engine data. */
-  fuelConsumptionKgPerSecond: number
-  dryMassKg: number
-  costCredits: number
+  parts: PartInst[]
+  bodyId: BodyId
+  /** gök cismine göre konum (m) ve hız (m/s); eksenler dönmez */
+  pos: { x: number; y: number }
+  vel: { x: number; y: number }
+  /** burnun baktığı yön (rad) */
+  angle: number
+  angVel: number
+  landed: boolean
+  throttle: number
+  ec: number
+  cargo: Cargo
+  rcsOn: boolean
+  sas: SasMode
+  visited: BodyId[]
+  /** yerçekimi sapanı takibi: SOI'ye girişteki ebeveyn-çerçevesi hızı */
+  assist: { bodyId: BodyId; speedIn: number; dvIn: number } | null
+  dvUsed: number
 }
 
-export interface FuelTank {
-  id: string
-  name: string
-  fuelMassKg: number
-  dryMassKg: number
-  costCredits: number
+export interface Base {
+  modules: Record<string, number>
+  ore: number
+  /** üssün yüzeydeki açısal konumu (rad) */
+  siteAngle: number
+  earned: number
 }
 
-export type PayloadId = 'solar-panel' | 'rover' | 'greenhouse' | 'habitat'
-
-export interface Payload {
-  id: PayloadId
-  name: string
-  massKg: number
-  costCredits: number
+export interface GameState {
+  /** oyun saati (s) */
+  time: number
+  money: number
+  vessels: Vessel[]
+  activeId: number | null
+  nextId: number
+  bases: Partial<Record<BodyId, Base>>
+  missionsDone: string[]
+  design: PartInst[]
+  designCargo: Record<string, number>
 }
 
-export interface Planet {
-  id: string
-  name: string
-  /** Surface gravitational acceleration in metres per second squared (m/s²). */
-  gravityMps2: number
-  /** Distance from Sun in AU (for 1/r² solar power). */
-  distanceAU?: number
-}
-
-export interface Mission {
-  id: string
-  name: string
-  destinationPlanetId: string
-  rewardCredits: number
-}
-
-export interface RocketConfiguration {
-  body: RocketBody
-  engine: RocketEngine
-  fuelTank: FuelTank | null
-  payloads: Payload[]
-  /** Total mass including structure, engine, fuel and payload, in kilograms (kg). */
-  totalMassKg: number
-  budgetCredits: number
-}
+export type GameEvent =
+  | { type: 'toast'; text: string }
+  | { type: 'crash'; name: string; wasActive: boolean; reason: string }
+  | { type: 'mission'; id: string; title: string; reward: number }
+  | { type: 'soi'; from: BodyId; to: BodyId }

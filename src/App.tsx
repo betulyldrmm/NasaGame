@@ -1,7 +1,7 @@
 import { lazy, Suspense, useState } from 'react'
-import AssemblyScreen from './components/AssemblyScreen'
-import { ColonyScreen } from './components/ColonyScreen'
+import BuilderScreen from './components/BuilderScreen'
 import IntroCutscene from './components/IntroCutscene'
+import { resetGame, sim, useGame } from './game/store'
 import { messages } from './i18n/tr'
 
 const FlightScreen = lazy(() => import('./components/FlightScreen'))
@@ -9,34 +9,20 @@ const FlightScreen = lazy(() => import('./components/FlightScreen'))
 type Dialog = 'how-to-play' | null
 
 function App() {
+  useGame()
   const [dialog, setDialog] = useState<Dialog>(null)
-  const [showCutscene, setShowCutscene] = useState(true)
-  const [screen, setScreen] = useState<'home' | 'assembly' | 'flight' | 'colony'>('home')
+  const [showCutscene, setShowCutscene] = useState(() => sim.gs.vessels.length === 0 && sim.gs.missionsDone.length === 0)
+  const [screen, setScreen] = useState<'home' | 'assembly' | 'flight'>('home')
 
   if (screen === 'assembly') {
-    return (
-      <AssemblyScreen
-        onBack={() => setScreen('home')}
-        onLaunch={() => setScreen('flight')}
-        onOpenColony={() => setScreen('colony')}
-      />
-    )
+    return <BuilderScreen onBack={() => setScreen('home')} onFly={() => setScreen('flight')} />
   }
 
   if (screen === 'flight') {
     return (
       <Suspense fallback={<main className="flight-loading">{messages.sceneLoading}</main>}>
-        <FlightScreen onBack={() => setScreen('assembly')} onOpenColony={() => setScreen('colony')} />
+        <FlightScreen onBuilder={() => setScreen('assembly')} />
       </Suspense>
-    )
-  }
-
-  if (screen === 'colony') {
-    return (
-      <ColonyScreen
-        onBackToAssembly={() => setScreen('assembly')}
-        onBackHome={() => setScreen('home')}
-      />
     )
   }
 
@@ -69,8 +55,13 @@ function App() {
             <button className="button button-primary" onClick={() => setScreen('assembly')}>
               <span aria-hidden="true">＋</span> {messages.newMission}
             </button>
-            <button className="button button-secondary" onClick={() => setScreen('colony')}>
-              🏗️ Piksel Koloni Üssü
+            {sim.gs.vessels.length > 0 && (
+              <button className="button button-secondary" onClick={() => setScreen('flight')}>
+                Uçuşa devam et
+              </button>
+            )}
+            <button className="button button-secondary" onClick={() => { if (window.confirm('Tüm ilerleme silinsin mi?')) resetGame() }}>
+              Yeni oyun
             </button>
             <button className="button button-secondary" onClick={() => setShowCutscene(true)}>
               🎬 İntroyu İzle
