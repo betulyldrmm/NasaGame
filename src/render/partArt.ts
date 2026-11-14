@@ -94,6 +94,34 @@ function drawEngine(ctx: Ctx, d: PartDef, w: number, h: number, c: number, on: b
     ctx.fillRect(w * 0.2, h * 0.4, w * 0.6, h * 0.08)
     return
   }
+  if (d.id === 'aerospike') {
+    rr(ctx, w * 0.04, 0, w * 0.92, h * 0.28, c * 0.06)
+    ctx.fillStyle = metal(ctx, 0, w, STEEL)
+    ctx.fill()
+    outline(ctx, c)
+    ctx.beginPath()
+    ctx.moveTo(w * 0.08, h * 0.28)
+    ctx.lineTo(cx, h * 0.98)
+    ctx.lineTo(w * 0.92, h * 0.28)
+    ctx.closePath()
+    ctx.fillStyle = metal(ctx, w * 0.08, w * 0.84, [[0, '#2a3038'], [0.4, '#b87048'], [0.55, '#ffd0a0'], [1, '#252a30']])
+    ctx.fill()
+    outline(ctx, c)
+    ctx.fillStyle = on ? '#ffad57' : '#6b4028'
+    ctx.fillRect(w * 0.14, h * 0.24, w * 0.72, h * 0.06)
+    return
+  }
+  if (d.id === 'nerva') {
+    rr(ctx, w * 0.06, 0, w * 0.88, h * 0.48, c * 0.1)
+    ctx.fillStyle = metal(ctx, 0, w, GOLD)
+    ctx.fill()
+    outline(ctx, c)
+    ctx.fillStyle = on ? '#38d9e8' : '#254a5a'
+    ctx.fillRect(w * 0.14, h * 0.15, w * 0.72, h * 0.08)
+    ctx.fillRect(w * 0.14, h * 0.3, w * 0.72, h * 0.08)
+    drawBell(ctx, cx, h * 0.45, h - c * 0.02, w * 0.36, w * 0.88, c, DARK)
+    return
+  }
   const plate = c * 0.14
   rr(ctx, w * 0.04, 0, w * 0.92, plate, c * 0.04)
   ctx.fillStyle = metal(ctx, 0, w, DARK)
@@ -256,29 +284,45 @@ function drawChute(ctx: Ctx, w: number, h: number, c: number, open: boolean, t: 
   outline(ctx, c)
 }
 
-function drawLeg(ctx: Ctx, w: number, h: number, c: number, open: boolean) {
+function drawLeg(ctx: Ctx, d: PartDef, w: number, h: number, c: number, open: boolean) {
+  const heavy = d.id === 'heavy-leg'
   // gövde solda (x=0), ayak dışa doğru açılır
   ctx.lineCap = 'round'
-  ctx.strokeStyle = '#6b7480'
-  ctx.lineWidth = c * 0.16
-  const fx = open ? w * 1.15 : w * 0.3
-  const fy = open ? h * 1.18 : h * 0.96
+  ctx.strokeStyle = heavy ? '#9a6530' : '#6b7480'
+  ctx.lineWidth = c * (heavy ? 0.22 : 0.16)
+  const fx = open ? w * (heavy ? 1.3 : 1.15) : w * 0.3
+  const fy = open ? h * (heavy ? 1.24 : 1.18) : h * 0.96
   ctx.beginPath()
   ctx.moveTo(c * 0.05, h * 0.12)
   ctx.lineTo(fx, fy)
   ctx.stroke()
-  ctx.strokeStyle = '#c3cad2'
-  ctx.lineWidth = c * 0.07
+  ctx.strokeStyle = heavy ? '#ffad57' : '#c3cad2'
+  ctx.lineWidth = c * (heavy ? 0.09 : 0.07)
   ctx.beginPath()
   ctx.moveTo(c * 0.05, h * 0.12)
   ctx.lineTo(fx, fy)
   ctx.moveTo(c * 0.05, h * 0.6)
   ctx.lineTo((c * 0.05 + fx) / 2, (h * 0.12 + fy) / 2)
   ctx.stroke()
-  ctx.fillStyle = '#3a4048'
-  rr(ctx, fx - c * 0.28, fy, c * 0.56, c * 0.14, c * 0.05)
+  ctx.fillStyle = heavy ? '#2b323c' : '#3a4048'
+  rr(ctx, fx - c * (heavy ? 0.36 : 0.28), fy, c * (heavy ? 0.72 : 0.56), c * 0.16, c * 0.05)
   ctx.fill()
   ctx.lineCap = 'butt'
+}
+
+function drawRtg(ctx: Ctx, w: number, h: number, c: number) {
+  rr(ctx, w * 0.12, h * 0.04, w * 0.76, h * 0.92, c * 0.08)
+  ctx.fillStyle = metal(ctx, w * 0.12, w * 0.76, DARK)
+  ctx.fill()
+  outline(ctx, c)
+  ctx.fillStyle = '#ff8a3d'
+  for (let i = 0; i < 4; i += 1) {
+    ctx.fillRect(w * 0.04, h * (0.18 + i * 0.19), w * 0.92, h * 0.07)
+  }
+  ctx.fillStyle = '#ffd166'
+  ctx.beginPath()
+  ctx.arc(w / 2, h / 2, w * 0.16, 0, Math.PI * 2)
+  ctx.fill()
 }
 
 function drawRcs(ctx: Ctx, w: number, h: number, c: number) {
@@ -374,7 +418,8 @@ function drawCargo(ctx: Ctx, w: number, h: number, c: number) {
   ctx.fillRect(w * 0.52, h * 0.47, w * 0.04, h * 0.06)
 }
 
-function drawProbe(ctx: Ctx, w: number, h: number, c: number) {
+function drawProbe(ctx: Ctx, d: PartDef, w: number, h: number, c: number) {
+  const ai = d.id === 'probe-ai'
   ctx.beginPath()
   ctx.moveTo(w * 0.14, 0.06 * h)
   ctx.lineTo(w * 0.86, 0.06 * h)
@@ -383,14 +428,14 @@ function drawProbe(ctx: Ctx, w: number, h: number, c: number) {
   ctx.lineTo(w * 0.02, h)
   ctx.lineTo(w * 0.02, h * 0.4)
   ctx.closePath()
-  ctx.fillStyle = metal(ctx, 0, w, GOLD)
+  ctx.fillStyle = metal(ctx, 0, w, ai ? STEEL : GOLD)
   ctx.fill()
   outline(ctx, c)
-  ctx.fillStyle = '#12305c'
+  ctx.fillStyle = ai ? '#0b3545' : '#12305c'
   ctx.beginPath()
   ctx.arc(w / 2, h * 0.58, h * 0.2, 0, Math.PI * 2)
   ctx.fill()
-  ctx.fillStyle = '#38d9e8'
+  ctx.fillStyle = ai ? '#4ade80' : '#38d9e8'
   ctx.beginPath()
   ctx.arc(w / 2, h * 0.58, h * 0.09, 0, Math.PI * 2)
   ctx.fill()
@@ -415,14 +460,15 @@ export function drawPart(ctx: Ctx, p: PartInst, c: number, opts: PartDrawOpts = 
   switch (d.kind) {
     case 'tank': drawTank(ctx, w, h, c, d.fuel ? (p.fuel ?? d.fuel) / d.fuel : 0); break
     case 'engine': drawEngine(ctx, d, w, h, c, p.on !== false); break
-    case 'command': if (d.id === 'probe') drawProbe(ctx, w, h, c); else drawCapsule(ctx, w, h, c); break
+    case 'command': if (d.id === 'probe' || d.id === 'probe-ai') drawProbe(ctx, d, w, h, c); else drawCapsule(ctx, w, h, c); break
     case 'nose': drawNose(ctx, w, h, c); break
     case 'decoupler': drawDecoupler(ctx, w, h, c); break
     case 'radialDecoupler': drawRadial(ctx, w, h, c); break
     case 'chute': drawChute(ctx, w, h, c, !!p.deployed, opts.time ?? 0); break
-    case 'leg': drawLeg(ctx, w, h, c, !!p.deployed); break
+    case 'leg': drawLeg(ctx, d, w, h, c, !!p.deployed); break
     case 'rcs': drawRcs(ctx, w, h, c); break
     case 'solar': drawSolar(ctx, w, h, c, !!p.deployed); break
+    case 'rtg': drawRtg(ctx, w, h, c); break
     case 'battery': drawBattery(ctx, w, h, c); break
     case 'cargo': drawCargo(ctx, w, h, c); break
   }
@@ -432,12 +478,13 @@ export function drawPart(ctx: Ctx, p: PartInst, c: number, opts: PartDrawOpts = 
 function drawFlame(ctx: Ctx, d: PartDef, w: number, c: number, power: number, vacuum: number, t: number, seed: number) {
   const flick = 1 + 0.1 * Math.sin(t * 47 + seed * 3.1) + 0.06 * Math.sin(t * 83 + seed)
   const ion = d.id === 'ion'
+  const nerva = d.id === 'nerva'
   const len = (ion ? 2.2 : 0.9 + 2.4 * power) * w * flick * (ion ? 1 : 0.7 + 0.5 * vacuum)
   const half = (w * (ion ? 0.22 : 0.3 + 0.28 * vacuum)) * (0.7 + 0.3 * power)
   const g = ctx.createLinearGradient(0, 0, 0, len)
-  if (ion) {
-    g.addColorStop(0, 'rgba(210,250,255,.95)')
-    g.addColorStop(0.3, 'rgba(90,220,255,.7)')
+  if (ion || nerva) {
+    g.addColorStop(0, 'rgba(220,255,255,.98)')
+    g.addColorStop(0.3, nerva ? 'rgba(80,235,255,.85)' : 'rgba(90,220,255,.7)')
     g.addColorStop(1, 'rgba(60,140,255,0)')
   } else {
     g.addColorStop(0, 'rgba(255,255,255,.98)')

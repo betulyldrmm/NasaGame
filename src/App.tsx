@@ -1,18 +1,58 @@
-import { lazy, Suspense, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
+import { tickBasesOnly, totalPassiveIncomePerHour } from './flight/world'
+import AuthScreen from './components/AuthScreen'
 import BuilderScreen from './components/BuilderScreen'
 import IntroCutscene from './components/IntroCutscene'
-import { resetGame, sim, useGame } from './game/store'
+import TechTreeModal from './components/TechTreeModal'
+import { bump, clearOfflineGain, initAuth, logoutAccount, resetGame, saveGame, setIdleWarp, sim, useAuthState, useGame } from './game/store'
 import { messages } from './i18n/tr'
 
 const FlightScreen = lazy(() => import('./components/FlightScreen'))
 
 type Dialog = 'how-to-play' | null
+const IDLE_WARPS = [1, 4, 10, 25]
+const fmt = (n: number) => Math.round(n).toLocaleString('tr-TR')
 
 function App() {
-  useGame()
+  const gs = useGame()
+  const auth = useAuthState()
   const [dialog, setDialog] = useState<Dialog>(null)
-  const [showCutscene, setShowCutscene] = useState(() => sim.gs.vessels.length === 0 && sim.gs.missionsDone.length === 0)
+  const [showTech, setShowTech] = useState(false)
+  const [showCutscene, setShowCutscene] = useState(false)
   const [screen, setScreen] = useState<'home' | 'assembly' | 'flight'>('home')
+
+  useEffect(() => {
+    void initAuth()
+  }, [])
+
+  // Yeni girişte tamamen yeni hesapsa intro sinematiğini aç
+  useEffect(() => {
+    if (auth.user && gs.vessels.length === 0 && gs.missionsDone.length === 0 && gs.time < 1) {
+      setShowCutscene(true)
+    } else if (!auth.user) {
+      setShowCutscene(false)
+      setScreen('home')
+    }
+  }, [auth.user])
+
+  // Ana menü ve montaj ekranında da pasif gelir işlesin (seçili idle hızında 1×–25×)
+  useEffect(() => {
+    if (!auth.user || screen === 'flight') return
+    const timer = window.setInterval(() => {
+      tickBasesOnly(sim.gs, 0.25 * auth.idleWarp)
+      void saveGame()
+      bump()
+    }, 250)
+    return () => clearInterval(timer)
+  }, [auth.user, auth.idleWarp, screen])
+
+  if (!auth.checked) {
+    return <main className="flight-loading">Hesap kontrol ediliyor…</main>
+  }
+
+  if (!auth.user) {
+    return <AuthScreen />
+  }
 
   if (screen === 'assembly') {
     return <BuilderScreen onBack={() => setScreen('home')} onFly={() => setScreen('flight')} />
@@ -26,6 +66,8 @@ function App() {
     )
   }
 
+  const passivePerHr = totalPassiveIncomePerHour(gs)
+
   return (
     <main className="app-shell">
       <div className="stars" aria-hidden="true" />
@@ -36,10 +78,40 @@ function App() {
           </span>
           <span>MISSION CONTROL</span>
         </a>
-        <span className="status">
-          <span className="status-dot" /> {messages.status}
-        </span>
+        <div className="topbar-account">
+          <span className="account-pill" title="Aktif hesap">
+            👤 {auth.user.username}
+          </span>
+          <span className="income-pill" title="Saatlik pasif gelir">
+            💰 {fmt(gs.money)} ₡ <small>(+{fmt(passivePerHr)} ₡/sa)</small>
+          </span>
+          <div className="idle-warp-group" title="Pasif gelir zaman hızı">
+            {IDLE_WARPS.map((w) => (
+              <button
+                key={w}
+                type="button"
+                className={`mini-warp-btn${auth.idleWarp === w ? ' is-on' : ''}`}
+                onClick={() => setIdleWarp(w)}
+              >
+                {w}×
+              </button>
+            ))}
+          </div>
+          <button type="button" className="hud-btn" onClick={() => void logoutAccount()}>
+            Çıkış
+          </button>
+        </div>
       </header>
+
+      {auth.offlineGain && (
+        <div className="offline-banner">
+          <span>
+            Hoş geldin <b>{auth.user.username}</b>! Yokluğunda ({Math.round(auth.offlineGain.seconds / 60)} dk) üslerin{' '}
+            <b>+{fmt(auth.offlineGain.money)} ₡</b> pasif gelir kazandırdı.
+          </span>
+          <button type="button" className="hud-btn" onClick={clearOfflineGain}>Tamam</button>
+        </div>
+      )}
 
       <section className="hero" id="home">
         <div className="hero-copy">
@@ -50,7 +122,9 @@ function App() {
             {messages.title}
             <span>.</span>
           </h1>
-          <p className="intro">{messages.description}</p>
+          <p className="intro">
+            Kare grid üzerinde roketini kur; Dünya'daki başlangıç telemetri üssünden gelen pasif gelirle teknoloji ağacını aç. Merkür, Venüs, Ay, Mars, Ceres, Ganimed ve Titan'a inip koloni kur!
+          </p>
           <div className="actions">
             <button className="button button-primary" onClick={() => setScreen('assembly')}>
               <span aria-hidden="true">＋</span> {messages.newMission}
@@ -60,7 +134,15 @@ function App() {
                 Uçuşa devam et
               </button>
             )}
-            <button className="button button-secondary" onClick={() => { if (window.confirm('Tüm ilerleme silinsin mi?')) resetGame() }}>
+            <button className="button button-secondary" onClick={() => setShowTech(true)}>
+              🧬 Teknoloji Ağacı ({gs.techDone.length})
+            </button>
+            <button
+              className="button button-secondary"
+              onClick={() => {
+                if (window.confirm('Tüm ilerleme silinip yeni oyuna başlansın mı?')) resetGame()
+              }}
+            >
               Yeni oyun
             </button>
             <button className="button button-secondary" onClick={() => setShowCutscene(true)}>
@@ -90,7 +172,7 @@ function App() {
           <div className="orbit-label label-earth">
             EARTH <span>●</span>
           </div>
-          <div className="orbit-label label-moon">LUNAR ORBIT</div>
+          <div className="orbit-label label-moon">SOLAR SYSTEM</div>
           <div className="coordinate">
             MISSION
             <br />
@@ -115,6 +197,8 @@ function App() {
           }}
         />
       )}
+
+      {showTech && <TechTreeModal onClose={() => setShowTech(false)} />}
 
       {dialog && (
         <div className="dialog-backdrop" role="presentation" onClick={() => setDialog(null)}>

@@ -89,34 +89,76 @@ function drawSphere(ctx: Ctx, body: BodyDef, cx: number, cy: number, rpx: number
     ctx.arc(cx, cy, ar, 0, 6.283)
     ctx.fill()
   }
+  if (body.id === 'saturn' && rpx >= 4) {
+    ctx.save()
+    ctx.translate(cx, cy)
+    ctx.rotate(-0.35 - rot * 0.1)
+    ctx.strokeStyle = 'rgba(235,212,165,.42)'
+    ctx.lineWidth = Math.max(1.2, rpx * 0.28)
+    ctx.beginPath()
+    ctx.ellipse(0, 0, rpx * 2.1, rpx * 0.42, 0, Math.PI, Math.PI * 2)
+    ctx.stroke()
+    ctx.restore()
+  }
   ctx.beginPath()
   ctx.arc(cx, cy, rpx, 0, 6.283)
   ctx.fillStyle = sphereFill(ctx, body, cx, cy, rpx, light)
   ctx.fill()
-  if (!detail || rpx < 9 || body.id === 'sun') return
-  ctx.save()
-  ctx.clip()
-  ctx.translate(cx, cy)
-  ctx.rotate(-rot)
-  const n = body.id === 'earth' ? 9 : 14
-  for (let i = 0; i < n; i += 1) {
-    const a = hash(i + body.radius) * 6.283
-    const d = Math.sqrt(hash(i * 3 + 1)) * rpx * 0.9
-    const s = rpx * (body.id === 'earth' ? 0.16 + 0.22 * hash(i * 7) : 0.04 + 0.11 * hash(i * 7))
+  if (detail && rpx >= 9 && body.id !== 'sun') {
+    ctx.save()
+    ctx.clip()
+    ctx.translate(cx, cy)
+    ctx.rotate(-rot)
+    if (body.id === 'jupiter' || body.id === 'saturn') {
+      const bands = body.id === 'jupiter' ? ['rgba(165,98,54,.35)', 'rgba(245,220,185,.32)', 'rgba(130,68,38,.3)'] : ['rgba(175,148,96,.25)', 'rgba(245,232,190,.22)']
+      for (let i = -3; i <= 3; i += 1) {
+        ctx.fillStyle = bands[Math.abs(i) % bands.length]!
+        ctx.fillRect(-rpx * 1.1, i * rpx * 0.22 - rpx * 0.08, rpx * 2.2, rpx * 0.14)
+      }
+      if (body.id === 'jupiter') {
+        ctx.fillStyle = 'rgba(195,78,52,.5)'
+        ctx.beginPath()
+        ctx.ellipse(rpx * 0.25, rpx * 0.28, rpx * 0.22, rpx * 0.12, 0, 0, 6.283)
+        ctx.fill()
+      }
+    } else {
+      const n = body.id === 'earth' ? 9 : 14
+      for (let i = 0; i < n; i += 1) {
+        const a = hash(i + body.radius) * 6.283
+        const d = Math.sqrt(hash(i * 3 + 1)) * rpx * 0.9
+        const s = rpx * (body.id === 'earth' ? 0.16 + 0.22 * hash(i * 7) : 0.04 + 0.11 * hash(i * 7))
+        ctx.beginPath()
+        ctx.ellipse(Math.cos(a) * d, -Math.sin(a) * d, s, s * (0.55 + 0.4 * hash(i * 11)), hash(i * 13) * 3, 0, 6.283)
+        ctx.fillStyle =
+          body.id === 'earth'
+            ? 'rgba(70,160,90,.55)'
+            : body.id === 'venus' || body.id === 'titan'
+              ? 'rgba(245,205,130,.28)'
+              : 'rgba(60,62,75,.35)'
+        ctx.fill()
+      }
+    }
+    ctx.restore()
+    // gece tarafı
+    const sh = ctx.createLinearGradient(cx + light.x * rpx, cy + light.y * rpx, cx - light.x * rpx, cy - light.y * rpx)
+    sh.addColorStop(0.35, 'rgba(0,0,10,0)')
+    sh.addColorStop(1, 'rgba(0,0,10,.62)')
     ctx.beginPath()
-    ctx.ellipse(Math.cos(a) * d, -Math.sin(a) * d, s, s * (0.55 + 0.4 * hash(i * 11)), hash(i * 13) * 3, 0, 6.283)
-    ctx.fillStyle = body.id === 'earth' ? 'rgba(70,160,90,.55)' : body.id === 'moon' ? 'rgba(60,62,75,.35)' : 'rgba(95,40,22,.35)'
+    ctx.arc(cx, cy, rpx, 0, 6.283)
+    ctx.fillStyle = sh
     ctx.fill()
   }
-  ctx.restore()
-  // gece tarafı
-  const sh = ctx.createLinearGradient(cx + light.x * rpx, cy + light.y * rpx, cx - light.x * rpx, cy - light.y * rpx)
-  sh.addColorStop(0.35, 'rgba(0,0,10,0)')
-  sh.addColorStop(1, 'rgba(0,0,10,.62)')
-  ctx.beginPath()
-  ctx.arc(cx, cy, rpx, 0, 6.283)
-  ctx.fillStyle = sh
-  ctx.fill()
+  if (body.id === 'saturn' && rpx >= 4) {
+    ctx.save()
+    ctx.translate(cx, cy)
+    ctx.rotate(-0.35 - rot * 0.1)
+    ctx.strokeStyle = 'rgba(245,222,175,.68)'
+    ctx.lineWidth = Math.max(1.2, rpx * 0.28)
+    ctx.beginPath()
+    ctx.ellipse(0, 0, rpx * 2.1, rpx * 0.42, 0, 0, Math.PI)
+    ctx.stroke()
+    ctx.restore()
+  }
 }
 
 // ───────────────────────── uçuş görünümü ─────────────────────────
@@ -227,6 +269,36 @@ function drawBaseModules(ctx: Ctx, modules: Record<string, number>, clock: numbe
         ctx.stroke()
         ctx.fillStyle = '#ffad57'
         ctx.fillRect(-0.5, -6 + Math.sin(clock * 3 + i) * 1.5, 1, 6)
+      } else if (m.id === 'telemetry' || m.id === 'quantum-relay') {
+        ctx.fillStyle = '#5b6470'
+        ctx.fillRect(-1.2, -5.5, 2.4, 5.5)
+        ctx.strokeStyle = m.id === 'quantum-relay' ? '#38d9e8' : '#dfe4ea'
+        ctx.lineWidth = 0.8
+        ctx.beginPath()
+        ctx.arc(0, -7, 4.2, Math.PI * 0.15, Math.PI * 0.85)
+        ctx.stroke()
+        ctx.fillStyle = m.id === 'quantum-relay' ? '#4ade80' : '#ffad57'
+        ctx.beginPath()
+        ctx.arc(0, -8.5 + Math.sin(clock * 2) * 0.3, 0.9, 0, 6.283)
+        ctx.fill()
+      } else if (m.id === 'datacenter') {
+        ctx.fillStyle = '#1b2b47'
+        ctx.fillRect(-4, -8, 8, 8)
+        ctx.fillStyle = '#38d9e8'
+        for (let r = 0; r < 3; r += 1) ctx.fillRect(-2.5, -6.5 + r * 2.2, 5, 0.9)
+      } else if (m.id === 'biodome') {
+        ctx.fillStyle = 'rgba(74, 222, 128, 0.45)'
+        ctx.beginPath()
+        ctx.ellipse(0, 0, 6.5, 6.5, 0, Math.PI, 0)
+        ctx.fill()
+        ctx.strokeStyle = '#a6f4c5'
+        ctx.lineWidth = 0.6
+        ctx.stroke()
+      } else if (m.id === 'rtg-reactor') {
+        ctx.fillStyle = '#3a4048'
+        ctx.fillRect(-3.5, -7, 7, 7)
+        ctx.fillStyle = '#ffad57'
+        ctx.fillRect(-2, -5.5, 4, 4)
       } else {
         const g = ctx.createLinearGradient(-3, 0, 3, 0)
         g.addColorStop(0, '#6a737d')

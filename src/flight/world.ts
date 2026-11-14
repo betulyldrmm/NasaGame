@@ -2,17 +2,18 @@
  * Açık dünya simülasyonu: tüm araçlar, zaman hızlandırma, etki alanı (SOI) geçişleri,
  * kademe ayırma, görevler ve üs ekonomisi. React'ten bağımsızdır.
  */
-import { emptyBase, MODULE_BY_ID, tickBase } from '../game/base'
+import { emptyBase, MODULE_BY_ID, STARTER_EARTH_MODULES, tickBase } from '../game/base'
 import { DEFAULT_DESIGN, INITIAL_MONEY, partDef } from '../game/data'
 import { MISSION_BY_ID, MISSIONS } from '../game/missions'
+import { baseIncomeMultiplier, INITIAL_TECH, isModuleUnlocked, isPartUnlocked, orePriceMultiplier, requiredTechForModule, requiredTechForPart } from '../game/tech'
 import type { GameEvent, GameState, PartInst, Vessel } from '../game/types'
 import { cargoMass, freshParts, isConnected, nextStage, splitParts, vesselStats } from '../game/vessel'
 import { BODIES, childrenOf, solarFlux, type BodyId } from '../nasa/bodies'
 import { bodyAbsState, bodyRelState, len, wrapPi } from './orbit'
 import { chargeBatteries, type Controls, needsPhysics, PAD_ANGLE, rotateVessel, situation, stepPhysics, stepRails, terrainHeight } from './physics'
 
-export const WARPS = [1, 2, 4, 10, 50, 250, 1000, 5000, 25000, 100000]
-export const PHYSICS_WARP_MAX_IDX = 2
+export const WARPS = [1, 2, 4, 10, 25, 100, 500, 2500, 10000, 50000, 100000]
+export const PHYSICS_WARP_MAX_IDX = 4
 const PHYSICS_DT = 0.02
 
 export interface Sim {
@@ -24,9 +25,67 @@ export interface Sim {
 
 export function newGame(): GameState {
   return {
-    time: 0, money: INITIAL_MONEY, vessels: [], activeId: null, nextId: 1, bases: {}, missionsDone: [],
-    design: DEFAULT_DESIGN.map((p) => ({ ...p })), designCargo: {},
+    time: 0,
+    money: INITIAL_MONEY,
+    vessels: [],
+    activeId: null,
+    nextId: 1,
+    bases: {
+      earth: {
+        modules: { ...STARTER_EARTH_MODULES },
+        ore: 0,
+        siteAngle: PAD_ANGLE,
+        earned: 0,
+      },
+    },
+    missionsDone: [],
+    techDone: [INITIAL_TECH],
+    design: DEFAULT_DESIGN.map((p) => ({ ...p })),
+    designCargo: {},
+    targetBody: 'moon',
+    lastSavedAt: Date.now(),
   }
+}
+
+export function tickBasesOnly(gs: GameState, dtS: number): number {
+  let total = 0
+  for (const id of Object.keys(gs.bases) as BodyId[]) {
+    const base = gs.bases[id]
+    if (!base) continue
+    const flux = solarFlux(len(bodyAbsState(id, gs.time).r))
+    const mult = baseIncomeMultiplier(gs, id)
+    total += tickBase(base, flux, dtS, mult, id !== 'earth')
+  }
+  gs.money += total
+  gs.time += dtS
+  return total
+}
+
+export function totalPassiveIncomePerHour(gs: GameState): number {
+  let sum = 0
+  for (const id of Object.keys(gs.bases) as BodyId[]) {
+    const base = gs.bases[id]
+    if (!base) continue
+    const flux = solarFlux(len(bodyAbsState(id, gs.time).r))
+    const mult = baseIncomeMultiplier(gs, id)
+    let supply = 0
+    let demand = 0
+    for (const [mid, count] of Object.entries(base.modules)) {
+      const m = MODULE_BY_ID[mid]
+      if (!m || !count) continue
+      if (m.power > 0) supply += m.power * (m.constantPower ? 1 : flux) * count
+      else demand += -m.power * count
+    }
+    const eff = demand <= 0 ? 1 : Math.min(1, supply / demand)
+    const habitats = base.modules.habitat ?? 0
+    for (const [mid, count] of Object.entries(base.modules)) {
+      const m = MODULE_BY_ID[mid]
+      if (!m || !count || !m.income) continue
+      const c = mid === 'lab' ? Math.min(count, habitats) : count
+      sum += m.income * c * eff * mult
+    }
+  }
+  return sum
 }
 
 export const activeVessel = (gs: GameState) => gs.vessels.find((v) => v.id === gs.activeId) ?? null
@@ -94,7 +153,7 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls): GameEvent[]
 
   if (active && sim.warpIdx > PHYSICS_WARP_MAX_IDX && needsPhysics(active, ctrl)) {
     sim.warpIdx = PHYSICS_WARP_MAX_IDX
-    events.push({ type: 'toast', text: 'Zaman hızlandırma 4×\'e düştü (itki / atmosfer / yüzey).' })
+    events.push({ type: 'toast', text: 'Zaman hızlandırma 25×\'e düştü (itki / atmosfer / yüzey).' })
   }
   let simDt = real * WARPS[sim.warpIdx]!
   const t0 = gs.time
@@ -150,7 +209,7 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls): GameEvent[]
         sim.warpIdx = PHYSICS_WARP_MAX_IDX
         simDt -= remaining
         remaining = 0
-        events.push({ type: 'toast', text: 'Yüzeye/atmosfere yaklaşıldı: zaman 4×.' })
+        events.push({ type: 'toast', text: 'Yüzeye/atmosfere yaklaşıldı: zaman 25×.' })
       }
     }
   }
@@ -161,7 +220,8 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls): GameEvent[]
 
   for (const id of Object.keys(gs.bases) as BodyId[]) {
     const base = gs.bases[id]!
-    gs.money += tickBase(base, solarFlux(len(bodyAbsState(id, gs.time).r)), simDt)
+    const mult = baseIncomeMultiplier(gs, id)
+    gs.money += tickBase(base, solarFlux(len(bodyAbsState(id, gs.time).r)), simDt, mult, id !== 'earth')
   }
 
   const cur = activeVessel(gs)
@@ -181,8 +241,22 @@ export function designCost(design: PartInst[], cargo: Record<string, number>): n
   return c
 }
 
-export function validateDesign(design: PartInst[], cargo: Record<string, number>): string | null {
+export function validateDesign(design: PartInst[], cargo: Record<string, number>, gs?: GameState): string | null {
   if (!design.length) return 'Önce grid\'e parça yerleştir.'
+  if (gs) {
+    for (const p of design) {
+      if (!isPartUnlocked(gs, p.def)) {
+        const tech = requiredTechForPart(p.def)
+        return `"${partDef(p.def).name}" için teknoloji gerekli: ${tech?.name ?? 'Araştırma'}.`
+      }
+    }
+    for (const [id, n] of Object.entries(cargo)) {
+      if (n > 0 && !isModuleUnlocked(gs, id)) {
+        const tech = requiredTechForModule(id)
+        return `"${MODULE_BY_ID[id]?.name ?? id}" için teknoloji gerekli: ${tech?.name ?? 'Araştırma'}.`
+      }
+    }
+  }
   const st = vesselStats(design)
   if (!st.hasCommand) return 'Bir komuta modülü (kapsül veya sonda çekirdeği) gerekli.'
   if (!isConnected(design)) return 'Tüm parçalar birbirine bağlı olmalı.'
@@ -195,7 +269,7 @@ export function validateDesign(design: PartInst[], cargo: Record<string, number>
 /** Tasarımı satın alıp Dünya'daki rampaya koyar. Hata varsa mesaj döndürür. */
 export function launchDesign(sim: Sim): string | null {
   const gs = sim.gs
-  const err = validateDesign(gs.design, gs.designCargo)
+  const err = validateDesign(gs.design, gs.designCargo, gs)
   if (err) return err
   const cost = designCost(gs.design, gs.designCargo)
   if (cost > gs.money) return `Bütçe yetersiz: ${cost.toLocaleString('tr-TR')} ₡ gerekli.`
@@ -278,7 +352,7 @@ export function recoverVessel(sim: Sim, v: Vessel): GameEvent[] {
   for (const [id, n] of Object.entries(v.cargo.modules)) refund += (MODULE_BY_ID[id]?.cost ?? 0) * n
   let oreIncome = 0
   if (v.cargo.ore > 0 && v.cargo.oreFrom) {
-    oreIncome = v.cargo.ore * BODIES[v.cargo.oreFrom].orePrice
+    oreIncome = v.cargo.ore * BODIES[v.cargo.oreFrom].orePrice * orePriceMultiplier(gs)
     completeMission(gs, 'ore-return', events)
   }
   if (v.visited.includes('moon') && st.hasCommand) completeMission(gs, 'earth-return', events)
@@ -291,12 +365,31 @@ export function recoverVessel(sim: Sim, v: Vessel): GameEvent[] {
 
 /** İnen aracın kargosundaki modülleri yüzey üssüne kurar. */
 export function deployModules(sim: Sim, v: Vessel): string | null {
-  if (!v.landed || v.bodyId === 'earth') return 'Modül kurmak için Ay veya Mars yüzeyine inmelisin.'
+  if (!v.landed || v.bodyId === 'earth' || !BODIES[v.bodyId].landable) {
+    return 'Modül kurmak için Dünya dışı bir gezegen veya uydu yüzeyine inmelisin.'
+  }
   const total = Object.values(v.cargo.modules).reduce((s, n) => s + n, 0)
   if (!total) return 'Kargoda kurulacak modül yok.'
   const base = (sim.gs.bases[v.bodyId] ??= emptyBase(Math.atan2(v.pos.y, v.pos.x)))
   for (const [id, n] of Object.entries(v.cargo.modules)) base.modules[id] = (base.modules[id] ?? 0) + n
   v.cargo.modules = {}
+  return null
+}
+
+/** Dünya yer kontrol üssüne doğrudan pasif gelir modülü satın alır. */
+export function buyEarthModule(sim: Sim, moduleId: string): string | null {
+  const gs = sim.gs
+  const m = MODULE_BY_ID[moduleId]
+  if (!m) return 'Bilinmeyen modül.'
+  if (moduleId === 'drill' || moduleId === 'isru') return 'Sondaj ve ISRU yalnızca Dünya dışı gezegenlerde kurulur.'
+  if (!isModuleUnlocked(gs, moduleId)) {
+    const t = requiredTechForModule(moduleId)
+    return `Önce "${t?.name ?? 'Teknoloji'}" araştırmasını açmalısın.`
+  }
+  if (gs.money < m.cost) return `${m.cost.toLocaleString('tr-TR')} ₡ gerekli.`
+  gs.money -= m.cost
+  const base = (gs.bases.earth ??= emptyBase(PAD_ANGLE))
+  base.modules[moduleId] = (base.modules[moduleId] ?? 0) + 1
   return null
 }
 

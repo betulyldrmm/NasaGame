@@ -33,6 +33,12 @@ export const MISSIONS: MissionDef[] = [
   { id: 'mars-soi', title: 'Mars\'ın etki alanına gir', desc: 'Gezegenler arası transferle Mars\'a ulaş.', reward: 25000, check: (v) => v.bodyId === 'mars' },
   { id: 'mars-orbit', title: 'Mars yörüngesine yerleş', desc: 'Mars çevresinde kapalı yörünge kur.', reward: 40000, check: (v) => inOrbit(v, 'mars', BODIES.mars.atmoHeight) },
   { id: 'mars-land', title: 'Mars\'a iniş', desc: 'Mars yüzeyine sağlam in.', reward: 80000, check: (v) => v.bodyId === 'mars' && v.landed },
+  { id: 'mars-base', title: 'Mars üssünü kur', desc: 'Mars\'a en az bir üs modülü indir ve kur.', reward: 60000, check: (_v, gs) => Object.values(gs.bases.mars?.modules ?? {}).some((n) => n > 0) },
+  { id: 'venus-land', title: 'Venüs\'e iniş', desc: 'Yoğun bulutların arasından geçip Venüs yüzeyine sağlam in.', reward: 70000, check: (v) => v.bodyId === 'venus' && v.landed },
+  { id: 'mercury-land', title: 'Merkür\'e iniş', desc: 'Güneş\'e en yakın gezegen Merkür yüzeyine sağlam in.', reward: 95000, check: (v) => v.bodyId === 'mercury' && v.landed },
+  { id: 'ceres-land', title: 'Ceres\'e iniş', desc: 'Asteroit kuşağındaki cüce gezegen Ceres\'e in.', reward: 110000, check: (v) => v.bodyId === 'ceres' && v.landed },
+  { id: 'ganymede-land', title: 'Ganimed\'e iniş', desc: 'Jüpiter sistemine ulaşıp Ganimed uydusuna in.', reward: 160000, check: (v) => v.bodyId === 'ganymede' && v.landed },
+  { id: 'titan-land', title: 'Titan\'a iniş', desc: 'Satürn\'ün halkalı devinin uydusu Titan\'a in.', reward: 250000, check: (v) => v.bodyId === 'titan' && v.landed },
 ]
 
 export const MISSION_BY_ID: Record<string, MissionDef> = Object.fromEntries(MISSIONS.map((m) => [m.id, m]))

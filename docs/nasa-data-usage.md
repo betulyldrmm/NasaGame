@@ -11,7 +11,7 @@ Bu rapor, oyunda hangi NASA verisinin **nerede** ve **nasıl** kullanıldığın
 | [NASA mission-viz (WSMV)](https://nasa.github.io/mission-viz/) – gezegen yörünge parametreleri tablosu | Dünya ve Mars için dış merkezlik (0,0167 / 0,0934), yarı-büyük eksen (1,0 / 1,5237 AU), periyot (365,26 / 686,97 gün) | Gezegenlerin haritadaki eliptik yörüngeleri; Kepler elemanlarından konum hesaplama (`orbitState`) |
 | NASA mission-viz – "Earth Moon Mission Visualization" ve eliptik yörünge/propagatör dersleri | Dünya yörüngesinden Ay yörüngesine transfer kavramı, Kepler propagatörü yaklaşımı | Harita ekranındaki yörünge tahmini (`predict.ts`) ve analitik Kepler ilerletici (`propagate`) |
 | [NASA JPL SSD – Keplerian Elements for Approximate Positions](https://ssd.jpl.nasa.gov/planets/approx_pos.html) | J2000 ortalama boylamı, günberi boylamı ve yüzyıllık değişim hızları | Oyunun başlangıç tarihi olan **14 Kasım 2026**'da Dünya ve Mars'ın gerçek konum açıları → gerçek Mars transfer penceresi |
-| [NASA NSSDC Planetary Fact Sheets](https://nssdc.gsfc.nasa.gov/planetary/factsheet/) | Yarıçap (6371 / 1737,4 / 3389,5 km), yüzey çekimi (9,80 / 1,62 / 3,71 m/s²), Ay yörüngesi (384.400 km, e = 0,0549, 27,32 gün), atmosfer ölçek yüksekliği ve yüzey yoğunluğu | Gök cisimlerinin boyutu, çekimi, etki alanı, atmosfer sürüklenmesi |
+| [NASA NSSDC Planetary Fact Sheets](https://nssdc.gsfc.nasa.gov/planetary/factsheet/) | Merkür, Venüs, Dünya, Ay, Mars, Ceres, Jüpiter, Ganimed, Satürn ve Titan için yarıçap, yüzey çekimi, yörünge periyotları, dış merkezlik ve atmosfer ölçek yüksekliği / yüzey yoğunluğu | Gök cisimlerinin boyutu, çekimi, etki alanı, atmosfer sürüklenmesi |
 | [NASA Glenn – Beginner's Guide to Rockets](https://www1.grc.nasa.gov/beginners-guide-to-aeronautics/) | İtki/ağırlık oranı, özgül itki (Isp), roket denklemi | Montaj ekranındaki TWR ve kademe Δv hesabı, motor modeli |
 
 ## 2. Yörünge mekaniğinde NASA verisi
@@ -22,9 +22,18 @@ Bu rapor, oyunda hangi NASA verisinin **nerede** ve **nasıl** kullanıldığın
 
 | Cisim | Oyun yarıçapı | Yüzey çekimi | Etki alanı | Yörünge |
 |---|---|---|---|---|
-| Dünya | 315 km | 9,80 m/s² | 17.850 km | Güneş çevresinde, e = 0,0167 |
+| Merkür | 120,6 km | 3,70 m/s² | 2.172 km | 0,3871 AU, e = 0,2056 |
+| Venüs | 299,2 km | 8,87 m/s² | 11.909 km | 0,7233 AU, e = 0,0068 |
+| Dünya | 315,0 km | 9,80 m/s² | 17.853 km | 1,0000 AU, e = 0,0167 |
 | Ay | 85,9 km | 1,62 m/s² | 1.067 km | Dünya'dan 6.200 km, e = 0,0549 |
-| Mars | 167,6 km | 3,71 m/s² | 11.130 km | 1,5237 AU, e = 0,0934 |
+| Mars | 167,6 km | 3,71 m/s² | 11.133 km | 1,5237 AU, e = 0,0934 |
+| Ceres | 23,2 km | 0,28 m/s² | 1.480 km | 2,7675 AU, e = 0,0758 |
+| Jüpiter | 3.456,6 km | 24,79 m/s² | 915.058 km | 5,2029 AU, e = 0,0484 (gaz devi, iniş yok) |
+| Ganimed | 130,2 km | 1,43 m/s² | 396 km | Jüpiter'den 17.074 km, e = 0,0013 |
+| Satürn | 2.879,2 km | 10,44 m/s² | 1.025.330 km | 9,5367 AU, e = 0,0539 (gaz devi, iniş yok) |
+| Titan | 127,3 km | 1,35 m/s² | 704 km | Satürn'den 19.330 km, e = 0,0288 |
+
+> **Atmosfer notu:** Venüs yüzey yoğunluğu (gerçek ~65 kg/m³) oyun içi kalkış/geri dönüş dengesi için `4,2 kg/m³` ile sınırlandırılmıştır; Titan yoğun azot atmosferi (`1,4 kg/m³`, ölçek yüksekliği `21 km × 0,3`) ve Dünya/Mars değerleri NSSDC verilerinden ölçeklenmiştir.
 
 **Yamalı konikler.** Araç hangi cismin etki alanındaysa o cismin çekimiyle Kepler yörüngesi izler; sınırı geçince konum ve hız yeni cismin çerçevesine çevrilir. Bu sayede:
 
@@ -36,7 +45,7 @@ Bu rapor, oyunda hangi NASA verisinin **nerede** ve **nasıl** kullanıldığın
 
 **Kepler'in 3. yasası.** Güneş'in μ'sü Dünya'nın ölçekli yörüngesinden (`μ = n²a³`), Ay'ın uzaklığı gerçek 27,32 günlük periyodundan türetilir. Mars'ın 687 günlük periyodu ayrıca girilmez; yasadan kendiliğinden çıkar.
 
-**Güneş enerjisi.** Güneş paneli ve üs güneş tarlası üretimi `1/r²` ile ölçeklenir: Mars'ta Dünya'dakinin yaklaşık %43'ü.
+**Güneş enerjisi.** Güneş paneli ve üs güneş tarlası üretimi `1/r²` ile ölçeklenir: Mars'ta Dünya'dakinin yaklaşık %43'ü, Jüpiter'de yaklaşık %3,7'si. Bu nedenle Jüpiter (Ganimed) ve Satürn (Titan) görevlerinde ve dış gezegen üslerinde mesafeden bağımsız çalışan **RTG Nükleer Pil / Üs Reaktörü** kullanılır.
 
 ## 3. Ölçekleme kararları
 
@@ -60,9 +69,11 @@ Yakıt akışı sabittir: `ṁ = F_vakum / (Isp_vakum · g₀)`. İtki, ortam ba
 |---|---|---|---|
 | Titan | 480 kN | 265 / 240 s | Kalkış: yüksek itki, yüksek tüketim |
 | Hawk | 180 kN | 285 / 235 s | Yan itici, ikinci kademe |
+| Aerospike | 240 kN | 340 / 305 s | Yoğun atmosferlerde (Dünya, Venüs) verimli |
 | Frontier | 60 kN | 345 / 100 s | Uzayda verimli, atmosferde zayıf |
 | Kolibri | 16 kN | 315 / 140 s | Küçük iniş araçları |
-| İyon | 1,6 kN | 2100 s | Elektrikle çalışır; batarya ve panel ister |
+| İyon | 1,6 kN | 2100 / 2100 s | Elektrikle çalışır; batarya ve panel/RTG ister |
+| NERVA | 140 kN | 760 / 160 s | Nükleer termal motor; dış gezegenler ve geri dönüş |
 
 Kademe Δv'si Tsiolkovsky denklemiyle hesaplanır: `Δv = Isp · g₀ · ln(m₀/m₁)`.
 
@@ -76,4 +87,4 @@ Kademe Δv'si Tsiolkovsky denklemiyle hesaplanır: `Δv = Isp · g₀ · ln(m₀
 
 ## 6. Doğrulama
 
-`npm test` şunları sınar: Ay/Dünya kütle ve yarıçap oranlarının gerçek değerlerle eşleşmesi, Kepler ilerleticinin bir periyot sonunda başlangıç noktasına dönmesi, hazır roketin basit bir otomatik pilotla Dünya yörüngesine girmesi ve Hohmann yakmasıyla Ay'ın etki alanına ulaşması.
+`npm test` şunları sınar: Ay/Dünya kütle ve yarıçap oranlarının gerçek değerlerle eşleşmesi, Kepler ilerleticinin bir periyot sonunda başlangıç noktasına dönmesi, hazır roketin basit bir otomatik pilotla Dünya yörüngesine girmesi ve Hohmann yakmasıyla Ay'ın etki alanına ulaşması, genişletilmiş Güneş Sistemi cisimlerinin (Merkür, Venüs, Ceres, Jüpiter/Ganimed, Satürn/Titan) tutarlı yörünge/SOI/iniş özellikleri, Dünya başlangıç pasif gelir üssü, teknoloji ağacı kilitleri/çarpanları, `25×` fizik zaman hızlandırması ve `autoLand` ile Ay'a güvenli iniş.

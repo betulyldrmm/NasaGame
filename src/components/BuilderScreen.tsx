@@ -1,14 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { MODULES } from '../game/base'
 import { DEFAULT_DESIGN, GRID_H, GRID_W, partDef, PARTS } from '../game/data'
-import { bump, saveGame, sim, useGame } from '../game/store'
+import { bump, saveGame, setIdleWarp, sim, useAuthState, useGame } from '../game/store'
+import { isModuleUnlocked, isPartUnlocked, requiredTechForModule, requiredTechForPart } from '../game/tech'
 import type { PartCategory, PartInst } from '../game/types'
 import { canPlace, cargoMass, estimateDeltaV, partAt, vesselStats } from '../game/vessel'
-import { designCost, launchDesign, validateDesign } from '../flight/world'
+import { designCost, launchDesign, totalPassiveIncomePerHour, validateDesign } from '../flight/world'
 import { drawPart } from '../render/partArt'
 import PartIcon from './PartIcon'
+import TechTreeModal from './TechTreeModal'
 
 const CATEGORIES: PartCategory[] = ['Komuta', 'Yakıt', 'Motorlar', 'Kademe', 'Güç', 'İniş', 'Kargo']
+const IDLE_WARPS = [1, 4, 10, 25]
 const fmt = (n: number) => Math.round(n).toLocaleString('tr-TR')
 
 interface Props {
@@ -18,10 +21,12 @@ interface Props {
 
 export default function BuilderScreen({ onBack, onFly }: Props) {
   const gs = useGame()
+  const auth = useAuthState()
   const [selected, setSelected] = useState<string | null>(null)
   const [mirror, setMirror] = useState(true)
   const [hover, setHover] = useState<{ x: number; y: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [showTech, setShowTech] = useState(false)
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [cell, setCell] = useState(24)
@@ -30,7 +35,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
   const setDesign = (next: PartInst[]) => {
     sim.gs.design = next
     setError(null)
-    saveGame()
+    void saveGame()
     bump()
   }
 
@@ -49,8 +54,9 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
   const stages = useMemo(() => estimateDeltaV(design, cargoT), [design, cargoT])
   const totalDv = stages.reduce((s, x) => s + x.dv, 0)
   const cost = designCost(design, gs.designCargo)
-  const problem = validateDesign(design, gs.designCargo)
+  const problem = validateDesign(design, gs.designCargo, gs)
   const twr = stages[0]?.twr ?? 0
+  const passivePerHr = totalPassiveIncomePerHour(gs)
 
   const mirrorX = (x: number, w: number) => GRID_W - x - w
 
@@ -177,13 +183,18 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
   }
 
   const changeCargo = (id: string, delta: number) => {
+    if (delta > 0 && !isModuleUnlocked(gs, id)) {
+      const req = requiredTechForModule(id)
+      setError(`"${id}" modülü için teknoloji gerekli: ${req?.name ?? 'Teknoloji Ağacı'}.`)
+      return
+    }
     const cur = sim.gs.designCargo[id] ?? 0
     const n = Math.max(0, cur + delta)
     const next = { ...sim.gs.designCargo, [id]: n }
     if (!n) delete next[id]
     sim.gs.designCargo = next
     setError(null)
-    saveGame()
+    void saveGame()
     bump()
   }
 
@@ -193,7 +204,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
       setError(err)
       return
     }
-    saveGame()
+    void saveGame(true)
     bump()
     onFly()
   }
@@ -205,8 +216,25 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
       <header className="builder-top">
         <button className="hud-btn" onClick={onBack}>← Ana menü</button>
         <h1>Roket Montaj Binası</h1>
-        <div className="builder-money">Bütçe <b>{fmt(gs.money)} ₡</b></div>
-        {gs.vessels.length > 0 && <button className="hud-btn" onClick={onFly}>Uçuşa dön ({gs.vessels.length} araç) →</button>}
+        <div className="idle-warp-group" title="Pasif gelir zaman hızı">
+          {IDLE_WARPS.map((w) => (
+            <button
+              key={w}
+              type="button"
+              className={`mini-warp-btn${auth.idleWarp === w ? ' is-on' : ''}`}
+              onClick={() => setIdleWarp(w)}
+            >
+              {w}×
+            </button>
+          ))}
+        </div>
+        <button className="hud-btn" onClick={() => setShowTech(true)}>🧬 Teknoloji ({gs.techDone.length})</button>
+        <div className="builder-money">
+          Bütçe <b>{fmt(gs.money)} ₡</b> <small className="income-sub">+{fmt(passivePerHr)} ₡/sa</small>
+        </div>
+        <button className="hud-btn" onClick={onFly}>
+          {gs.vessels.length > 0 ? `Uçuşa dön (${gs.vessels.length} araç) →` : 'Uzay & Üs Ekranı →'}
+        </button>
       </header>
 
       <div className="builder-body">
@@ -215,13 +243,28 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
             <section key={cat}>
               <h3>{cat}</h3>
               <div className="palette-grid">
-                {PARTS.filter((p) => p.category === cat).map((p) => (
-                  <button key={p.id} className={`palette-item${selected === p.id ? ' is-selected' : ''}`} onClick={() => setSelected(selected === p.id ? null : p.id)} title={p.desc}>
-                    <PartIcon id={p.id} />
-                    <span>{p.name}</span>
-                    <small>{fmt(p.cost)} ₡</small>
-                  </button>
-                ))}
+                {PARTS.filter((p) => p.category === cat).map((p) => {
+                  const unlocked = isPartUnlocked(gs, p.id)
+                  const req = unlocked ? null : requiredTechForPart(p.id)
+                  return (
+                    <button
+                      key={p.id}
+                      className={`palette-item${selected === p.id ? ' is-selected' : ''}${unlocked ? '' : ' is-locked'}`}
+                      onClick={() => {
+                        if (!unlocked) {
+                          setShowTech(true)
+                          return
+                        }
+                        setSelected(selected === p.id ? null : p.id)
+                      }}
+                      title={unlocked ? p.desc : `Kilitli — Teknoloji gerekli: ${req?.name ?? 'Araştırma'}`}
+                    >
+                      <PartIcon id={p.id} />
+                      <span>{p.name}</span>
+                      <small>{unlocked ? `${fmt(p.cost)} ₡` : `🔒 ${req?.name.split(' ')[0] ?? 'Ar-Ge'}`}</small>
+                    </button>
+                  )
+                })}
               </div>
             </section>
           ))}
@@ -252,7 +295,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
             />
           </div>
           <p className="grid-hint">
-            {sel ? <><b>{sel.name}</b> — {sel.desc} Yerleştirmek için kareye tıkla, bırakmak için sağ tık.</> : 'Paletten parça seç ve kare grid\'e yerleştir. Yerleşmiş parçaya tıklarsan eline alırsın, sağ tık siler.'}
+            {sel ? <><b>{sel.name}</b> — {sel.desc} Yerleştirmek için kareye tıkla, bırakmak için sağ tık.</> : 'Paletten parça seç ve kare grid\'e yerleştir. Kilitli parçalar için Teknoloji Ağacını aç.'}
           </p>
         </section>
 
@@ -273,25 +316,34 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
             {!stages.length && <li><span>Motor + yakıt ekle</span></li>}
           </ol>
           <p className="dv-guide">
-            Gereken Δv (yaklaşık): Dünya yörüngesi <b>2.400</b> · Ay'a iniş <b>+1.300</b> · Ay'dan dönüş <b>+700</b> · Mars transferi <b>+1.000</b> m/s
+            Gereken Δv: Dünya yörüngesi <b>2.400</b> · Ay <b>+1.300</b> · Venüs/Mars <b>+1.100</b> · Merkür/Ceres <b>+2.200</b> · Jüpiter/Satürn <b>+3.400</b> m/s
           </p>
           <h3>Kargo <small>{cargoT.toFixed(1)} / {stats.cargoCap} t</small></h3>
           <ul className="cargo-list">
-            {MODULES.map((m) => (
-              <li key={m.id} title={m.desc}>
-                <span>{m.icon} {m.name}<small>{m.mass} t · {fmt(m.cost)} ₡</small></span>
-                <span className="stepper">
-                  <button onClick={() => changeCargo(m.id, -1)} disabled={!gs.designCargo[m.id]}>−</button>
-                  <b>{gs.designCargo[m.id] ?? 0}</b>
-                  <button onClick={() => changeCargo(m.id, 1)} disabled={cargoT + m.mass > stats.cargoCap + 1e-9}>＋</button>
-                </span>
-              </li>
-            ))}
+            {MODULES.map((m) => {
+              const unlocked = isModuleUnlocked(gs, m.id)
+              const req = unlocked ? null : requiredTechForModule(m.id)
+              return (
+                <li key={m.id} className={unlocked ? '' : 'is-locked'} title={unlocked ? m.desc : `Kilitli: ${req?.name ?? 'Teknoloji'}`}>
+                  <span>
+                    {m.icon} {m.name}
+                    <small>{unlocked ? `${m.mass} t · ${fmt(m.cost)} ₡` : `🔒 ${req?.name ?? 'Teknoloji'}`}</small>
+                  </span>
+                  <span className="stepper">
+                    <button onClick={() => changeCargo(m.id, -1)} disabled={!gs.designCargo[m.id]}>−</button>
+                    <b>{gs.designCargo[m.id] ?? 0}</b>
+                    <button onClick={() => changeCargo(m.id, 1)} disabled={!unlocked || cargoT + m.mass > stats.cargoCap + 1e-9}>＋</button>
+                  </span>
+                </li>
+              )
+            })}
           </ul>
           {(error ?? problem) && <p className="builder-error">{error ?? problem}</p>}
           <button className="launch-btn" onClick={launch} disabled={!!problem}>Rampaya çıkar — {fmt(cost)} ₡</button>
         </aside>
       </div>
+
+      {showTech && <TechTreeModal onClose={() => setShowTech(false)} />}
     </main>
   )
 }

@@ -106,6 +106,7 @@ export interface VesselStats {
   rcs: number
   legs: number
   legsDeployed: number
+  legTolerance: number
   chutes: number
   chutesDeployed: number
   hasNose: boolean
@@ -128,6 +129,7 @@ export function vesselStats(parts: PartInst[], cargo?: Cargo | null): VesselStat
   let rcs = 0
   let legs = 0
   let legsDeployed = 0
+  let legTolSum = 0
   let chutes = 0
   let chutesDeployed = 0
   let hasNose = false
@@ -151,7 +153,10 @@ export function vesselStats(parts: PartInst[], cargo?: Cargo | null): VesselStat
     if (d.kind === 'rcs') rcs += 1
     if (d.kind === 'leg') {
       legs += 1
-      if (p.deployed) legsDeployed += 1
+      if (p.deployed) {
+        legsDeployed += 1
+        legTolSum += d.legTolerance ?? 14
+      }
     }
     if (d.kind === 'chute') {
       chutes += 1
@@ -162,9 +167,10 @@ export function vesselStats(parts: PartInst[], cargo?: Cargo | null): VesselStat
   const cm = cargoMass(cargo)
   const comX = mass > 0 ? mx / mass : 0
   const comY = mass > 0 ? my / mass : 0
+  const legTolerance = legsDeployed >= 2 ? legTolSum / legsDeployed : 7
   return {
     mass: mass + cm, dryMass: mass - fuel + cm, fuel, fuelCap, comX, comY, minX, maxX, minY, maxY, cost, ecCap, cargoCap,
-    hasCommand, rcs, legs, legsDeployed, chutes, chutesDeployed, hasNose,
+    hasCommand, rcs, legs, legsDeployed, legTolerance, chutes, chutesDeployed, hasNose,
   }
 }
 

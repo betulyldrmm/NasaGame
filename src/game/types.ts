@@ -12,6 +12,7 @@ export type PartKind =
   | 'leg'
   | 'rcs'
   | 'solar'
+  | 'rtg'
   | 'battery'
   | 'cargo'
 
@@ -44,6 +45,8 @@ export interface PartDef {
   ecGen?: number
   /** kargo gövdesi: kapasite (t) */
   cargoCap?: number
+  /** iniş ayağı: dayanılabilir hız (m/s) */
+  legTolerance?: number
 }
 
 export interface PartInst {
@@ -87,6 +90,8 @@ export interface Vessel {
   /** yerçekimi sapanı takibi: SOI'ye girişteki ebeveyn-çerçevesi hızı */
   assist: { bodyId: BodyId; speedIn: number; dvIn: number } | null
   dvUsed: number
+  /** teknoloji ile açılan otomatik iniş asistanı */
+  autoLand?: boolean
 }
 
 export interface Base {
@@ -106,8 +111,11 @@ export interface GameState {
   nextId: number
   bases: Partial<Record<BodyId, Base>>
   missionsDone: string[]
+  techDone: string[]
   design: PartInst[]
   designCargo: Record<string, number>
+  targetBody?: BodyId | null
+  lastSavedAt?: number
 }
 
 export type GameEvent =

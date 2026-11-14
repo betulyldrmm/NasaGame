@@ -1,11 +1,25 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_DESIGN } from '../game/data'
-import { estimateDeltaV, isConnected, vesselStats } from '../game/vessel'
+import { baseIncomeMultiplier, hasAutoLandTech, INITIAL_TECH, isModuleUnlocked, isPartUnlocked, unlockTech } from '../game/tech'
+import { estimateDeltaV, freshParts, isConnected, vesselStats } from '../game/vessel'
 import { BODIES } from '../nasa/bodies'
 import { elementsFromState, hohmann, len, propagate, wrapPi } from './orbit'
-import { situation } from './physics'
+import { PAD_ANGLE, situation, terrainHeight } from './physics'
 import { predictTrajectory } from './predict'
-import { activeVessel, launchDesign, newGame, type Sim, stageNext, stepWorld } from './world'
+import {
+  activeVessel,
+  buyEarthModule,
+  launchDesign,
+  newGame,
+  PHYSICS_WARP_MAX_IDX,
+  type Sim,
+  stageNext,
+  stepWorld,
+  tickBasesOnly,
+  totalPassiveIncomePerHour,
+  validateDesign,
+  WARPS,
+} from './world'
 
 const ctrl = { rotate: 0, tx: 0, ty: 0 }
 
@@ -110,3 +124,136 @@ function moonAngle(t: number) {
   const E = s.M0 + s.n * t
   return E + s.argp + 2 * s.e * Math.sin(E)
 }
+
+describe('solar system expansion', () => {
+  it('includes landable inner & outer bodies with consistent scaled orbits', () => {
+    for (const id of ['mercury', 'venus', 'earth', 'moon', 'mars', 'ceres', 'ganymede', 'titan'] as const) {
+      expect(BODIES[id].landable).toBe(true)
+      expect(BODIES[id].soi).toBeGreaterThan(BODIES[id].radius)
+      expect(Number.isFinite(terrainHeight(id, PAD_ANGLE))).toBe(true)
+    }
+    expect(BODIES.jupiter.landable).toBe(false)
+    expect(BODIES.saturn.landable).toBe(false)
+    expect(BODIES.sun.landable).toBe(false)
+    expect(BODIES.mercury.orbit!.a / BODIES.earth.orbit!.a).toBeCloseTo(0.3871, 3)
+    expect(BODIES.ganymede.soi).toBeLessThan(BODIES.ganymede.orbit!.a)
+    expect(BODIES.titan.soi).toBeLessThan(BODIES.titan.orbit!.a)
+  })
+})
+
+describe('idle passive income & tech tree', () => {
+  it('starts new games with an active Earth passive income base', () => {
+    const gs = newGame()
+    expect(gs.bases.earth).toBeDefined()
+    expect(gs.bases.earth!.modules.telemetry).toBeGreaterThan(0)
+    const rate = totalPassiveIncomePerHour(gs)
+    expect(rate).toBeGreaterThan(1000)
+
+    const money0 = gs.money
+    const earned = tickBasesOnly(gs, 3600)
+    expect(earned).toBeCloseTo(rate, 2)
+    expect(gs.money).toBeCloseTo(money0 + rate, 2)
+    expect(gs.time).toBe(3600)
+  })
+
+  it('enforces tech tree gating and increases income multipliers', () => {
+    const gs = newGame()
+    expect(gs.techDone).toEqual([INITIAL_TECH])
+    expect(validateDesign(DEFAULT_DESIGN, {}, gs)).toBeNull()
+    expect(isPartUnlocked(gs, 'aerospike')).toBe(false)
+    expect(isModuleUnlocked(gs, 'datacenter')).toBe(false)
+    expect(hasAutoLandTech(gs)).toBe(false)
+
+    // Kilitli parça içeren tasarım reddedilmeli
+    const lockedDesign = [
+      { def: 'probe', x: 6, y: 10 },
+      { def: 'tank-m', x: 6, y: 11 },
+      { def: 'aerospike', x: 6, y: 13 },
+    ]
+    expect(validateDesign(lockedDesign, {}, gs)).not.toBeNull()
+
+    // Önce önkoşul olmadan tier-2 araştırması açılamaz
+    expect(unlockTech(gs, 'auto-land')).not.toBeNull()
+
+    // Yeterli bütçe ile sırayla idle-ops ve adv-landing aç
+    const baseEarthMult = baseIncomeMultiplier(gs, 'earth')
+    expect(unlockTech(gs, 'idle-ops')).toBeNull()
+    expect(isModuleUnlocked(gs, 'datacenter')).toBe(true)
+    expect(baseIncomeMultiplier(gs, 'earth')).toBeGreaterThan(baseEarthMult)
+
+    expect(unlockTech(gs, 'adv-landing')).toBeNull()
+    expect(isPartUnlocked(gs, 'aerospike')).toBe(true)
+    expect(validateDesign(lockedDesign, {}, gs)).toBeNull()
+
+    expect(unlockTech(gs, 'auto-land')).toBeNull()
+    expect(hasAutoLandTech(gs)).toBe(true)
+
+    const sim: Sim = { gs, warpIdx: 0, firing: new Map() }
+    const countBefore = gs.bases.earth!.modules.datacenter ?? 0
+    expect(buyEarthModule(sim, 'datacenter')).toBeNull()
+    expect(gs.bases.earth!.modules.datacenter).toBe(countBefore + 1)
+  })
+})
+
+describe('25x warp & auto-land', () => {
+  it('supports up to 25x physics/surface time warp', () => {
+    expect(WARPS[PHYSICS_WARP_MAX_IDX]).toBe(25)
+    expect(WARPS.includes(25)).toBe(true)
+    const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
+    expect(launchDesign(sim)).toBeNull()
+    sim.warpIdx = 6
+    const v = activeVessel(sim.gs)!
+    v.throttle = 1
+    const events = stepWorld(sim, 0.05, ctrl)
+    expect(sim.warpIdx).toBe(PHYSICS_WARP_MAX_IDX)
+    expect(events.some((e) => e.type === 'toast' && e.text.includes('25×'))).toBe(true)
+  })
+
+  it('lands a vessel safely on the Moon using autoLand guidance', () => {
+    const gs = newGame()
+    gs.techDone.push('adv-landing', 'auto-land')
+    const parts = freshParts([
+      { def: 'probe', x: 6, y: 10 },
+      { def: 'tank-m', x: 6, y: 11 },
+      { def: 'kolibri', x: 6, y: 13 },
+      { def: 'leg', x: 5, y: 11 },
+      { def: 'leg', x: 8, y: 11 },
+    ])
+    const moon = BODIES.moon
+    const alt0 = 800
+    const r0 = moon.radius + terrainHeight('moon', Math.PI / 2) + alt0
+    gs.vessels.push({
+      id: 1,
+      name: 'AutoLander',
+      parts,
+      bodyId: 'moon',
+      pos: { x: 0, y: r0 },
+      vel: { x: 12, y: -25 },
+      angle: Math.PI / 2,
+      angVel: 0,
+      landed: false,
+      autoLand: true,
+      throttle: 0,
+      ec: vesselStats(parts).ecCap,
+      cargo: { modules: {}, ore: 0, oreFrom: null },
+      rcsOn: false,
+      sas: 'off',
+      visited: ['moon'],
+      assist: null,
+      dvUsed: 0,
+    })
+    gs.activeId = 1
+    gs.nextId = 2
+    const sim: Sim = { gs, warpIdx: 0, firing: new Map() }
+    for (let i = 0; i < 60 * 180; i += 1) {
+      const ev = stepWorld(sim, 1 / 60, ctrl)
+      for (const e of ev) if (e.type === 'crash') throw new Error(`AutoLand crashed: ${e.reason}`)
+      if (gs.vessels[0]?.landed) break
+    }
+    const lander = gs.vessels[0]!
+    expect(lander).toBeDefined()
+    expect(lander.landed).toBe(true)
+    expect(lander.autoLand).toBe(false)
+    expect(lander.parts.some((p) => p.def === 'leg' && p.deployed)).toBe(true)
+  })
+})

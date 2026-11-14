@@ -35,6 +35,12 @@ export function predictTrajectory(bodyId: BodyId, pos: Vec, vel: Vec, t: number,
       const rl = len(r)
       let dt = Math.max(0.5, (0.02 * rl) / Math.max(len(v), 1))
       if (closed) dt = Math.min(dt, el.period / 160)
+      for (let k = 0; k < kids.length; k += 1) {
+        const kid = kids[k]!
+        if (prevDist[k]! < kid.soi * 8) {
+          dt = Math.min(dt, Math.max(0.5, (kid.soi * 0.35) / Math.max(len(v), 1)))
+        }
+      }
       const left = horizon - (time - tStart)
       if (dt >= left) dt = left
       const s = propagate(r, v, body.mu, dt)
