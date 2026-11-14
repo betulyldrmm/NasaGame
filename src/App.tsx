@@ -1,14 +1,17 @@
-import { useState } from 'react'
+import { lazy, Suspense, useState } from 'react'
 import AssemblyScreen from './components/AssemblyScreen'
 import { messages } from './i18n/tr'
+
+const FlightScreen = lazy(() => import('./components/FlightScreen'))
 
 type Dialog = 'how-to-play' | null
 
 function App() {
   const [dialog, setDialog] = useState<Dialog>(null)
-  const [screen, setScreen] = useState<'home' | 'assembly'>('home')
+  const [screen, setScreen] = useState<'home' | 'assembly' | 'flight'>('home')
 
-  if (screen === 'assembly') return <AssemblyScreen onBack={() => setScreen('home')} />
+  if (screen === 'assembly') return <AssemblyScreen onBack={() => setScreen('home')} onLaunch={() => setScreen('flight')} />
+  if (screen === 'flight') return <Suspense fallback={<main className="flight-loading">{messages.sceneLoading}</main>}><FlightScreen onBack={() => setScreen('assembly')}/></Suspense>
 
   return (
     <main className="app-shell">

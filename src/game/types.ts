@@ -11,6 +11,8 @@ export interface RocketEngine {
   id: string
   name: string
   thrustN: number
+  /** Assumed propellant mass flow in kilograms per second (kg/s); a game input, not measured engine data. */
+  fuelConsumptionKgPerSecond: number
   dryMassKg: number
   costCredits: number
 }

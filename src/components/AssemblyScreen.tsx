@@ -10,9 +10,10 @@ const RocketPreview25D = lazy(() => import('./RocketPreview25D'))
 
 interface AssemblyScreenProps {
   onBack: () => void
+  onLaunch: () => void
 }
 
-function AssemblyScreen({ onBack }: AssemblyScreenProps) {
+function AssemblyScreen({ onBack, onLaunch }: AssemblyScreenProps) {
   const { bodyId, engineId, fuelTankId, payloadIds, selectBody, selectEngine, selectFuelTank, addPayload, removePayload } = useRocketAssembly()
   const [feedback, setFeedback] = useState('')
   const configuration = useMemo(() => getRocketConfiguration({ bodyId, engineId, fuelTankId, payloadIds }), [bodyId, engineId, fuelTankId, payloadIds])
@@ -107,6 +108,7 @@ function AssemblyScreen({ onBack }: AssemblyScreenProps) {
             {twr >= 1 && twr < 1.2 && <div className="alert-box budget-alert"><span>!</span><p>{messages.twrRiskAdvice}</p></div>}
             {feedback && <p className="feedback-note" role="status">✦ {feedback}</p>}
             <details className="why-details"><summary>{messages.whyTitle}</summary><p>{messages.twrExplanation}</p><p>{messages.twrDisclaimer}</p></details>
+            <button className="button button-primary launch-from-assembly" onClick={onLaunch}><span>▲</span> {messages.continueToLaunch}</button>
           </section>
         </aside>
       </div>

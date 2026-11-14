@@ -29,8 +29,15 @@ Montaj ekranı React Three Fiber ve Three.js ile sabit açılı, düşük poligo
 - `src/game`: tipler, kataloglar, saf hesaplamalar ve Zustand montaj deposu
 - `src/components`: montaj ekranı ve roket önizlemesi
 - `src/visualization`: 2.5D model ölçülerini mevcut katalog seçimlerine eşleyen sunum verisi
+- `src/flight`: saf dikey uçuş fiziği ve görev değerlendirmesi
 - `src/i18n`: Türkçe arayüz metinleri
 - `src`: React uygulaması ve Cosmic Mission stilleri
 - `docs`: tasarım yol haritası ve NASA veri kullanım raporu
 
 Parça kütleleri, itki ve kredi maliyetleri oyun varsayımlarıdır. NASA kaynakları ve bilimsel sınırlamalar için [NASA veri raporuna](docs/nasa-data-usage.md) bakın.
+
+## Faz 3: fırlatma ve görev simülasyonu
+
+Montaj ekranında **Görev uçuşuna geç** ile Ay veya Mars hedefi ve iniş sistemleri seçilir; **Fırlat** Phaser tabanlı dikey uçuşu başlatır. İrtifa, dikey hız ve yakıt HUD'da canlı güncellenir. Görev sonucu TWR, oyunlaştırılmış Delta‑V eşiği ve iniş sistemi kurallarını açıklar. Simülasyon 1D dikey yükseliştir; gerçek transfer yörüngesi veya gezegenler arası uçuş değildir.
+
+Phaser sahnesi `src/flight/FlightScene.ts` içinde procedural placeholder görseller kullanır; `src/components/PhaserFlightView.tsx` React/Phaser yaşam döngüsünü yönetir. `npm test` fizik adımlarını ve görev değerlendirme kurallarını bileşenlerden bağımsız doğrular.

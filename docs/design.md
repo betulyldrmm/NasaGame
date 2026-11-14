@@ -24,13 +24,21 @@ Parça kütleleri, itki ve maliyetler oyun varsayımıdır. Başlangıç kredisi
 - Talep üzerine render; WebGL erişilemezse önceki SVG 2D önizlemesi gösterilir.
 - Uçuş simülasyonu, orbit kamera kontrolü ve gameplay fiziği bu aşamada eklenmedi.
 
+## Faz 3: roket fırlatma ve görev simülasyonu (uygulandı)
+
+- Montaj ekranından görev kurulumuna, Phaser Canvas sahnesine ve sonuç/öğrenme kartlarına geçiş.
+- Phaser ile prosedürel 2D/2.5D pixel-art kalkış rampası, roket, motor alevi, parçacıklar ve irtifayla hareket eden parallax katmanları.
+- Saf `src/flight/physics.ts` fonksiyonlarında sabit zaman adımlı 1D dikey hareket; başlangıç TWR kontrolü, azalan yakıt/kütle, Dünya yerçekimi ve yaklaşık hava sürüklemesi.
+- Görev değerlendirmesi `src/flight/mission.ts` içinde: TWR, oyun Delta‑V eşiği, hedef yerçekimi ve Ay/Mars iniş donanımı.
+- Phaser sahnesi React'ten bağımsız; React HUD callbacks ile güncellenir. Kapatılırken Phaser Game ve scene event listener'ları temizlenir. Ekonomi hesabı/ödülü yoktur.
+- NASA doğrulanmış çevresel olguları ile motor debisi, aerodinamik katsayılar ve görev Delta‑V eşikleri ayrı belgelenir.
+
 ## Gelecek fazlar
 
-- Gezegen seçimine bağlı TWR ve daha ayrıntılı görev bağlamı
-- Delta-V kapasitesi
-- Ay/Mars iniş sistemleri
-- Phaser tabanlı 2D uçuş sahnesi
-- Görev başarısı/başarısızlığı, ödül ve bütçe kaybı
+- Daha doğru gezegen atmosfer profilleri
+- Gerçekçi yörünge ve transfer hesabı
+- Ayrıntılı iniş fiziği
+- Görev ödülleri ve bütçe kaybı
 - Koloni kurma ve kaynak üretimi
 
 ## Mimari yön

@@ -4,7 +4,7 @@ import type { RocketConfiguration } from './types'
 
 const configuration: RocketConfiguration = {
   body: { id: 'body', name: 'Test body', cargoSlots: 1, dryMassKg: 800, costCredits: 120 },
-  engine: { id: 'engine', name: 'Test engine', thrustN: 30_000, dryMassKg: 250, costCredits: 100 },
+  engine: { id: 'engine', name: 'Test engine', thrustN: 30_000, fuelConsumptionKgPerSecond: 10, dryMassKg: 250, costCredits: 100 },
   fuelTank: { id: 'tank', name: 'Test tank', fuelMassKg: 500, dryMassKg: 100, costCredits: 50 },
   payloads: [{ id: 'solar-panel', name: 'Test payload', massKg: 150, costCredits: 75 }],
   totalMassKg: 0,
