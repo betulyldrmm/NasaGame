@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { baseReport, COLONY_SLOTS, colonyTier, ensureSites, MODULE_BY_ID, MODULES, TIER_HINT } from '../game/base'
+import { baseReport, COLONY_SLOTS, colonyTier, EARTH_MODULES, ensureSites, MODULE_BY_ID, MODULES, TIER_HINT } from '../game/base'
 import { runCommand, useGame } from '../game/store'
 import { BODIES, type BodyId, solarFlux } from '../nasa/bodies'
 import { bodyAbsState, len } from '../flight/orbit'
@@ -162,8 +162,8 @@ export default function ColonyPanel({ initialBody = 'earth', onNotify }: Props) 
       <div className="colony-build">
         <h3>İnşaat</h3>
         <div className="colony-cards">
-          {MODULES.filter((m) => !(bodyId === 'earth' && (m.id === 'drill' || m.id === 'isru'))).map((m) => {
-            const locked = m.tier > tier
+          {MODULES.filter((m) => bodyId !== 'earth' || EARTH_MODULES.includes(m.id)).map((m) => {
+            const locked = bodyId !== 'earth' && m.tier > tier
             const stock = base?.stock?.[m.id] ?? 0
             const price = modulePrice(gs, bodyId, m.id)
             const afford = gs.money >= price

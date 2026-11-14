@@ -89,6 +89,7 @@ export function normalizeGameState(raw: unknown): GameState {
     targetBody: gs.targetBody ?? 'moon',
     shipSlots: Array.from({ length: SHIP_SLOT_COUNT }, (_, i) => (Array.isArray(gs.shipSlots) ? gs.shipSlots[i] ?? null : null)),
   }
+  merged.vessels = merged.vessels.filter((v) => !v.debris)
   if (!merged.bases.earth) {
     merged.bases.earth = emptyBase(PAD_ANGLE)
     merged.bases.earth.sites = [...STARTER_EARTH_SITES]

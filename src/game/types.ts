@@ -108,6 +108,10 @@ export interface Vessel {
   breaking?: { left: number; timer: number; reason: string }
   /** yörünge istasyonu (ISS): silinemez, kurtarılamaz */
   station?: boolean
+  /** çarpışmadan kopan parça: kendi fiziğiyle savrulur, yere değince patlar */
+  debris?: { ttl: number }
+  /** yörünge yakalama yanışı başladı: bitene kadar kesilmez (titreşimi önler) */
+  captureLatch?: boolean
 }
 
 export type TileKind = 'fog' | 'clear' | 'crater' | 'vein' | 'built'

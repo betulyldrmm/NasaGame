@@ -309,22 +309,6 @@ function drawMonument(ctx: Ctx) {
   ctx.fill()
   ctx.fillStyle = '#4b525b'
   ctx.fillRect(-3, -0.9, 6, 0.9)
-  ctx.fillStyle = '#e03131'
-  ctx.fillRect(2.2, -9.5, 7.2, 4.2)
-  ctx.fillStyle = '#ffffff'
-  ctx.beginPath()
-  ctx.arc(4.6, -7.4, 1.1, 0, 6.283)
-  ctx.fill()
-  ctx.fillStyle = '#e03131'
-  ctx.beginPath()
-  ctx.arc(4.95, -7.4, 0.88, 0, 6.283)
-  ctx.fill()
-  ctx.fillStyle = '#8b949f'
-  ctx.fillRect(2, -10, 0.3, 10)
-  ctx.fillStyle = '#ffffff'
-  ctx.font = 'bold 1.25px "DM Mono", monospace'
-  ctx.textAlign = 'center'
-  ctx.fillText('İSTİKBAL GÖKLERDEDİR', 0, 2.4)
 }
 
 /** Gökyüzü easter egg'leri: düşen balina + petunya saksısı, sürüklenen kırmızı spor araba. */
@@ -385,8 +369,10 @@ function drawSkyEggs(ctx: Ctx, sim: Sim, view: View, v: Vessel | null) {
     ctx.restore()
   }
   // Starman: yüksek irtifada arada bir geçen kırmızı araba
-  if (v && !v.landed && len(v.pos) - BODIES[v.bodyId].radius > 120_000) {
-    const cycle = view.clock % 50
+  // Starman: yalnızca Dünya yörüngesinde ve nadiren (yaklaşık 8 dakikada bir) geçer
+  const inEarthOrbit = !!v && !v.landed && v.bodyId === 'earth' && len(v.pos) - BODIES.earth.radius > BODIES.earth.atmoHeight
+  if (v && inEarthOrbit && hash(Math.floor(view.clock / 60) + 17) < 0.13) {
+    const cycle = view.clock % 60
     if (cycle < 16) {
       const x = -80 + (view.w + 160) * (cycle / 16)
       ctx.save()
@@ -631,6 +617,8 @@ function drawVesselAt(ctx: Ctx, sim: Sim, v: Vessel, p: Vec, rot: number, cell: 
   ctx.restore()
 }
 
+let lastView: { bodyId: BodyId; pos: Vec; until: number } | null = null
+
 export interface FlightFrame {
   cam: Cam | null
   /** araç id → ekran konumu ve hücre boyu (tıklama testi için) */
@@ -643,10 +631,13 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
   const frame: FlightFrame = { cam: null, hits: [] }
   ctx.fillStyle = '#02040a'
   ctx.fillRect(0, 0, view.w, view.h)
-  const bodyId: BodyId = v?.bodyId ?? 'earth'
+  const bodyId: BodyId = v?.bodyId ?? (lastView && view.clock < lastView.until ? lastView.bodyId : 'earth')
   const body = BODIES[bodyId]
   const padR = BODIES.earth.radius + 14
-  let center = v ? v.pos : { x: Math.cos(PAD_ANGLE) * padR, y: Math.sin(PAD_ANGLE) * padR }
+  // Araç kaybedilince kamera son konumda kalır: enkazın savrulup patlaması izlenebilsin.
+  if (v) lastView = { bodyId: v.bodyId, pos: { ...v.pos }, until: view.clock + 8 }
+  const hold = !v && lastView && view.clock < lastView.until ? lastView : null
+  let center = v ? v.pos : hold ? hold.pos : { x: Math.cos(PAD_ANGLE) * padR, y: Math.sin(PAD_ANGLE) * padR }
   const r = len(center)
   const theta = Math.atan2(center.y, center.x)
   if (v && body.landable) {
@@ -720,7 +711,7 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
     if (p.x < -400 || p.x > view.w + 400 || p.y < -400 || p.y > view.h + 400) continue
     const st = vesselStats(o.parts)
     const isActive = o === v
-    const cell = vesselCell(st, cam.z, isActive ? 40 : 18)
+    const cell = o.debris ? Math.max(cam.z, 2.2) : vesselCell(st, cam.z, isActive ? 40 : 18)
     if (o.bodyId === bodyId && cam.z > 0.8) {
       const s = situation(o, st)
       if (s.alt < 90 && body.landable) {
@@ -735,7 +726,7 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
       }
     }
     drawVesselAt(ctx, sim, o, p, cam.rot, cell, view.clock, vac, isActive ? view.rcsTx : 0)
-    frame.hits.push({ id: o.id, x: p.x, y: p.y, cell, rot: Math.PI / 2 - (o.angle + cam.rot) })
+    if (!o.debris) frame.hits.push({ id: o.id, x: p.x, y: p.y, cell, rot: Math.PI / 2 - (o.angle + cam.rot) })
     if (isActive && !o.landed && cam.z < 12 && len(o.vel) > 8) {
       const ringR = Math.max(46, ((st.maxY - st.minY) * cell) / 2 + 18)
       const va = Math.atan2(o.vel.y, o.vel.x)
@@ -769,7 +760,7 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
       ctx.restore()
       ctx.restore()
     }
-    if (!isActive) {
+    if (!isActive && !o.debris) {
       ctx.fillStyle = 'rgba(255,255,255,.75)'
       ctx.font = '11px "DM Mono", monospace'
       ctx.textAlign = 'center'
@@ -991,6 +982,7 @@ export function renderMap(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): Map
 
   // araçlar
   for (const v of gs.vessels) {
+    if (v.debris) continue
     const o = abs[v.bodyId]!
     const p = S({ x: o.x + v.pos.x, y: o.y + v.pos.y })
     frame.vessels.push({ id: v.id, x: p.x, y: p.y })

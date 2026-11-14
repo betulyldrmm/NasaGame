@@ -149,6 +149,15 @@ export function rotateVessel(
     return
   }
 
+  // Zaman hızlandırmada (büyük adım) PD denetleyici kararsızlaşıp gemiyi fırıl fırıl döndürür;
+  // bu durumda hedefe sabit hızla, taşmadan dön.
+  if (dt > 0.06) {
+    const err = wrapPi(target - v.angle)
+    const step = Math.max(-maxAutoVel * dt, Math.min(maxAutoVel * dt, err))
+    v.angle = wrapPi(v.angle + step)
+    v.angVel = 0
+    return
+  }
   const acc = Math.max(-autoMaxAcc, Math.min(autoMaxAcc, 7.5 * wrapPi(target - v.angle) - 5.2 * v.angVel))
   v.angVel = Math.max(-maxAutoVel, Math.min(maxAutoVel, v.angVel + acc * dt))
   v.angle = wrapPi(v.angle + v.angVel * dt)
@@ -199,6 +208,17 @@ export function safeOrbitAlt(body: BodyDef): number {
   return Math.max(8_000, Math.min(24_000, Math.round(body.radius * 0.14)))
 }
 
+/** Yakalama aşamasında şu an motor yakılmalı mı? (rehberlik ve ray/fizik seçimi ortak kullanır) */
+function captureWantsBurn(body: BodyDef, s: Situation, el: ReturnType<typeof elementsFromState>): boolean {
+  const targetR = body.radius + safeOrbitAlt(body)
+  const safePeri = body.radius + (body.atmoHeight > 0 ? body.atmoHeight + 4000 : Math.max(4000, safeOrbitAlt(body) * 0.5))
+  if (el.rp < safePeri) return true
+  if (el.rp > targetR * 3) return s.speed > 20
+  // Yakalama yanışı enberi çevresinde yapılır (gerçek anomali ±0,7 rad): en az yakıtla en çok etki.
+  if (Math.abs(el.nu) < 0.7) return true
+  return s.vr >= 0 && (el.e >= 1 || el.ra > body.soi * 0.98) && s.speed > 20
+}
+
 function autoOrbitGuidance(
   v: Vessel,
   st: VesselStats,
@@ -230,6 +250,7 @@ function autoOrbitGuidance(
       v.autopilotNote = undefined
       v.approachWarn = null
     }
+    v.captureLatch = false
     v.sas = 'prograde'
     return Math.atan2(v.vel.y, v.vel.x)
   }
@@ -242,53 +263,77 @@ function autoOrbitGuidance(
     return Math.atan2(v.vel.y || up.y, v.vel.x || up.x)
   }
 
-  // Hiperbolik geliş veya taşmış elips → önce yakala / enberiyi düzelt
+  // Güvenli ama eliptik yörünge (varış sonrası): enberide geri yönde yakıp daireselleştir.
+  if (!v.landed && el.e < 1 && el.rp >= safePeri && el.ra <= body.soi * 0.85) {
+    const retro = s.speed > 20 ? Math.atan2(-v.vel.y, -v.vel.x) : v.angle
+    if (Math.abs(el.nu) < 0.45) v.captureLatch = true
+    if (!v.captureLatch) {
+      v.throttle = 0
+      v.autopilotNote = 'Enberiye süzülüyor (daireselleştirme beklemede)…'
+      return retro
+    }
+    const align = Math.cos(wrapPi(v.angle - retro))
+    v.throttle = align > 0.5 ? Math.max(0.15, Math.min(1, el.e * 5)) : 0
+    v.autopilotNote = `${body.name} yörüngesi daireselleştiriliyor…`
+    return retro
+  }
+
+  // Hiperbolik geliş veya taşmış elips → önce enberiyi alçalt, sonra enberide yakala
   if (!v.landed && (el.e >= 1 || el.ra > body.soi * 0.85)) {
-    const captureZone = s.r <= Math.max(targetR * 2.2, el.rp * 1.45) || el.rp < safePeri || s.vr >= 0
-    if (!captureZone) {
+    // Hız çok düşükken "geri yön" belirsizdir; gemi kendi etrafında dönmesin diye mevcut yön korunur.
+    const retro = s.speed > 20 ? Math.atan2(-v.vel.y, -v.vel.x) : v.angle
+    const lowering = el.rp > targetR * 3
+    if (!lowering && Math.abs(el.nu) < 0.7) v.captureLatch = true
+    if (lowering) v.captureLatch = false
+    if (!v.captureLatch && !captureWantsBurn(body, s, el)) {
       v.throttle = 0
       v.autopilotNote = `${body.name} yörünge yakalaması için yaklaşılıyor…`
-      return s.speed > 1 ? Math.atan2(-v.vel.y, -v.vel.x) : tanAngle
+      return retro
     }
-    const retro = s.speed > 1 ? Math.atan2(-v.vel.y, -v.vel.x) : tanAngle
-    const aim = el.rp < safePeri ? s.theta * 0.25 + retro * 0.75 : retro
-    const target = el.rp < safePeri ? wrapPi(retro + wrapPi(s.theta - retro) * 0.35) : aim
+    const target = el.rp < safePeri ? wrapPi(retro + wrapPi(s.theta - retro) * 0.35) : retro
     const align = Math.cos(wrapPi(v.angle - target))
-    v.throttle = align > 0.45 ? 1 : 0
-    v.autopilotNote = `${body.name} yörünge yakalama yanışı…`
+    const gentle = el.rp > targetR * 3 ? Math.max(0.2, Math.min(1, (el.rp - targetR * 2.6) / targetR)) : 1
+    v.throttle = align > 0.45 ? gentle : 0
+    v.autopilotNote = el.rp > targetR * 3 ? `${body.name} yaklaşma yörüngesi alçaltılıyor…` : `${body.name} yörünge yakalama yanışı…`
     return target
   }
 
-  // Yükseliş: öte noktayı hedef irtifaya çıkar
-  if (v.landed || el.ra < targetR) {
+  v.captureLatch = false
+
+  // Yükseliş: öte noktayı hedef irtifaya çıkar. Eğim hem irtifaya hem öte noktanın hedefe
+  // yakınlığına bağlıdır; güçlü roketler dik çıkıp yatay hızsız kalmaz.
+  const vCirc = Math.sqrt(body.mu / Math.max(s.r, body.radius + 1))
+  const vtAbs = Math.abs(vt)
+  const raAlt = el.e < 1 && Number.isFinite(el.ra) && !v.landed ? el.ra - body.radius : 0
+  if (v.landed || (raAlt < targetAlt * 0.985 && s.vr > -2 && el.rp < safePeri)) {
     const startTurn = body.atmoHeight > 0 ? 450 : 90
     const endTurn = Math.max(startTurn + 1200, targetAlt * (body.atmoHeight > 0 ? 0.55 : 0.38))
-    const tilt = s.alt < startTurn ? 0 : smooth(startTurn, endTurn, Math.max(0, s.altSea)) * 1.46
+    const tiltAlt = s.alt < startTurn ? 0 : smooth(startTurn, endTurn, Math.max(0, s.altSea)) * 1.46
+    const gate = body.atmoHeight > 0 ? 5000 : 500
+    const tiltAp = 1.5 * Math.max(0, Math.min(1, (raAlt / targetAlt - (body.atmoHeight > 0 ? 0.2 : 0.03)) / (body.atmoHeight > 0 ? 0.7 : 0.45))) * smooth(startTurn, startTurn + gate, Math.max(0, s.altSea))
+    const tilt = Math.max(tiltAlt, tiltAp)
     const targetAngle = s.theta + spin * tilt
     const align = Math.cos(wrapPi(v.angle - targetAngle))
-    const ratio = (el.ra - body.radius) / Math.max(1, targetAlt)
-    v.throttle = s.alt < startTurn || align > 0.35 ? (ratio > 0.94 ? 0.45 : 1) : 0
+    v.throttle = s.alt < startTurn || align > 0.35 ? (raAlt > targetAlt * 0.94 ? 0.5 : 1) : 0
     v.autopilotNote = `${body.name} yörünge tırmanışı…`
     return targetAngle
   }
 
-  // Öte noktaya süzülme
-  const vCirc = Math.sqrt(body.mu / Math.max(s.r, targetR))
-  const vDes = { x: Math.cos(tanAngle) * vCirc, y: Math.sin(tanAngle) * vCirc }
-  const dv = { x: vDes.x - v.vel.x, y: vDes.y - v.vel.y }
-  const dvMag = len(dv)
-  const burnLead = Math.max(1500, targetAlt * 0.08)
-  const coastingToAp = el.rp < safePeri && s.vr > 0 && s.r < el.ra - burnLead && (el.ra - s.r) / Math.max(10, s.vr) > Math.max(12, (dvMag / maxAccel) * 0.65)
-  if (coastingToAp && s.altSea >= body.atmoHeight * 0.95) {
+  // Öte noktaya süzülme: yanış süresinin yarısı kadar önce ateşle
+  const need = Math.max(0, vCirc - vtAbs)
+  const burnTime = need / Math.max(0.1, maxAccel)
+  const toAp = s.vr > 0 ? (el.ra - s.r) / Math.max(5, s.vr) : 0
+  if (s.vr > 0 && toAp > burnTime * 0.5 + 4 && el.rp < safePeri && s.altSea >= body.atmoHeight * 0.9) {
     v.throttle = 0
     v.autopilotNote = 'Öte noktaya süzülüyor (daireselleştirme beklemede)…'
-    return dvMag > 2 ? Math.atan2(dv.y, dv.x) : tanAngle
+    return tanAngle
   }
 
-  // Daireselleştirme yanışı
-  const targetAngle = dvMag > 1 ? Math.atan2(dv.y, dv.x) : tanAngle
+  // Daireselleştirme: yatay yak, dikey hızı sıfırda tut (düşüyorsa burnu hafif yukarı kaldır)
+  const pitch = Math.max(-0.5, Math.min(0.7, -s.vr * 0.012))
+  const targetAngle = tanAngle - spin * pitch
   const align = Math.cos(wrapPi(v.angle - targetAngle))
-  v.throttle = align > 0.55 ? Math.max(0.15, Math.min(1, dvMag / 22)) : 0
+  v.throttle = align > 0.5 ? Math.max(0.2, Math.min(1, need / 25 + (s.vr < -3 ? 0.5 : 0))) : 0
   v.autopilotNote = `${body.name} yörüngesi daireselleştiriliyor…`
   return targetAngle
 }
@@ -445,16 +490,41 @@ export function stepPhysics(
   return { firing: out.firing }
 }
 
+/**
+ * Yörünge otopilotu şu an yalnızca süzülüyorsa bir sonraki yanışa kalan süreyi (s) döndürür;
+ * motor/rehberlik gerekiyorsa null. Süzülürken araç raylara geçer ve zaman hızlandırılabilir.
+ */
+export function orbitCoastWait(v: Vessel, body: BodyDef, s: Situation): number | null {
+  if (v.landed || v.throttle > 0 || v.captureLatch) return null
+  const el = elementsFromState(v.pos, v.vel, body.mu)
+  const targetR = body.radius + safeOrbitAlt(body)
+  const safePeri = body.radius + (body.atmoHeight > 0 ? body.atmoHeight + 4000 : Math.max(4000, safeOrbitAlt(body) * 0.5))
+  const open = el.e >= 1 || el.ra > body.soi * 0.85
+  if (open || el.rp >= safePeri) {
+    if (el.e < 0.075 && !open) return null
+    if (open && captureWantsBurn(body, s, el)) return null
+    const lim = open ? 0.7 : 0.45
+    if (Math.abs(el.nu) < lim) return null
+    if (s.vr < 0) return (s.r - el.p / (1 + el.e * Math.cos(lim))) / Math.max(1, -s.vr) - 15
+    return el.e < 1 ? el.period * 0.3 : 600
+  }
+  if (el.ra < targetR * 0.985 || s.vr <= 0) return null
+  const wait = (el.ra - s.r) / Math.max(1, s.vr) - 90
+  return wait > 0 ? wait : null
+}
+
 /** Araç şu an sayısal fiziğe mi ihtiyaç duyuyor (itki, atmosfer, yüzeye yakınlık)? */
 export function needsPhysics(v: Vessel, ctrl: Controls | null): boolean {
   const st = vesselStats(v.parts, v.cargo)
   const burning = v.throttle > 0 && st.fuel > 0 && activeEngines(v.parts).length > 0
   const ap = effectiveAutopilot(v)
   if (v.landed) return burning || ap === 'orbit' || ap === 'transfer'
-  if (burning || ap === 'orbit' || ap === 'land') return true
+  if (burning || ap === 'land') return true
+  if (v.debris) return true
   const body = BODIES[v.bodyId]
   const s = situation(v, st)
   if (s.altSea < body.atmoHeight || (body.landable && s.alt < 1500)) return true
+  if (ap === 'orbit') return orbitCoastWait(v, body, s) === null
   if (ap === 'transfer') {
     if (body.id !== 'sun') {
       const el = elementsFromState(v.pos, v.vel, body.mu)

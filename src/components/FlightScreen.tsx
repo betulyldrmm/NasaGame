@@ -202,7 +202,7 @@ function snapshot(): Hud {
     date: gameDate(gs.time).toLocaleDateString(lang === 'en' ? 'en-GB' : 'tr-TR', { day: 'numeric', month: 'short', year: 'numeric' }),
     dv: 0,
     tol: 7,
-    vessels: gs.vessels.map((o) => ({ id: o.id, name: o.name, body: BODIES[o.bodyId].name + (o.landed ? ' (yüzeyde)' : ''), active: o.id === gs.activeId })),
+    vessels: gs.vessels.filter((o) => !o.debris).map((o) => ({ id: o.id, name: o.name, body: BODIES[o.bodyId].name + (o.landed ? ' (yüzeyde)' : ''), active: o.id === gs.activeId })),
     plan: [],
     targetBody,
     cargo: '',
@@ -321,6 +321,7 @@ export default function FlightScreen({ onBuilder }: Props) {
   const [isMap, setIsMap] = useState(false)
   const [toasts, setToasts] = useState<{ id: number; text: string; kind: string }[]>([])
   const [lost, setLost] = useState<string | null>(null)
+  const [wreck, setWreck] = useState(false)
   const [alarm, setAlarm] = useState(false)
   const spam = useRef<number[]>([])
   const typed = useRef('')
@@ -352,10 +353,12 @@ export default function FlightScreen({ onBuilder }: Props) {
       else if (e.type === 'crash') {
         if (e.wasActive) {
           // Patlamalar görünsün diye kayıp ekranı biraz gecikir.
+          setWreck(true)
           window.setTimeout(() => {
             audio.sfx('lose', 0.5)
+            setWreck(false)
             setLost(`${e.name}: ${e.reason}.`)
-          }, 1500)
+          }, 3800)
         } else toast(`${e.name}: ${e.reason}.`, 'warn')
       }
     }
@@ -823,20 +826,15 @@ export default function FlightScreen({ onBuilder }: Props) {
               </div>
             )}
             <div className="row">
-              {(['off', 'prograde', 'retrograde'] as SasMode[]).map((m) => (
+              {(['off'] as SasMode[]).map((m) => (
                 <button
                   key={m}
                   className={`hud-btn${hud.sas === m ? ' is-on' : ''}`}
                   onClick={() => act((v) => { v.autopilot = 'off'; v.autoLand = false; v.autopilotNote = undefined; v.sas = m })}
                 >
-                  {m === 'off' ? 'Serbest' : m === 'prograde' ? 'İleri ▲' : 'Geri ▼'}
+                  {m === 'off' ? 'Serbest' : ''}
                 </button>
               ))}
-              {hud.hasLegs && (
-                <button className={`hud-btn${hud.legsOpen ? ' is-on' : ''}`} onClick={() => act((v) => { toggleKind(v, 'leg') })}>
-                  🦵 Ayaklar
-                </button>
-              )}
               {hud.hasChutes && (
                 <button className={`hud-btn${hud.chutesOpen ? ' is-on' : ''}`} onClick={() => act((v) => { toggleKind(v, 'chute') })}>
                   🪂 Paraşüt
@@ -970,7 +968,7 @@ export default function FlightScreen({ onBuilder }: Props) {
         </div>
       )}
 
-      {!confirmDel && (lost || !hud.has) && (
+      {!confirmDel && !wreck && (lost || !hud.has) && (
         <div className="dialog-backdrop">
           <section className="dialog">
             <h2>{lost ? 'Araç kaybedildi' : 'Aktif araç yok'}</h2>
@@ -981,7 +979,6 @@ export default function FlightScreen({ onBuilder }: Props) {
               <button className="button button-primary" onClick={quickLaunch}>🚀 Tasarımı Fırlat</button>
               <button className="button button-secondary" onClick={onBuilder}>Montaj binası</button>
               <button className="button button-secondary" onClick={() => setPanel('base')}>Üsler</button>
-              <button className="button button-secondary" onClick={() => setShowTech(true)}>Ar-Ge</button>
               {hud.vessels.map((o) => <button key={o.id} className="button button-secondary" onClick={() => switchTo(o.id)}>{o.name} · {o.body}</button>)}
             </div>
           </section>
