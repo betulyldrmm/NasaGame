@@ -505,3 +505,24 @@ kbd { background: #1b2b47; border: 1px solid #8296b355; border-bottom-width: 2px
 .earth-mod-btn:hover:not(:disabled) { border-color: var(--color-turquoise); background: #1a3052; }
 .earth-mod-btn:disabled { opacity: .48; cursor: not-allowed; }
 .earth-mod-btn small { font: 10px 'DM Mono', monospace; color: var(--color-orange); }
+
+/* gemi slotları, TWR göstergesi, araç silme */
+.ship-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.ship-bar-label { font: 500 10px 'DM Mono', monospace; letter-spacing: .12em; text-transform: uppercase; color: var(--color-turquoise); margin-left: 4px; }
+.ship-slot { display: inline-flex; border: 1px dashed #8296b355; border-radius: 8px; overflow: hidden; }
+.ship-slot.is-filled { border-style: solid; border-color: #ffad5788; }
+.ship-slot button { background: #101a2ecc; border: 0; color: var(--color-text); padding: 7px 8px; font: 600 11.5px 'Manrope', sans-serif; cursor: pointer; }
+.ship-slot button + button { border-left: 1px solid #8296b333; }
+.ship-slot button:hover:not(:disabled) { background: #1b2b47; }
+.ship-slot button:disabled { color: var(--color-muted); cursor: default; }
+.twr-meter { margin: 8px 0 2px; }
+.twr-meter i { display: block; height: 8px; border-radius: 5px; background: #ffffff1f; overflow: hidden; position: relative; }
+.twr-meter i::after { content: ''; position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; background: #ffffffaa; }
+.twr-meter em { display: block; height: 100%; border-radius: 5px; }
+.twr-meter em.ok { background: var(--color-success); } .twr-meter em.warn { background: var(--color-orange); } .twr-meter em.bad { background: var(--color-error); }
+.twr-meter small { display: block; margin-top: 5px; font-size: 11px; color: var(--color-muted); line-height: 1.4; }
+.vessel-row { display: flex; gap: 4px; }
+.vessel-row > button:first-child { flex: 1; }
+.vessel-list .vessel-del { flex: none; justify-content: center; padding: 5px 7px; }
+.vessel-list .vessel-del:hover { border-color: var(--color-error); }
+.button.danger { background: var(--color-error); color: #2a0610; box-shadow: none; }

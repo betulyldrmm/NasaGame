@@ -453,3 +453,76 @@ export function toggleKind(v: Vessel, kind: 'solar' | 'leg' | 'chute') {
   for (const p of items) p.deployed = open
   return items.length ? open : null
 }
+
+/** Aracı kalıcı olarak siler (boşta kalan kademeler ve terk edilmiş gemiler için). */
+export function deleteVessel(sim: Sim, id: number): boolean {
+  const gs = sim.gs
+  const before = gs.vessels.length
+  gs.vessels = gs.vessels.filter((v) => v.id !== id)
+  sim.firing.delete(id)
+  if (gs.activeId === id) gs.activeId = gs.vessels.find((v) => vesselStats(v.parts).hasCommand)?.id ?? null
+  return gs.vessels.length < before
+}
+
+export const DOCK_RANGE_M = 30
+export const DOCK_SPEED_MPS = 3
+
+/** Kenetlenmeye uygun en yakın araç: aynı gök cisminde, 30 m içinde, 3 m/s altında bağıl hız. */
+export function dockCandidate(gs: GameState, v: Vessel): Vessel | null {
+  if (v.landed) return null
+  let best: Vessel | null = null
+  let bestD = DOCK_RANGE_M
+  for (const o of gs.vessels) {
+    if (o.id === v.id || o.bodyId !== v.bodyId || o.landed) continue
+    const d = Math.hypot(o.pos.x - v.pos.x, o.pos.y - v.pos.y)
+    const dv = Math.hypot(o.vel.x - v.vel.x, o.vel.y - v.vel.y)
+    if (d < bestD && dv < DOCK_SPEED_MPS) {
+      best = o
+      bestD = d
+    }
+  }
+  return best
+}
+
+/**
+ * Yörüngede kenetlenme: diğer araç, aktif aracın burnuna bir dikey adaptörle bağlanır.
+ * Yakıt ve kargo birleşir; adaptöre tıklayınca araçlar yeniden ayrılır.
+ */
+export function dockVessels(sim: Sim, v: Vessel, other: Vessel): GameEvent[] {
+  const gs = sim.gs
+  const center = (p: PartInst) => p.x + partDef(p.def).w / 2
+  const top = v.parts.reduce((a, p) => (p.y < a.y ? p : a))
+  const bottom = other.parts.reduce((a, p) => (p.y + partDef(p.def).h > a.y + partDef(a.def).h ? p : a))
+  const decX = Math.round(center(top) - 1)
+  const decY = top.y - 1
+  const dx = Math.round(decX + 1 - center(bottom))
+  const dy = decY - (bottom.y + partDef(bottom.def).h)
+  const m1 = vesselStats(v.parts, v.cargo).mass
+  const m2 = vesselStats(other.parts, other.cargo).mass
+  let parts: PartInst[] = [
+    ...v.parts,
+    { def: 'decoupler', x: decX, y: decY },
+    ...other.parts.map((p) => ({ ...p, x: p.x + dx, y: p.y + dy })),
+  ]
+  const minX = Math.min(...parts.map((p) => p.x))
+  const minY = Math.min(...parts.map((p) => p.y))
+  parts = parts.map((p) => ({ ...p, x: p.x - minX, y: p.y - minY }))
+  if (!isConnected(parts)) return [{ type: 'toast', text: 'Kenetlenme başarısız: gövdeler hizalanamadı.' }]
+  const k = m2 / (m1 + m2)
+  v.pos = { x: v.pos.x + (other.pos.x - v.pos.x) * k, y: v.pos.y + (other.pos.y - v.pos.y) * k }
+  v.vel = { x: v.vel.x + (other.vel.x - v.vel.x) * k, y: v.vel.y + (other.vel.y - v.vel.y) * k }
+  v.parts = parts
+  v.ec += other.ec
+  for (const [id, n] of Object.entries(other.cargo.modules)) v.cargo.modules[id] = (v.cargo.modules[id] ?? 0) + n
+  if (other.cargo.ore > 0) {
+    v.cargo.ore += other.cargo.ore
+    v.cargo.oreFrom = v.cargo.oreFrom ?? other.cargo.oreFrom
+  }
+  for (const b of other.visited) if (!v.visited.includes(b)) v.visited.push(b)
+  v.throttle = 0
+  v.angVel = 0
+  gs.vessels = gs.vessels.filter((o) => o.id !== other.id)
+  sim.firing.delete(other.id)
+  sim.firing.delete(v.id)
+  return [{ type: 'toast', text: `${other.name} ile kenetlenildi. Ayırmak için aradaki adaptöre tıkla.` }]
+}

@@ -1,5 +1,6 @@
 /** Tekil oyun durumu, hesap oturumu ve hesaba özel kalıcılık. */
 import { useSyncExternalStore } from 'react'
+import { SHIP_SLOT_COUNT } from './data'
 import { STARTER_EARTH_MODULES } from './base'
 import { INITIAL_TECH } from './tech'
 import type { GameState } from './types'
@@ -78,6 +79,7 @@ export function normalizeGameState(raw: unknown): GameState {
     techDone: Array.isArray(gs.techDone) && gs.techDone.length ? [...new Set([INITIAL_TECH, ...gs.techDone])] : [INITIAL_TECH],
     designCargo: gs.designCargo ? { ...gs.designCargo } : {},
     targetBody: gs.targetBody ?? 'moon',
+    shipSlots: Array.from({ length: SHIP_SLOT_COUNT }, (_, i) => (Array.isArray(gs.shipSlots) ? gs.shipSlots[i] ?? null : null)),
   }
   if (!merged.bases.earth) {
     merged.bases.earth = {

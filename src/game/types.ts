@@ -102,6 +102,12 @@ export interface Base {
   earned: number
 }
 
+export interface ShipSlot {
+  name: string
+  design: PartInst[]
+  cargo: Record<string, number>
+}
+
 export interface GameState {
   /** oyun saati (s) */
   time: number
@@ -114,6 +120,8 @@ export interface GameState {
   techDone: string[]
   design: PartInst[]
   designCargo: Record<string, number>
+  /** oyuncunun kayıtlı gemi tasarımları (boş slot = null) */
+  shipSlots?: (ShipSlot | null)[]
   targetBody?: BodyId | null
   lastSavedAt?: number
 }
