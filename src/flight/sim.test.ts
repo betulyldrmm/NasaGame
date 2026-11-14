@@ -69,7 +69,6 @@ describe('default rocket', () => {
       // yakıtı biten kademeyi at
       const st = vesselStats(v.parts)
       if (v.throttle > 0 && sim.firing.get(v.id)?.size === 0) stageNext(sim, v)
-      if (i === 5400 && st.fuel > 0) { /* noop */ }
       const ev = stepWorld(sim, 1 / 60, ctrl)
       for (const e of ev) if (e.type === 'crash' && e.wasActive) throw new Error(e.reason)
     }
@@ -85,7 +84,7 @@ describe('default rocket', () => {
     let burned = false
     for (let i = 0; i < 400000 && v.bodyId === 'earth'; i += 1) {
       if (!burned) {
-        const m = (await0(sim.gs.time))
+        const m = moonAngle(sim.gs.time)
         const phaseNow = wrapPi(m - Math.atan2(v.pos.y, v.pos.x))
         sim.warpIdx = 3
         if (Math.abs(wrapPi(phaseNow - plan.phase)) < 0.02) {
@@ -106,7 +105,7 @@ describe('default rocket', () => {
   })
 })
 
-function await0(t: number) {
+function moonAngle(t: number) {
   const s = BODIES.moon.orbit!
   // Ay'ın anlık açısı
   const E = s.M0 + s.n * t

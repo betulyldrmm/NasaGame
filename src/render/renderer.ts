@@ -388,9 +388,15 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
   const bodyId: BodyId = v?.bodyId ?? 'earth'
   const body = BODIES[bodyId]
   const padR = BODIES.earth.radius + 14
-  const center = v ? v.pos : { x: Math.cos(PAD_ANGLE) * padR, y: Math.sin(PAD_ANGLE) * padR }
+  let center = v ? v.pos : { x: Math.cos(PAD_ANGLE) * padR, y: Math.sin(PAD_ANGLE) * padR }
   const r = len(center)
   const theta = Math.atan2(center.y, center.x)
+  if (v && body.landable) {
+    // Yüzeye yakınken kamerayı aşağı kaydır: zemin her zaman görünür kalsın.
+    const a = Math.max(0, situation(v).alt)
+    const shift = Math.min(a * 0.6 + 6, (0.27 * view.h) / view.zoom) * (1 - Math.min(1, a / 4000))
+    center = { x: center.x - (center.x / r) * shift, y: center.y - (center.y / r) * shift }
+  }
   const altSea = r - body.radius
   const wRot = 1 - Math.min(1, Math.max(0, (altSea - body.radius * 0.02) / (body.radius * 0.1)))
   const targetRot = wrapPi(Math.PI / 2 - theta) * wRot * wRot * (3 - 2 * wRot)
