@@ -16,6 +16,14 @@ React + TypeScript + Vite uygulaması, oyun veri tipleri ve React'ten bağımsı
 
 Parça kütleleri, itki ve maliyetler oyun varsayımıdır. Başlangıç kredisi bu fazda harcanmaz.
 
+## Faz 2.5: 2.5D roket önizlemesi (uygulandı)
+
+- React Three Fiber + Three.js Canvas yalnızca roket önizleme alanında kullanılır; React 19 ile uyumlu Fiber v9 seçildi.
+- Sabit ortografik kamera, düşük segmentli gövde/motor/koni geometrileri, parça halkaları, kargo şekilleri, ışık ve gölge ile 2.5D sunum.
+- Gövde yuvası, motor tipi, yakıt tankı ve kargo görsel boyutları mevcut Zustand montaj seçimlerinden türetilir.
+- Talep üzerine render; WebGL erişilemezse önceki SVG 2D önizlemesi gösterilir.
+- Uçuş simülasyonu, orbit kamera kontrolü ve gameplay fiziği bu aşamada eklenmedi.
+
 ## Gelecek fazlar
 
 - Gezegen seçimine bağlı TWR ve daha ayrıntılı görev bağlamı

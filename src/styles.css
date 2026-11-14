@@ -153,6 +153,14 @@ h1 span { color: var(--color-orange); }
 .readout-column { display: grid; gap: 14px; }
 .preview-panel, .performance-panel { padding: 18px; }
 .rocket-stage { position: relative; height: 300px; display: grid; place-items: center; margin-top: 10px; overflow: hidden; background: radial-gradient(ellipse at 50% 53%, #28406655, transparent 58%), linear-gradient(180deg, #0c192d 0%, #101f37 84%, #17253b 84%, #17253b 85%, #0e1b30 85%); border: 1px solid #91a8cd13; border-radius: 6px; }
+.rocket-preview-25d { position: relative; height: 300px; margin-top: 10px; overflow: hidden; background: radial-gradient(ellipse at 50% 54%, #28406655, transparent 58%), #0b1428; border: 1px solid #91a8cd13; border-radius: 6px; }
+.rocket-preview-25d canvas { display: block; width: 100%; height: 100%; outline: none; }
+.preview-stars { position: absolute; z-index: 1; inset: 0; pointer-events: none; opacity: .68; background-image: radial-gradient(1px 1px at 14% 21%, #d5e6ff 50%, transparent 70%), radial-gradient(1px 1px at 83% 18%, #a9c9f5 50%, transparent 70%), radial-gradient(1px 1px at 89% 67%, #fff 50%, transparent 70%), radial-gradient(1px 1px at 21% 72%, #b9d6ff 50%, transparent 70%), radial-gradient(1px 1px at 69% 39%, #fff 50%, transparent 70%); background-size: 193px 147px, 251px 191px, 227px 181px, 179px 217px, 233px 169px; }
+.rocket-preview-25d .preview-caption { pointer-events: none; }
+.preview-fallback > p { margin: 7px 0 0; color: var(--color-orange); font-size: 10px; line-height: 1.4; }
+.preview-fallback .rocket-stage { margin-top: 6px; }
+.preview-loading > p { margin: 0; padding-top: 5px; color: var(--color-muted); font-size: 10px; }
+.preview-loading .rocket-stage { margin-top: 6px; }
 .preview-grid { position: absolute; inset: 0; opacity: .22; background-image: linear-gradient(#7791b21c 1px, transparent 1px), linear-gradient(90deg, #7791b21c 1px, transparent 1px); background-size: 24px 24px; mask-image: linear-gradient(transparent, #000 24%, #000 82%, transparent); }
 .rocket-svg { position: relative; z-index: 1; height: 100%; width: min(100%, 340px); overflow: visible; filter: drop-shadow(0 7px 13px #0008); }
 .pixel-satellite { position: absolute; z-index: 1; color: #ffad57; font-size: 16px; text-shadow: 0 0 12px #ffad5766; }.satellite-left { top: 21%; left: 17%; }.satellite-right { top: 37%; right: 17%; color: #38d9e8; font-size: 28px; }
@@ -176,4 +184,5 @@ h1 span { color: var(--color-orange); }
 .assembly-footer { display: flex; justify-content: space-between; margin-top: 24px; padding: 16px 0 20px; color: #7183a0; border-top: 1px solid #91a8cd17; font: 9px 'DM Mono', monospace; letter-spacing: .1em; }
 @media (max-width: 860px) { .assembly-columns { grid-template-columns: minmax(0, 1fr) minmax(310px, .82fr); gap: 12px; }.build-panel { padding: 16px; }.preview-panel, .performance-panel { padding: 14px; }.choice-card { gap: 6px; padding: 8px 6px; }.choice-price { font-size: 8px; } }
 @media (max-width: 700px) { .assembly-topbar { height: 64px; padding: 0 5vw; }.assembly-layout { padding: 28px 5vw 0; }.assembly-columns { grid-template-columns: 1fr; }.readout-column { grid-row: 1; }.rocket-stage { height: 260px; }.build-panel { grid-row: 2; }.assembly-heading { margin-bottom: 18px; }.body-choices { grid-template-columns: repeat(3, minmax(0, 1fr)); }.choice-card { min-height: 74px; } }
+@media (max-width: 700px) { .rocket-preview-25d { height: 260px; } }
 @media (max-width: 430px) { .assembly-topbar .wordmark { display: none; }.back-button span { font-size: 11px; }.body-choices { grid-template-columns: 1fr; }.body-choices .choice-card { min-height: 61px; }.mini-body { height: 39px; }.part-group legend { align-items: flex-start; flex-direction: column; gap: 3px; }.part-group legend span { text-align: left; }.cargo-options { grid-template-columns: 1fr; }.assembly-footer { font-size: 8px; } }
