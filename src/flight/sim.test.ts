@@ -544,3 +544,85 @@ describe('multiplayer-ready dispatchCommand & ownerId isolation', () => {
     expect((sim.gs.tick ?? 0)).toBeGreaterThan(tickBefore)
   })
 })
+
+describe('ISS, break-up and easter eggs', () => {
+  it('spawns the ISS, rendezvous + docking delivers supplies and pays out', async () => {
+    const { ensureStation, rendezvousStation, dockCandidate, dockVessels, isStationVessel, deleteVessel } = await import('./world')
+    const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
+    const gs = sim.gs
+    gs.money = 100_000
+    gs.designCargo = { 'iss-supplies': 2 }
+    expect(launchDesign(sim)).toBeNull()
+    ensureStation(gs)
+    const iss = gs.vessels.find(isStationVessel)!
+    expect(iss.station).toBe(true)
+    expect(deleteVessel(sim, iss.id)).toBe(false)
+    const v = activeVessel(gs)!
+    expect(rendezvousStation(sim, v)).not.toBeNull() // rampada olmaz
+    const r = BODIES.earth.radius + 50_000
+    v.landed = false
+    v.pos = { x: 0, y: r }
+    v.vel = { x: -Math.sqrt(BODIES.earth.mu / r), y: 0 }
+    const fuel0 = vesselStats(v.parts).fuel
+    expect(rendezvousStation(sim, v)).toBeNull()
+    expect(vesselStats(v.parts).fuel).toBeLessThan(fuel0)
+    expect(dockCandidate(gs, v)?.id).toBe(iss.id)
+    const money0 = gs.money
+    dockVessels(sim, v, iss)
+    expect(gs.missionsDone).toContain('iss-dock')
+    expect(gs.missionsDone).toContain('iss-cargo')
+    expect(gs.money).toBeGreaterThan(money0 + 2 * 4500)
+    expect(v.cargo.modules['iss-supplies']).toBeUndefined()
+    expect(isConnected(v.parts)).toBe(true)
+    // istasyon kenetliyken yenisi doğmaz
+    ensureStation(gs)
+    expect(gs.vessels.filter(isStationVessel).length).toBe(1)
+  })
+
+  it('breaks apart piece by piece on a hard crash and survives a mild one', () => {
+    const run = (speed: number, height = 40) => {
+      const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
+      sim.gs.money = 100_000
+      expect(launchDesign(sim)).toBeNull()
+      const v = activeVessel(sim.gs)!
+      const n0 = v.parts.length
+      v.landed = false
+      v.pos = { x: 0, y: BODIES.earth.radius + vesselStats(v.parts).maxY - vesselStats(v.parts).comY + height }
+      v.vel = { x: 0, y: -speed }
+      let booms = 0
+      let crashed = false
+      let sawPartial = false
+      for (let i = 0; i < 600; i += 1) {
+        const ev = stepWorld(sim, 0.05, ctrl)
+        booms += ev.filter((e) => e.type === 'explosion').length
+        if (ev.some((e) => e.type === 'crash' && e.wasActive)) crashed = true
+        const cur = sim.gs.vessels.find((o) => o.id === v.id)
+        if (cur && cur.breaking && cur.parts.length < n0 && cur.parts.length > 0) sawPartial = true
+      }
+      return { booms, crashed, sawPartial, left: sim.gs.vessels.find((o) => o.id === v.id)?.parts.length ?? 0, n0 }
+    }
+    const hard = run(60)
+    expect(hard.crashed).toBe(true)
+    expect(hard.sawPartial).toBe(true)
+    expect(hard.booms).toBeGreaterThan(10)
+    const mild = run(10, 0.5)
+    expect(mild.crashed).toBe(false)
+    expect(mild.booms).toBeGreaterThan(0)
+    expect(mild.left).toBeGreaterThan(0)
+    expect(mild.left).toBeLessThan(mild.n0)
+  })
+
+  it('grants Margaret Hamilton on the first landing', () => {
+    const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
+    sim.gs.money = 100_000
+    expect(launchDesign(sim)).toBeNull()
+    const v = activeVessel(sim.gs)!
+    v.landed = false
+    v.pos = { x: 0, y: BODIES.earth.radius + vesselStats(v.parts).maxY - vesselStats(v.parts).comY + 2 }
+    v.vel = { x: 0, y: -1 }
+    let got = false
+    for (let i = 0; i < 200; i += 1) if (stepWorld(sim, 0.05, ctrl).some((e) => e.type === 'achievement' && e.id === 'hamilton')) got = true
+    expect(got).toBe(true)
+    expect(sim.gs.achievements).toContain('hamilton')
+  })
+})

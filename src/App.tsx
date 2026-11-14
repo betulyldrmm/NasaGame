@@ -129,8 +129,8 @@ function App() {
             <span>.</span>
           </h1>
           <p className="intro">
-            Kare grid üzerinde roketini kur; Dünya'daki başlangıç telemetri üssünden gelen pasif gelirle teknoloji ağacını aç. Merkür, Venüs, Ay, Mars, Ceres, Ganimed ve Titan'a inip koloni kur!
-          </p>
+            Kare grid üzerinde roketini kur, Dünya'dan kalk ve yörüngeye yerleş. ISS'e kargo götür, Ay'a ve Mars'a in, güneş enerjisiyle çalışan koloniler kur.
+            </p>
           <div className="actions">
             <button className="button button-primary" onClick={() => setScreen('assembly')}>
               <span aria-hidden="true">＋</span> {messages.newMission}

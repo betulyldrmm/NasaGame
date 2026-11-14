@@ -231,7 +231,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
     writeSlots(slots.map((s, j) => (j === i ? { name: name.slice(0, 18), design: design.map((p) => ({ def: p.def, x: p.x, y: p.y })), cargo: { ...gs.designCargo } } : s)))
   }
   const clearSlot = (i: number) => {
-    if (window.confirm(`"${slots[i]?.name}" slotu boşaltılsın mı?`)) writeSlots(slots.map((s, j) => (j === i ? null : s)))
+    if (window.confirm('Bu slot boşaltılsın mı?')) writeSlots(slots.map((s, j) => (j === i ? null : s)))
   }
   const sel = selected ? partDef(selected) : null
 
@@ -310,7 +310,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
             <span className="ship-bar-label">Gemilerim</span>
             {slots.map((slot, i) => (
               <span key={i} className={`ship-slot${slot ? ' is-filled' : ''}`}>
-                <button className="ship-slot-load" disabled={!slot} title={slot ? `${slot.name} tasarımını yükle` : 'Boş slot'} onClick={() => slot && loadShip(slot.design, slot.cargo)}>
+                <button className="ship-slot-load" disabled={!slot} title={slot ? 'Tasarımı yükle' : 'Boş slot'} onClick={() => slot && loadShip(slot.design, slot.cargo)}>
                   {slot ? slot.name : `Slot ${i + 1}`}
                 </button>
                 <button title="Şu anki tasarımı bu slota kaydet" aria-label={`Slot ${i + 1}: kaydet`} disabled={!design.length} onClick={() => saveSlot(i)}>💾</button>

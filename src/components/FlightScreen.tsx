@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { MODULE_BY_ID } from '../game/base'
 import { MISSIONS } from '../game/missions'
 import { audio } from '../audio'
+import { lang } from '../i18n'
 import { bump, saveGame, sim, useAuthState } from '../game/store'
 import type { AutopilotMode, GameEvent, SasMode, Vessel } from '../game/types'
 import { activeEngines, cargoMass, estimateDeltaV, fuelGroups, vesselStats } from '../game/vessel'
@@ -198,7 +199,7 @@ function snapshot(): Hud {
     warpIdx: sim.warpIdx,
     money: gs.money,
     passivePerHr: totalPassiveIncomePerHour(gs),
-    date: gameDate(gs.time).toLocaleDateString('tr-TR', { day: 'numeric', month: 'short', year: 'numeric' }),
+    date: gameDate(gs.time).toLocaleDateString(lang === 'en' ? 'en-GB' : 'tr-TR', { day: 'numeric', month: 'short', year: 'numeric' }),
     dv: 0,
     tol: 7,
     vessels: gs.vessels.map((o) => ({ id: o.id, name: o.name, body: BODIES[o.bodyId].name + (o.landed ? ' (yüzeyde)' : ''), active: o.id === gs.activeId })),
@@ -353,9 +354,9 @@ export default function FlightScreen({ onBuilder }: Props) {
           // Patlamalar görünsün diye kayıp ekranı biraz gecikir.
           window.setTimeout(() => {
             audio.sfx('lose', 0.5)
-            setLost(`${e.name} ${e.reason}.`)
+            setLost(`${e.name}: ${e.reason}.`)
           }, 1500)
-        } else toast(`${e.name} ${e.reason}.`, 'warn')
+        } else toast(`${e.name}: ${e.reason}.`, 'warn')
       }
     }
   }, [toast])
@@ -741,7 +742,7 @@ export default function FlightScreen({ onBuilder }: Props) {
               {hud.vessels.map((o) => (
                 <div key={o.id} className="vessel-row">
                   <button className={o.active ? 'is-on' : ''} onClick={() => switchTo(o.id)}>{o.name}<small>{o.body}</small></button>
-                  {o.name !== 'ISS' && <button className="vessel-del" title={`${o.name} aracını sil`} aria-label={`${o.name} aracını sil`} onClick={() => setConfirmDel({ id: o.id, name: o.name })}>🗑</button>}
+                  {o.name !== 'ISS' && <button className="vessel-del" title="Aracı sil" aria-label="Aracı sil" onClick={() => setConfirmDel({ id: o.id, name: o.name })}>🗑</button>}
                 </div>
               ))}
             </div>
@@ -958,7 +959,7 @@ export default function FlightScreen({ onBuilder }: Props) {
                   setHud(snapshot())
                   void saveGame(true)
                   bump()
-                  toast(`${confirmDel.name} silindi.`)
+                  toast('Araç silindi.')
                 }}
               >
                 Evet, sil

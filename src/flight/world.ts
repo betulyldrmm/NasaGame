@@ -570,7 +570,7 @@ function stepBreakup(sim: Sim, v: Vessel, dt: number, events: GameEvent[]) {
   v.angle = theta
   v.ec = Math.min(v.ec, st.ecCap)
   if (cargoMass(v.cargo) > st.cargoCap + 1e-9) v.cargo = { modules: {}, ore: 0, oreFrom: null }
-  events.push({ type: 'toast', text: `Sert iniş! ${v.name} hasar aldı ama komuta modülü kurtuldu.` })
+  events.push({ type: 'toast', text: 'Sert iniş! Araç hasar aldı ama komuta modülü kurtuldu.' })
 }
 
 // ───────────────────────── ISS ─────────────────────────
@@ -871,7 +871,7 @@ export function launchDesign(sim: Sim, ownerId = sim.gs.ownerId ?? 'local'): str
   const cost = designCost(gs.design, gs.designCargo)
   if (cost > gs.money) return `Bütçe yetersiz: ${cost.toLocaleString('tr-TR')} ₡ gerekli.`
   const onPad = gs.vessels.find((v) => v.bodyId === 'earth' && v.landed && Math.abs(wrapPi(Math.atan2(v.pos.y, v.pos.x) - PAD_ANGLE)) * BODIES.earth.radius < 60)
-  if (onPad) return `Rampa dolu: önce "${onPad.name}" aracını kurtar veya kaldır.`
+  if (onPad) return 'Rampa dolu: önce rampadaki aracı kurtar veya sil.'
   const parts = freshParts(gs.design)
   const st = vesselStats(parts)
   const r = BODIES.earth.radius + terrainHeight('earth', PAD_ANGLE) + (st.maxY - st.comY)
@@ -1208,7 +1208,7 @@ export function dockVessels(sim: Sim, v: Vessel, other: Vessel): GameEvent[] {
   gs.vessels = gs.vessels.filter((o) => o.id !== other.id)
   sim.firing.delete(other.id)
   sim.firing.delete(v.id)
-  const events: GameEvent[] = [{ type: 'toast', text: `${other.name} ile kenetlenildi. Ayırmak için aradaki adaptöre tıkla.` }]
+  const events: GameEvent[] = [{ type: 'toast', text: `Kenetlenildi: ${other.name}. Ayırmak için aradaki adaptöre tıkla.` }]
   if (isStationVessel(other)) {
     completeMission(gs, 'iss-dock', events)
     const n = v.cargo.modules['iss-supplies'] ?? 0
