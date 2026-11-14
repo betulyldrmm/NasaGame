@@ -1,13 +1,20 @@
 # Space Mission Design Game
 
-NASA Space Apps Challenge 2026 için geliştirilen tarayıcı tabanlı uzay görevi tasarım oyunu.
+NASA Space Apps Challenge 2026 için geliştirilen, roket tasarımı ve basitleştirilmiş görev fiziği öğreten tarayıcı oyunu.
 
-## Gereksinimler
+## Proje açıklaması
 
-- Node.js 20.19+ veya 22.12+
-- npm
+**TR:** Parçalarını seç, roketini fırlat ve Ay/Mars görevlerinin fiziğini, maliyetini ve sonuçlarını keşfet. Bilimsel olgular ile oyun varsayımları ayrı gösterilir.
 
-## Komutlar
+**EN:** Build a rocket, launch missions, and explore simplified flight, budget, and colony systems for the Moon and Mars. Verified science is distinguished from gameplay assumptions.
+
+## Teknolojiler
+
+React 19, TypeScript (strict), Vite, Zustand, Phaser 3, Three.js/React Three Fiber, CSS, Vitest. Oyun durumu sunucuya gönderilmez; ekonomi ilerlemesi LocalStorage'da saklanır.
+
+## Kurulum
+
+Gereksinim: Node.js 20.19+ veya 22.12+, npm.
 
 ```sh
 npm install
@@ -16,28 +23,39 @@ npm run build
 npm test
 ```
 
-## Faz 2: Roket tasarımı
+## Oyun döngüsü
 
-Ana menüden **Yeni Görev** ile roket montaj ekranını açın. Gövde, motor ve yakıt tankı seçin; görev kargolarını kapasite sınırları içinde ekleyip çıkarın. Pixel-art roket önizlemesi, kütle, itki, TWR, maliyet ve kalan bütçe seçimlerle anlık güncellenir. Bu aşamada bütçe yalnızca kontrol edilir, harcanmaz.
+1. Ana menüden roket montajına geçin; gövde, motor, yakıt tankı ve kargoyu seçin. 2.5D önizleme ve kütle/TWR/maliyet değerleri anlık güncellenir.
+2. Görev ekranında Ay veya Mars'ı ve iniş sistemlerini seçip görevi başlatın. Üretim maliyeti o anda ödenir; yetersiz bakiye fırlatmayı engeller.
+3. Phaser ile dikey uçuşu izleyin. Bu bir 1D eğitim simülasyonudur; gezegenler arası uçuş veya gerçek yörünge çözümü değildir.
+4. Sonuç ekranı TWR, oyun Delta‑V hedefi ve iniş donanımını açıklar. Başarı bir kez +100 kredi/+150 bilim puanı verir ve hedef üste kargoyu ulaştırır. Rampada iptal %15 maliyet kaybettirir; uçuşta kayıp üretim maliyetinin tamamını kaybettirir.
+5. Üs ekranında Ay/Mars'a ulaştırılan modülleri ve görev tamamlandığında işleyen tur bazlı enerji/mineral/gıda üretimini inceleyin.
 
-## Faz 2.5: 2.5D roket önizlemesi
+Görev panelindeki yörünge haritası NASA/JPL Horizons'un 2026-11-14 TDB epoch'lu Güneş merkezli Dünya/Mars elemanlarından yaklaşık Kepler konumları üretir. Tarih kaydırıcısı bu osculating elemanları iki cisimli modelle ilerletir; transfer rotası göstermez. Ay, ayrı Dünya merkezli veri olmadığı için Güneş çevresinde çizilmez.
 
-Montaj ekranı React Three Fiber ve Three.js ile sabit açılı, düşük poligonlu bir 2.5D roket sahnesi gösterir. Geometri, yumuşak gölgeler ve uzay arka planı seçimlere göre güncellenir; gövde, motor, yakıt tankı ve kargo görünüşü farklılaşır. Sahne `frameloop="demand"` ile yalnızca ihtiyaç olduğunda çizilir. WebGL kullanılamazsa önceki 2D SVG önizlemesi yedek olarak gösterilir. Bu önizleme uçuş fiziği içermez ve kamera döndürme kontrolleri sunmaz.
+Güneş paneli enerjisi hedef ışınımına göre ölçeklenir: NASA kaynaklı Dünya/Mars W/m² oranı oyun içi soyut enerji/tur birimine çevrilir. Panel başına 20 birim/Dünya ışınımı tabanı ve rover/sera/yaşam modülü enerji tüketimleri oyun varsayımıdır. Açık oluşursa üs üretimi o tur durur ve arayüz nedenini açıklar. JSON kaynakları, JPL epoch/koordinat metaverisi ve veri akışı [NASA veri raporunda](docs/nasa-data-usage.md) açıklanır.
+
+Roket parça istatistikleri, ekonomi ödülleri, araştırma desteği ve kaynak üretim oranları oyunlaştırılmış tasarım değerleridir; NASA verisi değildir. Bilimsel kaynaklar ve sınırlar [NASA veri kullanım raporunda](docs/nasa-data-usage.md) listelenir.
 
 ## Proje yapısı
 
-- `src/game`: tipler, kataloglar, saf hesaplamalar ve Zustand montaj deposu
-- `src/components`: montaj ekranı ve roket önizlemesi
-- `src/visualization`: 2.5D model ölçülerini mevcut katalog seçimlerine eşleyen sunum verisi
-- `src/flight`: saf dikey uçuş fiziği ve görev değerlendirmesi
-- `src/i18n`: Türkçe arayüz metinleri
-- `src`: React uygulaması ve Cosmic Mission stilleri
-- `docs`: tasarım yol haritası ve NASA veri kullanım raporu
+- `src/game`: tipler, parça kataloğu, saf hesaplamalar ve montaj durumu
+- `src/visualization`: 2.5D roket sunum modeli
+- `src/flight`: Phaser sahnesi, saf dikey fizik ve görev değerlendirmesi
+- `src/economy`: ekonomi kuralları ve LocalStorage ile kalıcı Zustand deposu
+- `src/components`: montaj, uçuş ve üs ekranları
+- `src/i18n`: arayüz metinleri
+- `docs`: tasarım, kaynak kullanımı, demo metni ve teslim kontrol listesi
 
-Parça kütleleri, itki ve kredi maliyetleri oyun varsayımlarıdır. NASA kaynakları ve bilimsel sınırlamalar için [NASA veri raporuna](docs/nasa-data-usage.md) bakın.
+## Bilinen sınırlılıklar
 
-## Faz 3: fırlatma ve görev simülasyonu
+- Uçuş Dünya'dan dikey 1D yükseliştir. Ay/Mars seçimi görevin fiziksel olarak oraya uçtuğunu simüle etmez; görev değerlendirmesi basitleştirilmiş senaryo eşikleri kullanır.
+- Atmosfer, iniş sistemi, motor ve Delta‑V modelleri görev tasarımı veya uçuş güvenliği için uygun değildir.
+- Yerel kayıt yalnızca aynı tarayıcı profili/origin içinde tutulur; cihazlar arası senkronizasyon yoktur.
+- Üs kaynak üretimi gerçek zamanlı değil, yalnızca başarılı görev tamamlandığında ilerler.
+- Phaser ve 3D önizleme paket boyutları yükleme performansını etkileyebilir; Vite üretim çıktısı bu konuda uyarı verebilir.
 
-Montaj ekranında **Görev uçuşuna geç** ile Ay veya Mars hedefi ve iniş sistemleri seçilir; **Fırlat** Phaser tabanlı dikey uçuşu başlatır. İrtifa, dikey hız ve yakıt HUD'da canlı güncellenir. Görev sonucu TWR, oyunlaştırılmış Delta‑V eşiği ve iniş sistemi kurallarını açıklar. Simülasyon 1D dikey yükseliştir; gerçek transfer yörüngesi veya gezegenler arası uçuş değildir.
+## Demo ve teslim
 
-Phaser sahnesi `src/flight/FlightScene.ts` içinde procedural placeholder görseller kullanır; `src/components/PhaserFlightView.tsx` React/Phaser yaşam döngüsünü yönetir. `npm test` fizik adımlarını ve görev değerlendirme kurallarını bileşenlerden bağımsız doğrular.
+- [2–3 dakikalık demo akışı](docs/demo-script.md)
+- [Teslim öncesi kontrol listesi](docs/submission-checklist.md)

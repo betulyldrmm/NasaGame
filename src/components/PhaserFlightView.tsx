@@ -6,18 +6,20 @@ import type { FlightState } from '../flight/physics'
 
 export interface PhaserFlightHandle {
   launch: () => boolean
+  resume: () => boolean
   reset: () => void
 }
 
 interface PhaserFlightViewProps {
   configuration: RocketConfiguration
+  initialState?: FlightState | null
   onReady: () => void
   onUpdate: (state: FlightState) => void
   onComplete: (state: FlightState) => void
 }
 
 const PhaserFlightView = forwardRef<PhaserFlightHandle, PhaserFlightViewProps>(function PhaserFlightView(
-  { configuration, onReady, onUpdate, onComplete }, ref,
+  { configuration, initialState, onReady, onUpdate, onComplete }, ref,
 ) {
   const mountRef = useRef<HTMLDivElement>(null)
   const sceneRef = useRef<FlightScene | null>(null)
@@ -26,6 +28,7 @@ const PhaserFlightView = forwardRef<PhaserFlightHandle, PhaserFlightViewProps>(f
 
   useImperativeHandle(ref, () => ({
     launch: () => sceneRef.current?.startFlight() ?? false,
+    resume: () => sceneRef.current?.resumeFlight() ?? false,
     reset: () => sceneRef.current?.resetFlight(),
   }), [])
 
@@ -41,7 +44,7 @@ const PhaserFlightView = forwardRef<PhaserFlightHandle, PhaserFlightViewProps>(f
         onUpdate: (state) => callbacksRef.current.onUpdate(state),
         onComplete: (state) => callbacksRef.current.onComplete(state),
       }
-      activeScene.configure(configuration, callbacks)
+      activeScene.configure(configuration, callbacks, initialState)
       callbacksRef.current.onReady()
     }
     const game = new Phaser.Game({
@@ -68,7 +71,7 @@ const PhaserFlightView = forwardRef<PhaserFlightHandle, PhaserFlightViewProps>(f
       bootGame = null
       game.destroy(true)
     }
-  }, [configuration])
+  }, [configuration, initialState])
 
   return <div className="phaser-flight-canvas" ref={mountRef} aria-label="Dikey roket uçuş simülasyonu" />
 })

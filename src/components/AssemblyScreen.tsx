@@ -1,7 +1,8 @@
 import { lazy, Suspense, useMemo, useState, type CSSProperties } from 'react'
-import { INITIAL_BUDGET_CREDITS, FUEL_TANKS, PAYLOADS, ROCKET_BODIES, ROCKET_ENGINES } from '../game/data'
+import { FUEL_TANKS, PAYLOADS, ROCKET_BODIES, ROCKET_ENGINES } from '../game/data'
 import { calculateRocketCost } from '../game/calculations'
-import { calculateAssemblyTWR, getPayload, getRocketConfiguration, isOverBudget, useRocketAssembly } from '../game/assemblyStore'
+import { calculateAssemblyTWR, getPayload, getRocketConfiguration, useRocketAssembly } from '../game/assemblyStore'
+import { useEconomyStore } from '../economy/economyStore'
 import type { PayloadId } from '../game/types'
 import { messages } from '../i18n/tr'
 import RocketPreview2D from './RocketPreview2D'
@@ -15,12 +16,14 @@ interface AssemblyScreenProps {
 
 function AssemblyScreen({ onBack, onLaunch }: AssemblyScreenProps) {
   const { bodyId, engineId, fuelTankId, payloadIds, selectBody, selectEngine, selectFuelTank, addPayload, removePayload } = useRocketAssembly()
+  const balanceCredits = useEconomyStore((state) => state.balanceCredits)
+  const claimResearchSupport = useEconomyStore((state) => state.claimResearchSupport)
   const [feedback, setFeedback] = useState('')
   const configuration = useMemo(() => getRocketConfiguration({ bodyId, engineId, fuelTankId, payloadIds }), [bodyId, engineId, fuelTankId, payloadIds])
   const cost = calculateRocketCost(configuration)
-  const remaining = INITIAL_BUDGET_CREDITS - cost
+  const remaining = balanceCredits - cost
   const twr = calculateAssemblyTWR(configuration)
-  const overBudget = isOverBudget(configuration)
+  const overBudget = cost > balanceCredits
   const twrState = twr < 1 ? 'danger' : twr < 1.2 ? 'warning' : 'success'
   const twrLabel = twr < 1 ? messages.twrLow : twr < 1.2 ? messages.twrRisky : messages.twrReady
 
@@ -36,7 +39,7 @@ function AssemblyScreen({ onBack, onLaunch }: AssemblyScreenProps) {
     <header className="assembly-topbar">
       <button className="back-button" onClick={onBack} aria-label={messages.backToMenu}>← <span>{messages.backToMenu}</span></button>
       <a className="wordmark" href="#assembly"><span className="wordmark-icon">✦</span><span>MISSION CONTROL</span></a>
-      <div className="budget-pill"><span>{messages.budget}</span><b>{INITIAL_BUDGET_CREDITS.toLocaleString('tr-TR')} cr</b></div>
+      <div className="budget-pill"><span>{messages.budget}</span><b>{balanceCredits.toLocaleString('tr-TR')} cr</b></div>
     </header>
 
     <main className="assembly-layout">
@@ -104,6 +107,7 @@ function AssemblyScreen({ onBack, onLaunch }: AssemblyScreenProps) {
               <div className={overBudget ? 'budget-warning-row' : ''}><span>{messages.remainingLabel}</span><b className={overBudget ? 'over-budget' : ''}>{remaining.toLocaleString('tr-TR')} <small>cr</small></b></div>
             </div>
             {overBudget && <div className="alert-box budget-alert"><span>!</span><p>{messages.budgetExceeded}</p></div>}
+            {balanceCredits <= 0 && <div className="research-support"><p>{messages.supportOffer}</p><button className="button button-secondary" onClick={() => claimResearchSupport()}>{messages.claimSupport}</button></div>}
             {twr < 1 && <div className="alert-box"><span>!</span><p>{messages.engineTooWeak}</p></div>}
             {twr >= 1 && twr < 1.2 && <div className="alert-box budget-alert"><span>!</span><p>{messages.twrRiskAdvice}</p></div>}
             {feedback && <p className="feedback-note" role="status">✦ {feedback}</p>}

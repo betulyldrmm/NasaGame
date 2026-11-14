@@ -1,5 +1,7 @@
 import { lazy, Suspense, useState } from 'react'
 import AssemblyScreen from './components/AssemblyScreen'
+import BaseScreen from './components/BaseScreen'
+import { useEconomyStore } from './economy/economyStore'
 import { messages } from './i18n/tr'
 
 const FlightScreen = lazy(() => import('./components/FlightScreen'))
@@ -8,10 +10,14 @@ type Dialog = 'how-to-play' | null
 
 function App() {
   const [dialog, setDialog] = useState<Dialog>(null)
-  const [screen, setScreen] = useState<'home' | 'assembly' | 'flight'>('home')
+  const [screen, setScreen] = useState<'home' | 'assembly' | 'flight' | 'base'>('home')
+  const balanceCredits = useEconomyStore((state) => state.balanceCredits)
+  const sciencePoints = useEconomyStore((state) => state.sciencePoints)
+  const activeMission = useEconomyStore((state) => state.missions.find((mission) => mission.id === state.activeMissionId) ?? null)
 
   if (screen === 'assembly') return <AssemblyScreen onBack={() => setScreen('home')} onLaunch={() => setScreen('flight')} />
-  if (screen === 'flight') return <Suspense fallback={<main className="flight-loading">{messages.sceneLoading}</main>}><FlightScreen onBack={() => setScreen('assembly')}/></Suspense>
+  if (screen === 'flight') return <Suspense fallback={<main className="flight-loading">{messages.sceneLoading}</main>}><FlightScreen onBack={() => setScreen('assembly')} onBase={() => setScreen('base')}/></Suspense>
+  if (screen === 'base') return <BaseScreen onHome={() => setScreen('home')} onNewMission={() => setScreen('assembly')}/>
 
   return (
     <main className="app-shell">
@@ -23,6 +29,9 @@ function App() {
         </a>
         <span className="status"><span className="status-dot" /> {messages.status}</span>
       </header>
+
+      <div className="home-economy-strip"><span>{messages.currentBudget} <b>{balanceCredits.toLocaleString('tr-TR')} cr</b></span><span>{messages.science} <b>{sciencePoints} SP</b></span><button onClick={() => setScreen('base')}>{messages.bases} →</button></div>
+      {activeMission && <div className="resume-mission-card"><span className="status-dot"/><div><b>{messages.activeMission}</b><small>{activeMission.destinationId === 'moon' ? messages.moon : messages.mars} · {activeMission.rocketConfiguration.body.name}</small></div><button className="button button-secondary" onClick={() => setScreen('flight')}>{messages.resumeMission}</button></div>}
 
       <section className="hero" id="home">
         <div className="hero-copy">

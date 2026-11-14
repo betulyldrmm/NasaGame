@@ -33,13 +33,29 @@ Parça kütleleri, itki ve maliyetler oyun varsayımıdır. Başlangıç kredisi
 - Phaser sahnesi React'ten bağımsız; React HUD callbacks ile güncellenir. Kapatılırken Phaser Game ve scene event listener'ları temizlenir. Ekonomi hesabı/ödülü yoktur.
 - NASA doğrulanmış çevresel olguları ile motor debisi, aerodinamik katsayılar ve görev Delta‑V eşikleri ayrı belgelenir.
 
+## Faz 4: ekonomi ve üs sistemi (uygulandı)
+
+- `src/economy/economy.ts` saf ekonomi varsayımlarını ve tur üretimini; `economyStore.ts` görev/ekonomi durumunu tek Zustand persist deposunda yönetir.
+- Görev başında mevcut roket kataloğundan maliyet alınır. Rampada iptal %15 maliyet kaybettirir; uçuşta başarısızlık tam üretim maliyetini kaybettirir. Başarı +100 kredi ve +150 bilim puanını yalnızca bir kez verir.
+- Bakiye maliyeti karşılamıyorsa görev başlamaz. Bakiye sıfırlandığında görev dışında bir defa 250 kredi araştırma desteği alınabilir.
+- Başarıyla ulaştırılan kargo Ay/Mars üssüne eklenir. Her başarılı görev, o üste bir üretim turu işletir: güneş paneli enerji, rover mineral, sera gıda sağlar. Bu oranların tümü oyun varsayımıdır.
+- `src/data/planetary-reference.json` JPL Horizons Dünya/Mars osculating elemanlarını epoch, TDB, Sun merkezli J2000 ekliptik/ICRF frame ve SI-dışı birimleriyle saklar. `planetaryReference.ts` runtime shape/birim/range denetimi yapar. `visualization/kepler.ts` yaklaşık Kepler konumu, `KeplerOrbitPreview` SVG harita üretir; Ay Güneş merkezli gezegen yörüngesi olarak çizilmez.
+- NASA NSSDC Dünya/Ay/Mars ışınımı `W/m²` değerleri aynı JSON içindedir. `solarEnergy.ts` hedef/Dünya ışınım oranını oyun enerjisine dönüştürür. 20 birim/panel/tur referansı, ekipman talepleri ve açıkta modülleri durdurma kuralı oyun varsayımıdır; NASA donanım verisi değildir.
+- Kredi, bilim, görev geçmişi, aktif görev, üs ve destek hakkı `space-mission-economy-v1` LocalStorage anahtarıyla saklanır. Uçuş ilerlemesi aralıklı kaydedilir ve devam eden uçuş geri açılabilir.
+
+## Faz 5: teslim hazırlığı (uygulandı)
+
+- Menü, montaj, görev/uçuş, sonuç ve üs ekranları mevcut durum üzerinden birbirine bağlandı. Sonuçtan montaja veya üsse dönülebilir; ana menü devam eden görevi sürdürme seçeneği gösterir.
+- Türkçe/İngilizce kısa proje tanımları, 2–3 dakikalık jüri demo metni ve teslim kontrol listesi `docs/` içindedir.
+- NASA kaynaklı olgular ile oyunlaştırılmış katalog, uçuş ve ekonomi değerleri veri raporunda ayrıdır.
+
 ## Gelecek fazlar
 
 - Daha doğru gezegen atmosfer profilleri
 - Gerçekçi yörünge ve transfer hesabı
 - Ayrıntılı iniş fiziği
-- Görev ödülleri ve bütçe kaybı
-- Koloni kurma ve kaynak üretimi
+- Gezegenler arası gerçekçi transfer/yörünge fiziği
+- Kaynakların daha derin üs inşasında kullanımı
 
 ## Mimari yön
 

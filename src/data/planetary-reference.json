@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "retrievedAt": "2026-11-14",
+  "orbitEpoch": {
+    "calendar": "2026-11-14T00:00:00",
+    "timeScale": "TDB",
+    "julianDay": 2461358.5
+  },
+  "orbitFrame": {
+    "origin": "Sun (10)",
+    "referenceSystem": "ICRF",
+    "referencePlane": "Ecliptic of J2000.0",
+    "ephemerisType": "Geometric osculating elements",
+    "distanceUnit": "au",
+    "angleUnit": "deg",
+    "timeUnit": "day",
+    "source": "NASA/JPL Horizons API",
+    "apiUrl": "https://ssd.jpl.nasa.gov/api/horizons.api",
+    "documentationUrl": "https://ssd-api.jpl.nasa.gov/doc/horizons.html",
+    "query": "EPHEM_TYPE=ELEMENTS; COMMAND=399,499; CENTER=500@10; TLIST=2026-11-14; TLIST_TYPE=CAL; REF_PLANE=ECLIPTIC; REF_SYSTEM=ICRF; OUT_UNITS=AU-D"
+  },
+  "orbits": {
+    "earth": {
+      "target": "Earth (399)",
+      "ephemerisSolution": "DE441",
+      "semiMajorAxisAu": 1.000532451820628,
+      "eccentricity": 0.01721646187491447,
+      "inclinationDeg": 0.004507935193973455,
+      "longitudeAscendingNodeDeg": 191.7161901545133,
+      "argumentPeriapsisDeg": 270.653115252398,
+      "meanAnomalyDegAtEpoch": 310.4049821460777,
+      "meanMotionDegPerDay": 0.9848224882472913,
+      "orbitalPeriodDays": 365.5481107470437
+    },
+    "mars": {
+      "target": "Mars (499)",
+      "ephemerisSolution": "mar099 / DE441",
+      "semiMajorAxisAu": 1.523744139097473,
+      "eccentricity": 0.09339506841145669,
+      "inclinationDeg": 1.847431820283516,
+      "longitudeAscendingNodeDeg": 49.48013256399224,
+      "argumentPeriapsisDeg": 286.6686673332464,
+      "meanAnomalyDegAtEpoch": 121.9038750437878,
+      "meanMotionDegPerDay": 0.5240057730803855,
+      "orbitalPeriodDays": 687.0153316894352
+    }
+  },
+  "solarIrradiance": {
+    "earth": {
+      "target": "Earth",
+      "valueWm2": 1361,
+      "measure": "Representative solar irradiance at the mean Earth-Sun distance (solar constant; top of atmosphere)",
+      "source": "NASA NSSDC Planetary Fact Sheet / Earth Fact Sheet",
+      "sourceUrl": "https://nssdc.gsfc.nasa.gov/planetary/factsheet/earthfact.html",
+      "referenceDate": "Fact-sheet value; publication/reference epoch is not specified on the table"
+    },
+    "moon": {
+      "target": "Moon",
+      "valueWm2": 1361,
+      "measure": "Representative solar irradiance at the mean Earth-Sun distance (fact-sheet comparison value)",
+      "source": "NASA NSSDC Moon Fact Sheet",
+      "sourceUrl": "https://nssdc.gsfc.nasa.gov/planetary/factsheet/moonfact.html",
+      "referenceDate": "Fact-sheet value; publication/reference epoch is not specified on the table"
+    },
+    "mars": {
+      "target": "Mars",
+      "valueWm2": 586.2,
+      "measure": "Representative solar irradiance at the mean Mars-Sun distance (top of atmosphere)",
+      "source": "NASA NSSDC Mars Fact Sheet",
+      "sourceUrl": "https://nssdc.gsfc.nasa.gov/planetary/factsheet/marsfact.html",
+      "referenceDate": "Fact-sheet value; publication/reference epoch is not specified on the table"
+    }
+  }
+}

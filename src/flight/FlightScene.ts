@@ -44,11 +44,12 @@ export class FlightScene extends Phaser.Scene {
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.handleShutdown, this)
   }
 
-  configure(configuration: RocketConfiguration, callbacks: FlightSceneCallbacks) {
+  configure(configuration: RocketConfiguration, callbacks: FlightSceneCallbacks, restoredState?: FlightState | null) {
     this.configuration = configuration
     this.callbacks = callbacks
     this.parameters = createFlightParameters(configuration)
-    this.flightState = createFlightState(configuration)
+    this.flightState = restoredState ?? createFlightState(configuration)
+    this.flightActive = false
     this.drawVehicle()
     this.positionVehicle()
     this.callbacks.onUpdate(this.flightState)
@@ -59,6 +60,13 @@ export class FlightScene extends Phaser.Scene {
     this.flightState = createFlightState(this.configuration)
     this.fixedAccumulator = 0
     this.hudAccumulator = 1
+    this.flightActive = true
+    this.callbacks?.onUpdate(this.flightState)
+    return true
+  }
+
+  resumeFlight(): boolean {
+    if (!this.configuration || !this.parameters || !this.flightState || this.flightState.status === 'apogee' || this.flightState.status === 'impact' || this.flightState.status === 'liftoff-failed') return false
     this.flightActive = true
     this.callbacks?.onUpdate(this.flightState)
     return true
