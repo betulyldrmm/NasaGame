@@ -1,10 +1,14 @@
 import { useState } from 'react'
+import AssemblyScreen from './components/AssemblyScreen'
 import { messages } from './i18n/tr'
 
-type Dialog = 'new-mission' | 'how-to-play' | null
+type Dialog = 'how-to-play' | null
 
 function App() {
   const [dialog, setDialog] = useState<Dialog>(null)
+  const [screen, setScreen] = useState<'home' | 'assembly'>('home')
+
+  if (screen === 'assembly') return <AssemblyScreen onBack={() => setScreen('home')} />
 
   return (
     <main className="app-shell">
@@ -23,7 +27,7 @@ function App() {
           <h1>{messages.title}<span>.</span></h1>
           <p className="intro">{messages.description}</p>
           <div className="actions">
-            <button className="button button-primary" onClick={() => setDialog('new-mission')}>
+            <button className="button button-primary" onClick={() => setScreen('assembly')}>
               <span aria-hidden="true">＋</span> {messages.newMission}
             </button>
             <button className="button button-secondary" onClick={() => setDialog('how-to-play')}>
@@ -50,8 +54,8 @@ function App() {
         <section className="dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title" onClick={(event) => event.stopPropagation()}>
           <button className="dialog-close" aria-label={messages.close} onClick={() => setDialog(null)}>×</button>
           <p className="eyebrow"><span /> {messages.dialogEyebrow}</p>
-          <h2 id="dialog-title">{dialog === 'new-mission' ? messages.comingSoon : messages.howToPlay}</h2>
-          <p>{dialog === 'new-mission' ? messages.missionInfo : messages.instructions}</p>
+          <h2 id="dialog-title">{messages.howToPlay}</h2>
+          <p>{messages.instructions}</p>
           <button className="button button-primary dialog-button" onClick={() => setDialog(null)}>{messages.gotIt}</button>
         </section>
       </div>}

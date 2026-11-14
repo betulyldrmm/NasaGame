@@ -1,16 +1,18 @@
-# NASA veri kullanımı — Faz 1
+# NASA veri kullanımı
 
-| NASA kaynağı | Planlanan/kullanılan veri ve mekanik | Birimler | Durum |
+| NASA kaynağı | Veri ve ilgili mekanik | Birimler | Durum |
 |---|---|---|---|
-| [NASA Planetary Fact Sheet](https://nssdc.gsfc.nasa.gov/planetary/factsheet/) | Dünya, Ay ve Mars yüzey yerçekimi; ileride hedefe bağlı TWR | m/s² | Entegre edildi (oyunda yuvarlandı); ayrıntı doğrulaması gerekli |
-| [NASA Moon: By the Numbers](https://science.nasa.gov/moon/by-the-numbers/) | Ay yüzey yerçekimi karşılaştırma değeri | m/s² | Doğrulama gerekli |
-| [NASA Glenn: Free Falling Objects](https://www1.grc.nasa.gov/beginners-guide-to-aeronautics/free-falling-objects/) | Yerçekimi ivmesi ve ağırlık/TWR açıklaması | m/s², N | Planlandı |
-| [NASA Mission Visualization](https://nasa.github.io/mission-viz/) / [kaynak deposu](https://github.com/nasa/mission-viz) | Gelecekte yörünge görselleştirme yaklaşımına başvuru; Faz 1'de veri kullanılmıyor | Uygulanamaz | Planlandı; bilimsel parametre kaynağı olarak kullanılmadı |
+| [NASA Planetary Fact Sheet](https://nssdc.gsfc.nasa.gov/planetary/factsheet/) | Dünya, Ay ve Mars yüzey yerçekimi; ileride hedefe bağlı TWR | m/s² | Entegre edildi; oyun değerleri yuvarlandı |
+| [NASA Moon: By the Numbers](https://science.nasa.gov/moon/by-the-numbers/) | Ay yüzey yerçekimi için çapraz başvuru | m/s² | Doğrulama kaynağı |
+| [NASA Glenn: Free Falling Objects](https://www1.grc.nasa.gov/beginners-guide-to-aeronautics/free-falling-objects/) | Ağırlık ve ivme kavramları; TWR eğitim açıklaması | m/s², N | Planlandı |
+| [NASA Mission Visualization](https://nasa.github.io/mission-viz/) / [kaynak deposu](https://github.com/nasa/mission-viz) | İleride yörünge görselleştirme yaklaşımına başvuru | Uygulanamaz | Kaynak incelendi; Faz 2'de veri kullanılmadı |
 
-## Oyunlaştırılmış varsayımlar
+## Bilimsel veriler ve oyun varsayımları
 
-Gövde, motor ve yük kütleleri; motor itki değerleri; kredi maliyetleri ve 1.000 kredi başlangıç bütçesi eğitim amaçlı oyun varsayımlarıdır, NASA verisi değildir. Gezegen yerçekimleri NASA kaynaklarındaki yaklaşık yüzey değerlerinden seçilmiştir (Dünya 9,81; Ay 1,62; Mars 3,71 m/s²). Oyun bu aşamada hiçbir uzay aracı performans verisini NASA'ya atfetmez.
+Gezegen katalog değerleri NASA kaynaklarındaki yaklaşık yüzey yerçekimlerinden alınmıştır: Dünya 9,81 m/s², Ay 1,62 m/s² ve Mars 3,71 m/s². Faz 2 TWR ekranı istekte belirtildiği üzere yalnızca Dünya değeri olan 9,81 m/s² ile hesaplanır.
+
+Gövde, motor, yakıt ve kargo kütleleri; motor itkileri; parça fiyatları; 1.000 kredi bütçe ve TWR renk eşikleri oyunlaştırılmış varsayımlardır. Bunlar NASA donanım performans verisi değildir. İtki N (arayüzde kN), kütle kg, yerçekimi m/s² ve maliyet oyun kredisi olarak tutulur.
 
 ## Bilimsel sınırlılıklar
 
-TWR, bu prototipte basitçe itki / (kütle × yerçekimi) olarak hesaplanır. Atmosferik sürükleme, itki eğrisi, yakıt tüketimi, kütle değişimi, yörünge mekaniği, kademeler ve iniş dinamikleri modellenmez. Kullanıcıya bilimsel görev tasarımı veya uçuş sertifikasyonu sonucu sunmaz. Bu çalışma alanında PDF rehberi bulunmadığından PDF içeriği incelenemedi.
+TWR, basit itki / (kütle × yerçekimi) oranıdır. Atmosfer, sürükleme, itki eğrisi, yakıt tüketimi sırasında değişen kütle, kademeler, yörünge ve iniş dinamiği modellenmez. TWR eşikleri yalnızca oyun içi eğitim göstergesidir ve görev başarısını ya da gerçek uçuş güvenliğini garanti etmez. Proje içinde PDF rehberi yoktur; PDF içeriği incelenemedi.

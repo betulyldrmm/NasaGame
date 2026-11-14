@@ -1,6 +1,6 @@
 # Space Mission Design Game
 
-NASA Space Apps Challenge 2026 için tarayıcıda çalışacak eğitici uzay görev tasarım oyununun Faz 1 başlangıç altyapısı.
+NASA Space Apps Challenge 2026 için geliştirilen tarayıcı tabanlı uzay görevi tasarım oyunu.
 
 ## Gereksinimler
 
@@ -16,11 +16,16 @@ npm run build
 npm test
 ```
 
-## Yapı
+## Faz 2: Roket tasarımı
 
-- `src/game`: oyun tipleri, başlangıç verileri ve saf hesaplamalar
-- `src/i18n`: arayüz metinleri
-- `src`: React uygulaması ve stiller
-- `docs`: tasarım yol haritası ve NASA veri kullanım kaydı
+Ana menüden **Yeni Görev** ile roket montaj ekranını açın. Gövde, motor ve yakıt tankı seçin; görev kargolarını kapasite sınırları içinde ekleyip çıkarın. Pixel-art roket önizlemesi, kütle, itki, TWR, maliyet ve kalan bütçe seçimlerle anlık güncellenir. Bu aşamada bütçe yalnızca kontrol edilir, harcanmaz.
 
-NASA kaynakları, varsayımlar ve bilimsel sınırlılıklar için [docs/nasa-data-usage.md](docs/nasa-data-usage.md) dosyasına bakın. Gelecek özellikler [docs/design.md](docs/design.md) içindedir.
+## Proje yapısı
+
+- `src/game`: tipler, kataloglar, saf hesaplamalar ve Zustand montaj deposu
+- `src/components`: montaj ekranı ve roket önizlemesi
+- `src/i18n`: Türkçe arayüz metinleri
+- `src`: React uygulaması ve Cosmic Mission stilleri
+- `docs`: tasarım yol haritası ve NASA veri kullanım raporu
+
+Parça kütleleri, itki ve kredi maliyetleri oyun varsayımlarıdır. NASA kaynakları ve bilimsel sınırlamalar için [NASA veri raporuna](docs/nasa-data-usage.md) bakın.

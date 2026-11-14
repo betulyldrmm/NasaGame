@@ -1,17 +1,30 @@
-# Faz 1 tasarım notları
+# Tasarım notları
 
-## Gelecekteki özellikler
+## Faz 1 altyapısı
 
-- Roket montaj ekranı
-- Canlı TWR göstergesi (eşikler: `< 1.0` kırmızı, `1.0–<1.2` sarı, `≥ 1.2` yeşil)
-- Gezegenlerin farklı yüzey yerçekimleri
+React + TypeScript + Vite uygulaması, oyun veri tipleri ve React'ten bağımsız kütle/TWR/maliyet hesaplamaları oluşturuldu. NASA kaynakları ve bilimsel sınırlamalar `nasa-data-usage.md` içindedir.
+
+## Faz 2: roket montajı (uygulandı)
+
+- Ana menüden montaj ekranına geçiş ve menüye dönüş.
+- Katalog tabanlı gövde, motor, yakıt tankı ve kargo seçimi.
+- Zustand ile montaj durumunun yönetimi; yapılandırma `RocketConfiguration` biçiminde Phaser sahnesine aktarılabilecek şekilde sunulur.
+- Kargo yuvası sınırı ve gövde küçültülünce kapasiteye göre fazla kargonun çıkarılması.
+- Her seçimde anlık toplam kütle, itki, Dünya yüzeyinde TWR, maliyet ve bütçe bakiyesi.
+- TWR renk eşikleri: `< 1,0` kırmızı, `1,0–<1,2` sarı, `≥ 1,2` yeşil. Bu eşikler oyunlaştırılmış bilgilendirmedir; uçuş başarısını garanti etmez.
+- Basit, kodla çizilmiş pixel-art roket önizlemesi; seçili gövde boyu ve kargo görünümü değişir.
+
+Parça kütleleri, itki ve maliyetler oyun varsayımıdır. Başlangıç kredisi bu fazda harcanmaz.
+
+## Gelecek fazlar
+
+- Gezegen seçimine bağlı TWR ve daha ayrıntılı görev bağlamı
 - Delta-V kapasitesi
-- Ay ve Mars için iniş sistemleri
-- 2D Phaser uçuş simülasyonu
-- Görev başarısı ve başarısızlığı
-- Bütçe kaybı ve ödüller
+- Ay/Mars iniş sistemleri
+- Phaser tabanlı 2D uçuş sahnesi
+- Görev başarısı/başarısızlığı, ödül ve bütçe kaybı
 - Koloni kurma ve kaynak üretimi
 
 ## Mimari yön
 
-Oyun modelleri ve saf hesaplamalar `src/game` altında React'ten bağımsız tutulur. Başlangıç kataloğu `data.ts` içindedir. Sonraki aşamada görev/roket durumu Zustand deposuna, uçuş sahnesi Phaser modülüne taşınabilir; arayüz metinleri `src/i18n` altında tutulur. Simülasyon ve UI birbirine doğrudan bağlanmadan model ve hesaplama katmanını paylaşır.
+Katalog `src/game/data.ts`, tipler `src/game/types.ts`, saf hesaplamalar `src/game/calculations.ts`, Zustand montaj durumu `src/game/assemblyStore.ts` içindedir. React ekranı bunları tüketir; görsel sahne oyun durumunu kullanabilir ama React bileşenlerine bağımlı olmamalıdır. Arayüz metinleri `src/i18n` altında tutulur.

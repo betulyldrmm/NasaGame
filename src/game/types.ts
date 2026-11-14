@@ -23,8 +23,10 @@ export interface FuelTank {
   costCredits: number
 }
 
+export type PayloadId = 'solar-panel' | 'rover' | 'greenhouse' | 'habitat'
+
 export interface Payload {
-  id: string
+  id: PayloadId
   name: string
   massKg: number
   costCredits: number
