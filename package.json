@@ -1,18 +1,17 @@
 {
   "name": "space-mission-design-game",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "test": "vitest run"
+    "test": "vitest run",
+    "server": "node server/index.mjs"
   },
   "dependencies": {
-    "phaser": "^3.90.0",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0",
-    "zustand": "^5.0.8"
+    "react-dom": "^19.1.0"
   },
   "devDependencies": {
     "@types/react": "^19.1.8",
