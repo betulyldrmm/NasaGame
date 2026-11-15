@@ -188,6 +188,7 @@ let lastSentAngle = 0
 let lastHostPing = 0
 let lastLoopAt = 0
 let rafId = 0
+let bgWorker: Worker | null = null
 let bgIntervalId = 0
 let lastUiBumpAt = 0
 
@@ -669,11 +670,15 @@ function applyClientSnapshot(raw: SnapshotWire, events?: GameEvent[]) {
   // yerel tahmine yumuşakça karıştırılır; burun yönü istemcide kalır. Böylece kontrol anında hissedilir.
   const nv = pred ? ownActive(gs) : null
   if (pred && nv && !nv.cruise && nv.id === pred.id && nv.bodyId === pred.bodyId && effectiveAutopilot(nv) === 'off') {
-    nv.angle = pred.angle
-    nv.angVel = pred.angVel
+    if (!nv.landed) {
+      nv.angle = pred.angle
+      nv.angVel = pred.angVel
+    }
     const liftingOff = nv.throttle > 0 || localCtrl.ty > 0 || (pendingThrottle !== null && pendingThrottle.value > 0)
     if (nv.landed && !pred.landed && liftingOff) {
       // Kalkışı ev sahibi henüz işlemedi: yerel kalkışı koru.
+      nv.angle = pred.angle
+      nv.angVel = pred.angVel
       nv.landed = false
       nv.pos = pred.pos
       nv.vel = pred.vel
@@ -797,7 +802,9 @@ function stepClientExtrapolation(dtReal: number) {
 
 function tickLoop(now: number) {
   if (!inMatch) return
-  const totalDt = lastLoopAt > 0 ? Math.min(0.25, Math.max(0.001, (now - lastLoopAt) / 1000)) : 0.016
+  // Ev sahibi geride kaldıysa (sekme arka planda, kısa takılma) aradaki süre alt adımlarla telafi edilir;
+  // yoksa oyun herkes için yavaşlar ve oyuncular olduğu yerde kalmış gibi görünür.
+  const totalDt = lastLoopAt > 0 ? Math.min(isHost ? 1.5 : 0.25, Math.max(0.001, (now - lastLoopAt) / 1000)) : 0.016
   lastLoopAt = now
 
   if (isHost && hostSim) {
@@ -844,6 +851,19 @@ function startLoops() {
     const now = performance.now()
     if (now - lastLoopAt >= 75) tickLoop(now)
   }, 80)
+  // Tarayıcılar arka plandaki sekmenin zamanlayıcılarını saniyede 1'e düşürür; Web Worker zamanlayıcısı
+  // kısılmaz. Ev sahibi başka sekmeye/pencereye geçse bile oyun 30 Hz'te akmaya devam eder.
+  try {
+    const src = 'setInterval(function(){postMessage(0)},33)'
+    bgWorker = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })))
+    bgWorker.onmessage = () => {
+      if (!inMatch || !isHost) return
+      const now = performance.now()
+      if (now - lastLoopAt >= 45) tickLoop(now)
+    }
+  } catch {
+    bgWorker = null
+  }
 }
 
 function stopLoops() {
@@ -854,6 +874,10 @@ function stopLoops() {
   if (bgIntervalId) {
     clearInterval(bgIntervalId)
     bgIntervalId = 0
+  }
+  if (bgWorker) {
+    bgWorker.terminate()
+    bgWorker = null
   }
   lastLoopAt = 0
 }

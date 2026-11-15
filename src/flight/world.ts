@@ -800,7 +800,7 @@ function boom(sim: Sim, bodyId: BodyId, x: number, y: number, size: number, even
   const fx = (sim.fx ??= [])
   fx.push({ kind: 'boom', bodyId, x, y, born: sim.clock ?? 0, size })
   if (fx.length > 60) fx.splice(0, fx.length - 60)
-  events.push({ type: 'explosion', size })
+  events.push({ type: 'explosion', size, bodyId, x, y })
 }
 
 function grant(gs: GameState, id: string, title: string, text: string, events: GameEvent[], bonus = 0) {

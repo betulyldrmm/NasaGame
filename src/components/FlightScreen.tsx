@@ -468,6 +468,7 @@ export default function FlightScreen({ onBuilder }: Props) {
   const toastId = useRef(0)
   const lastMyVesselId = useRef<number | null>(null)
   const lastThrottleSentAt = useRef(0)
+  const thDirty = useRef(false)
   useEffect(() => {
     if (hud.landed) setAlarm(false)
   }, [hud.landed])
@@ -497,7 +498,23 @@ export default function FlightScreen({ onBuilder }: Props) {
       else if (e.type === 'capture') toast(e.text, 'mission')
       else if (e.type === 'victory') toast(`🏆 ${e.winnerName} zaferi kazandı!`, 'mission')
       else if (e.type === 'soi') toast(`${BODIES[e.to].name} etki alanına girildi (${BODIES[e.from].name} → ${BODIES[e.to].name}).`)
-      else if (e.type === 'explosion') audio.sfx('explosion', Math.min(0.9, 0.35 + e.size * 0.05))
+      else if (e.type === 'explosion') {
+        // Patlama sesi mesafeyle azalır: kendi geminden (yoksa kameranın baktığı yerden) uzaktaki
+        // patlamalar kısık, 3 km'den ötesi ve başka gök cismindekiler hiç duyulmaz.
+        let gain = 1
+        if (e.bodyId !== undefined && e.x !== undefined && e.y !== undefined) {
+          const me = activeVessel(curSim.gs)
+          if (me) {
+            if (me.bodyId !== e.bodyId) gain = 0
+            else {
+              const d = Math.hypot(me.pos.x - e.x, me.pos.y - e.y)
+              gain = d >= 3000 ? 0 : 1 / (1 + (d / 250) ** 2)
+            }
+          } else if (isMp) gain = 0.25
+        }
+        const vol = Math.min(0.9, 0.35 + e.size * 0.05) * gain
+        if (vol > 0.02) audio.sfx('explosion', vol)
+      }
       else if (e.type === 'achievement') toast(`🏆 Başarım: ${e.title} — ${e.text}`, 'mission')
       else if (e.type === 'crash') {
         const isMine = isMp
@@ -804,6 +821,13 @@ export default function FlightScreen({ onBuilder }: Props) {
           thChanged = true
         }
         if (isMp && thChanged && (now - lastThrottleSentAt.current >= 33 || v.throttle === 0 || v.throttle === 1)) {
+          lastThrottleSentAt.current = now
+          thDirty.current = false
+          runCommand({ type: 'setThrottle', vesselId: v.id, throttle: v.throttle })
+        } else if (isMp && thChanged) thDirty.current = true
+        else if (isMp && thDirty.current) {
+          // Tuş bırakıldı: son gaz değeri mutlaka ev sahibine gider (yoksa gaz geri sıçrar).
+          thDirty.current = false
           lastThrottleSentAt.current = now
           runCommand({ type: 'setThrottle', vesselId: v.id, throttle: v.throttle })
         }

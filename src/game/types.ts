@@ -307,7 +307,7 @@ export type GameEvent =
   | { type: 'crash'; name: string; wasActive: boolean; reason: string; ownerId?: string; vesselId?: number }
   | { type: 'mission'; id: string; title: string; reward: number }
   | { type: 'soi'; from: BodyId; to: BodyId; ownerId?: string }
-  | { type: 'explosion'; size: number }
+  | { type: 'explosion'; size: number; bodyId?: BodyId; x?: number; y?: number }
   | { type: 'achievement'; id: string; title: string; text: string }
   | { type: 'capture'; bodyId: BodyId; ownerId: string | null; previousOwnerId: string | null; text: string }
   | { type: 'kill'; attackerId: string | null; victimId: string | null; victimName: string; speed: number }

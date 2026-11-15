@@ -319,7 +319,7 @@ function spawnBoomFx(
     fxOut.push({ kind: 'boom', bodyId, x, y, born, size })
     if (fxOut.length > 60) fxOut.splice(0, fxOut.length - 60)
   }
-  events.push({ type: 'explosion', size })
+  events.push({ type: 'explosion', size, bodyId, x, y })
 }
 
 function clearOwnershipPointers(gs: GameState, vesselId: number) {
