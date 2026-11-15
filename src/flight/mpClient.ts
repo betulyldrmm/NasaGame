@@ -211,12 +211,25 @@ function wrapPi(a: number): number {
   return ((((a + Math.PI) % tau) + tau) % tau) - Math.PI
 }
 
+/** Görsel konum farkı tamponu (m): sunucu anlık görüntüsü ile yerel tahmin arasındaki farkı kareler boyunca yumuşatır. */
+const vesselVisualOffsets = new Map<number, { bodyId: string; x: number; y: number }>()
+
+/** Çok oyunculu istemcide görsel olarak yumuşatılmış konumu verir (fiziksel v.pos'u bozmaz). */
+export function getVisualPos(v: Vessel): { x: number; y: number } {
+  if (isHost || !clientSim) return v.pos
+  const off = vesselVisualOffsets.get(v.id)
+  if (!off || off.bodyId !== v.bodyId) return v.pos
+  return { x: v.pos.x + off.x, y: v.pos.y + off.y }
+}
+
 function clearPendingOptimistic() {
   pendingLaunchUntil = 0
   pendingLaunchMinId = 0
   pendingThrottle = null
   pendingActive = null
   pendingAutopilot = null
+  vesselVisualOffsets.clear()
+  knownVesselParts.clear()
 }
 
 const storeListeners = new Set<() => void>()
@@ -289,7 +302,7 @@ function startPingTimer() {
     if (ws && ws.readyState === WebSocket.OPEN) {
       sendRaw({ type: 'ping', t: Date.now() })
     }
-  }, 2000)
+  }, 1000)
 }
 
 function stopPingTimer() {
@@ -438,9 +451,9 @@ export function buildCompactSnapshot(sim: Sim, includeStatic: boolean): Snapshot
       if (!tracked) sentPartsKey.set(sim, (tracked = new Map()))
       const key = partsKey(v.parts)
       const prev = tracked.get(v.id)
-      // Yapı değiştiyse ya da araç yeniyse 1,5 sn boyunca her karede tam yapı gider (atılan kareler için).
-      if (!prev || prev.key !== key) tracked.set(v.id, { key, until: clock + 1.5 })
-      const withParts = includeStatic || clock < (tracked.get(v.id)!.until)
+      // Yapı değiştiyse, araç yeniyse ya da periyodik senkron yenilemesinde 1,5 sn boyunca tam yapı gönder.
+      if (!prev || prev.key !== key || clock > prev.until + 4) tracked.set(v.id, { key, until: clock + 1.5 })
+      const withParts = !prev || clock < tracked.get(v.id)!.until
       return compactVessel(v, withParts)
     }) as unknown as Vessel[],
     activeId: gs.activeId,
@@ -460,6 +473,8 @@ export function buildCompactSnapshot(sim: Sim, includeStatic: boolean): Snapshot
     _hostPing: pingMs ?? undefined,
   }
 }
+
+const knownVesselParts = new Map<number, PartInst[]>()
 
 export function hydrateCompactSnapshot(
   raw: SnapshotWire,
@@ -487,10 +502,14 @@ export function hydrateCompactSnapshot(
   cleanGs.vessels = (cleanGs.vessels as unknown as WireVessel[]).flatMap((wv) => {
     const { _pf, parts, ...rest } = wv
     let full = parts
-    if (!full) {
+    if (full) {
+      knownVesselParts.set(wv.id, full.map((p) => ({ ...p })))
+    } else {
       const pv = prevById.get(wv.id)
-      if (!pv) return []
-      full = pv.parts.map((p) => ({ ...p }))
+      const cached = knownVesselParts.get(wv.id)
+      if (pv) full = pv.parts.map((p) => ({ ...p }))
+      else if (cached) full = cached.map((p) => ({ ...p }))
+      else return []
     }
     if (_pf) for (const [i, f] of _pf) if (full[i]) full[i].fuel = f
     return [{ ...rest, parts: full } as Vessel]
@@ -531,8 +550,8 @@ export function hydrateCompactSnapshot(
 
 function sendHostSnapshot(now: number) {
   if (!isHost || !hostSim) return
-  if (!forceImmediateSnapshot && now - lastSnapshotSentAt < 22) return
-  if (!forceImmediateSnapshot && ws && ws.bufferedAmount > 24 * 1024) {
+  if (!forceImmediateSnapshot && now - lastSnapshotSentAt < 14) return
+  if (!forceImmediateSnapshot && ws && ws.bufferedAmount > 48 * 1024) {
     urgentSnapshot = false
     return
   }
@@ -540,7 +559,7 @@ function sendHostSnapshot(now: number) {
   urgentSnapshot = false
   forceImmediateSnapshot = false
 
-  const includeStatic = staticDirty || now - lastStaticSentAt >= 2500
+  const includeStatic = staticDirty || now - lastStaticSentAt >= 12000
   if (includeStatic) {
     staticDirty = false
     lastStaticSentAt = now
@@ -577,12 +596,13 @@ function latencySec(): number {
 }
 
 /** Kendi aracını yerel tuşlarla fizik adımında ilerletir (itki, dönüş, yerçekimi, iniş). */
-function predictOwn(v: Vessel, simDt: number, warp: number) {
+function predictOwn(v: Vessel, simDt: number, warp: number, writeFiring = false) {
   if (simDt <= 0) return
   const n = Math.min(400, Math.max(1, Math.ceil(simDt / 0.02)))
   const h = simDt / n
   for (let i = 0; i < n; i += 1) {
     const res = stepPhysics(v, h, localCtrl, 1 / Math.max(1, warp), null)
+    if (writeFiring && clientSim) clientSim.firing.set(v.id, res.firing)
     if (res.crash || res.touchdown) break
   }
 }
@@ -590,6 +610,13 @@ function predictOwn(v: Vessel, simDt: number, warp: number) {
 function applyClientSnapshot(raw: SnapshotWire, events?: GameEvent[]) {
   if (!you) return
   const prevGs = clientSim?.gs ?? null
+  const prevVis = new Map<number, { bodyId: string; x: number; y: number }>()
+  if (prevGs && clientSim) {
+    for (const o of prevGs.vessels) {
+      const vp = getVisualPos(o)
+      prevVis.set(o.id, { bodyId: o.bodyId, x: vp.x, y: vp.y })
+    }
+  }
   if (typeof raw._hostPing === 'number') lastHostPing = raw._hostPing
   const predV = ownActive(prevGs)
   const pred = predV
@@ -598,6 +625,7 @@ function applyClientSnapshot(raw: SnapshotWire, events?: GameEvent[]) {
   const hydrated = hydrateCompactSnapshot(raw, prevGs, you.id, localDesign, localDesignCargo)
   const gs = hydrated.gs
   const now = Date.now()
+  const warpNow = WARPS[hydrated.warpIdx] ?? 1
 
   if (pendingLaunchUntil > 0) {
     const spawned = gs.vessels.some((v) => v.ownerId === you!.id && v.id > pendingLaunchMinId)
@@ -627,11 +655,12 @@ function applyClientSnapshot(raw: SnapshotWire, events?: GameEvent[]) {
 
   if (pendingAutopilot) {
     const v = gs.vessels.find((o) => o.id === pendingAutopilot!.vesselId && o.ownerId === you!.id)
-    const curMode = v?.autopilot ?? 'off'
+    const curMode = v ? effectiveAutopilot(v) : 'off'
     if (!v || curMode === pendingAutopilot.mode || now >= pendingAutopilot.until) {
       pendingAutopilot = null
     } else {
       v.autopilot = pendingAutopilot.mode
+      v.autoLand = pendingAutopilot.mode === 'land'
     }
   }
 
@@ -639,10 +668,10 @@ function applyClientSnapshot(raw: SnapshotWire, events?: GameEvent[]) {
   // yerel tahmine yumuşakça karıştırılır; burun yönü istemcide kalır. Böylece kontrol anında hissedilir.
   const nv = pred ? ownActive(gs) : null
   if (pred && nv && !nv.cruise && nv.id === pred.id && nv.bodyId === pred.bodyId && effectiveAutopilot(nv) === 'off') {
-    const warpNow = WARPS[hydrated.warpIdx] ?? 1
     nv.angle = pred.angle
     nv.angVel = pred.angVel
-    if (nv.landed && !pred.landed && nv.throttle > 0) {
+    const liftingOff = nv.throttle > 0 || localCtrl.ty > 0 || (pendingThrottle !== null && pendingThrottle.value > 0)
+    if (nv.landed && !pred.landed && liftingOff) {
       // Kalkışı ev sahibi henüz işlemedi: yerel kalkışı koru.
       nv.landed = false
       nv.pos = pred.pos
@@ -651,10 +680,37 @@ function applyClientSnapshot(raw: SnapshotWire, events?: GameEvent[]) {
       if (hydrated.warpIdx <= PHYSICS_WARP_MAX_IDX) predictOwn(nv, latencySec() * warpNow, warpNow)
       const d = Math.hypot(nv.pos.x - pred.pos.x, nv.pos.y - pred.pos.y)
       if (d < 400 * Math.max(1, warpNow) && !nv.landed) {
-        nv.pos = { x: pred.pos.x + (nv.pos.x - pred.pos.x) * 0.3, y: pred.pos.y + (nv.pos.y - pred.pos.y) * 0.3 }
+        nv.pos = { x: pred.pos.x + (nv.pos.x - pred.pos.x) * 0.35, y: pred.pos.y + (nv.pos.y - pred.pos.y) * 0.35 }
         nv.vel = { x: pred.vel.x + (nv.vel.x - pred.vel.x) * 0.5, y: pred.vel.y + (nv.vel.y - pred.vel.y) * 0.5 }
       }
     }
+  }
+
+  // Görsel konum yumuşatması: ağ paketi geldiğinde hiçbir roket kareler arası sıçramasın.
+  const aliveIds = new Set<number>()
+  const maxSmooth = 1800 * Math.max(1, warpNow)
+  for (const v of gs.vessels) {
+    aliveIds.add(v.id)
+    if (v.cruise) {
+      vesselVisualOffsets.delete(v.id)
+      continue
+    }
+    const pv = prevVis.get(v.id)
+    if (!pv || pv.bodyId !== v.bodyId) {
+      vesselVisualOffsets.delete(v.id)
+      continue
+    }
+    const ox = pv.x - v.pos.x
+    const oy = pv.y - v.pos.y
+    const dist = Math.hypot(ox, oy)
+    if (dist > 0.01 && dist < maxSmooth) {
+      vesselVisualOffsets.set(v.id, { bodyId: v.bodyId, x: ox, y: oy })
+    } else {
+      vesselVisualOffsets.delete(v.id)
+    }
+  }
+  for (const id of vesselVisualOffsets.keys()) {
+    if (!aliveIds.has(id)) vesselVisualOffsets.delete(id)
   }
 
   if (!clientSim) {
@@ -665,7 +721,7 @@ function applyClientSnapshot(raw: SnapshotWire, events?: GameEvent[]) {
   clientSim.warpIdx = hydrated.warpIdx
   clientSim.firing = hydrated.firing
   clientSim.fx = hydrated.fx
-  clientSim.clock = hydrated.clock
+  clientSim.clock = hydrated.clock + (warpNow <= PHYSICS_WARP_MAX_IDX ? latencySec() : 0)
   lastClientSnapAt = performance.now()
   inMatch = true
   active = true
@@ -677,8 +733,16 @@ function applyClientSnapshot(raw: SnapshotWire, events?: GameEvent[]) {
 function stepClientExtrapolation(dtReal: number) {
   if (!clientSim) return
   const sinceSnap = (performance.now() - lastClientSnapAt) / 1000
-  if (sinceSnap > 1) return
-  const real = Math.min(0.05, Math.max(0, dtReal))
+  if (sinceSnap > 4) return
+  const atten = sinceSnap <= 1.2 ? 1 : Math.max(0.2, 1 - (sinceSnap - 1.2) / 3.0)
+  const real = Math.min(0.05, Math.max(0, dtReal)) * atten
+  const decay = Math.exp(-Math.min(0.05, Math.max(0, dtReal)) * 14)
+  for (const [id, off] of vesselVisualOffsets) {
+    off.x *= decay
+    off.y *= decay
+    if (Math.hypot(off.x, off.y) < 0.01) vesselVisualOffsets.delete(id)
+  }
+
   const warpIdx = clientSim.warpIdx ?? 0
   const warp = WARPS[warpIdx] ?? 1
   const simDt = real * warp
@@ -686,30 +750,44 @@ function stepClientExtrapolation(dtReal: number) {
   clientSim.gs.time += simDt
   const own = ownActive(clientSim.gs)
   for (const v of clientSim.gs.vessels) {
+    if (!Number.isFinite(v.pos.x) || !Number.isFinite(v.pos.y) || !Number.isFinite(v.vel.x) || !Number.isFinite(v.vel.y)) continue
     // Hızlı yolculuk ev sahibiyle aynı formülle yerelde de akar.
     if (v.cruise) {
       stepCruise(clientSim.gs, clientSim.clock ?? 0, v)
       continue
     }
+    const ap = effectiveAutopilot(v)
     // Kendi aracın: yerel tuşlarla tam fizik tahmini (anında tepki).
-    if (v === own && warpIdx <= PHYSICS_WARP_MAX_IDX && effectiveAutopilot(v) === 'off') {
-      predictOwn(v, simDt, warp)
+    if (v === own && ap === 'off' && (warpIdx <= PHYSICS_WARP_MAX_IDX || v.throttle > 0 || localCtrl.rotate !== 0 || localCtrl.tx !== 0 || localCtrl.ty !== 0)) {
+      const effWarp = Math.min(warp, WARPS[PHYSICS_WARP_MAX_IDX] ?? 10)
+      predictOwn(v, Math.min(simDt, real * effWarp), effWarp, true)
       continue
     }
-    if (sinceSnap > 0.3) continue
     if (v.landed) continue
-    if (warpIdx <= PHYSICS_WARP_MAX_IDX) {
-      const body = BODIES[v.bodyId]
-      const r = Math.hypot(v.pos.x, v.pos.y)
-      if (body && r > 1) {
-        const gFactor = -(body.mu / (r * r * r))
-        v.vel = {
-          x: v.vel.x + v.pos.x * gFactor * simDt,
-          y: v.vel.y + v.pos.y * gFactor * simDt,
+    if (warpIdx <= PHYSICS_WARP_MAX_IDX || v.throttle > 0 || ap === 'land') {
+      const effWarp = Math.min(warp, WARPS[PHYSICS_WARP_MAX_IDX] ?? 25)
+      const effDt = Math.min(simDt, real * effWarp, 1.35)
+      if (v.throttle > 0 || ap !== 'off') {
+        const n = Math.min(70, Math.max(1, Math.ceil(effDt / 0.02)))
+        const h = effDt / n
+        for (let i = 0; i < n; i += 1) {
+          const res = stepPhysics(v, h, null, 1 / Math.max(1, effWarp), ap === 'transfer' ? v.angle : null)
+          clientSim.firing.set(v.id, res.firing)
+          if (res.crash || res.touchdown) break
         }
+      } else {
+        const body = BODIES[v.bodyId]
+        const r = Math.hypot(v.pos.x, v.pos.y)
+        if (body && r > 1) {
+          const gFactor = -(body.mu / (r * r * r))
+          v.vel = {
+            x: v.vel.x + v.pos.x * gFactor * simDt,
+            y: v.vel.y + v.pos.y * gFactor * simDt,
+          }
+        }
+        v.pos = { x: v.pos.x + v.vel.x * simDt, y: v.pos.y + v.vel.y * simDt }
+        v.angle = wrapPi(v.angle + v.angVel * simDt)
       }
-      v.pos = { x: v.pos.x + v.vel.x * simDt, y: v.pos.y + v.vel.y * simDt }
-      v.angle = wrapPi(v.angle + v.angVel * simDt)
     } else {
       stepRails(v, Math.min(simDt, 1800))
     }
@@ -741,7 +819,7 @@ function tickLoop(now: number) {
         }
       }
     }
-    if (forceImmediateSnapshot || urgentSnapshot || now - lastSnapshotSentAt >= 50) {
+    if (forceImmediateSnapshot || urgentSnapshot || now - lastSnapshotSentAt >= 30) {
       sendHostSnapshot(now)
     }
     emitUi(false)
@@ -783,7 +861,7 @@ function handleServerMessage(msg: ServerMessage) {
   switch (msg.type) {
     case 'pong': {
       const rtt = Math.max(1, Math.round(Date.now() - msg.t))
-      pingMs = pingMs === null ? rtt : Math.round(pingMs * 0.6 + rtt * 0.4)
+      pingMs = pingMs === null ? rtt : Math.round(pingMs * 0.5 + rtt * 0.5)
       emitUi(true)
       return
     }
@@ -810,6 +888,7 @@ function handleServerMessage(msg: ServerMessage) {
     case 'peerJoined':
       if (isHost && hostSim) {
         addMultiplayerPlayer(hostSim.gs, msg.player.id, msg.player.username, msg.player.color, msg.player.slot)
+        sentPartsKey.delete(hostSim)
         staticDirty = true
         forceImmediateSnapshot = true
         urgentSnapshot = true
@@ -986,8 +1065,8 @@ export function sendMpControls(ctrl: Controls) {
   const changed =
     ctrl.rotate !== lastSentCtrl.rotate || ctrl.tx !== lastSentCtrl.tx || ctrl.ty !== lastSentCtrl.ty
   const activeCtrl = ctrl.rotate !== 0 || ctrl.tx !== 0 || ctrl.ty !== 0
-  const turned = withAngle && Math.abs(wrapPi(own!.angle - lastSentAngle)) > 0.01 && now - lastSentCtrlAt >= 40
-  if (changed || turned || (activeCtrl && now - lastSentCtrlAt >= 33)) {
+  const turned = withAngle && Math.abs(wrapPi(own!.angle - lastSentAngle)) > 0.01 && now - lastSentCtrlAt >= 28
+  if (changed || turned || (activeCtrl && now - lastSentCtrlAt >= 28)) {
     lastSentCtrl = { ...localCtrl }
     lastSentCtrlAt = now
     const payload: Controls = withAngle
@@ -1039,7 +1118,10 @@ export function sendMpCommand(cmd: GameCommand): { ok: boolean; error?: string; 
   } else if (cmd.type === 'setAutopilot') {
     pendingAutopilot = { vesselId: cmd.vesselId, mode: cmd.mode, until: now + pendWindow() }
     const v = clientSim?.gs.vessels.find((o) => o.id === cmd.vesselId && o.ownerId === you!.id)
-    if (v) v.autopilot = cmd.mode
+    if (v) {
+      v.autopilot = cmd.mode
+      v.autoLand = cmd.mode === 'land'
+    }
   }
   sendRaw({ type: 'clientCmd', cmd })
   return { ok: true }

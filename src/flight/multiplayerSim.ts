@@ -5,7 +5,7 @@
  *  - Bayrak kapmaca tarzı gezegen ele geçirme ve savunma
  *  - Oyuncu başına bağımsız bütçe, fırlatma rampası ve hedef yönetimi
  */
-import { baseReport, emptyBase, STARTER_EARTH_SITES, syncModules, tickBase } from '../game/base'
+import { baseReport, COLONY_STATION_ID, emptyBase, isBodyColonized, STARTER_EARTH_SITES, syncModules, tickBase } from '../game/base'
 import { DEFAULT_DESIGN, partDef } from '../game/data'
 import { INITIAL_TECH } from '../game/tech'
 import type {
@@ -38,7 +38,6 @@ export const PHYSICS_WARP_MAX_IDX = 4
 export const CONQUERABLE_BODIES: BodyId[] = ['moon', 'mercury', 'venus', 'mars', 'ceres', 'ganymede', 'titan']
 export const PLAYER_COLORS = ['#38d9e8', '#fb7185', '#4ade80', '#fbbf24', '#c084fc', '#fb923c', '#60a5fa', '#f472b6']
 
-const CAPTURE_CLAIM_SEC = 5
 const CAPTURE_NEUTRALIZE_SEC = 5
 
 export interface FxEventLike {
@@ -252,10 +251,12 @@ export function playerPassiveIncomePerHour(gs: GameState, playerId: string): num
     const cap = gs.mp.captures[bodyId]
     if (cap?.ownerId !== playerId) continue
     const b = BODIES[bodyId]
-    sum += gs.mp.config.passiveBonusPerPlanet * Math.max(1, b.incomeMult * 0.5)
     const colony = gs.bases[bodyId]
+    const flux = solarFlux(len(bodyAbsState(bodyId, gs.time).r))
+    if (isBodyColonized(colony, flux)) {
+      sum += gs.mp.config.passiveBonusPerPlanet * Math.max(1, b.incomeMult * 0.5)
+    }
     if (colony) {
-      const flux = solarFlux(len(bodyAbsState(bodyId, gs.time).r))
       sum += baseReport(colony, flux, b.incomeMult).incomePerHour
     }
   }
@@ -277,10 +278,12 @@ export function stepMultiplayerIncome(gs: GameState, incomeDt: number) {
     const owner = gs.mp.players[cap.ownerId]
     if (!owner) continue
     const b = BODIES[bodyId]
-    owner.money += gs.mp.config.passiveBonusPerPlanet * Math.max(1, b.incomeMult * 0.5) * hours
     const colony = gs.bases[bodyId]
+    const flux = solarFlux(len(bodyAbsState(bodyId, gs.time).r))
+    if (isBodyColonized(colony, flux)) {
+      owner.money += gs.mp.config.passiveBonusPerPlanet * Math.max(1, b.incomeMult * 0.5) * hours
+    }
     if (colony) {
-      const flux = solarFlux(len(bodyAbsState(bodyId, gs.time).r))
       owner.money += tickBase(colony, flux, incomeDt, b.incomeMult, true)
     }
   }
@@ -574,40 +577,53 @@ export function stepPlanetCaptures(gs: GameState, realDt: number, events: GameEv
 
     const activeOwners = [...landedByOwner.keys()]
     const bounty = 5000 + Math.round(body.incomeMult * 2000)
+    const base = gs.bases[bodyId]
+    const flux = solarFlux(len(bodyAbsState(bodyId, gs.time).r))
+    const colonized = isBodyColonized(base, flux)
+    const hasStation = (base?.modules[COLONY_STATION_ID] ?? 0) > 0
 
     if (!cap.ownerId) {
-      if (activeOwners.length === 1) {
-        const who = activeOwners[0]!
-        const ship = landedByOwner.get(who)![0]!
-        if (cap.capturerId !== who) {
-          cap.capturerId = who
-          cap.progress = 0
+      const settler = base?.ownerId && mp.players[base.ownerId] ? base.ownerId : (activeOwners.length === 1 ? activeOwners[0]! : null)
+      const rivalsAtSite = settler ? activeOwners.filter((id) => id !== settler) : activeOwners
+      if (colonized && settler && rivalsAtSite.length === 0) {
+        if (base) base.ownerId = settler
+        cap.ownerId = settler
+        cap.flagAngle = base?.siteAngle ?? (landedByOwner.get(settler)?.[0] ? Math.atan2(landedByOwner.get(settler)![0]!.pos.y, landedByOwner.get(settler)![0]!.pos.x) : Math.PI / 2)
+        cap.progress = 1
+        cap.capturerId = null
+        cap.phase = 'captured'
+        const payBounty = cap.lastRewardedId !== settler ? bounty : 0
+        cap.lastRewardedId = settler
+        const p = mp.players[settler]
+        if (p) {
+          p.captures += 1
+          p.money += payBounty
+          if (gs.ownerId === p.id) gs.money = p.money
         }
-        cap.phase = 'claiming'
-        cap.progress = Math.min(1, cap.progress + realDt / CAPTURE_CLAIM_SEC)
-        if (cap.progress >= 1) {
-          cap.ownerId = who
-          cap.flagAngle = Math.atan2(ship.pos.y, ship.pos.x)
-          cap.progress = 1
-          cap.capturerId = null
-          cap.phase = 'captured'
-          const p = mp.players[who]
-          if (p) {
-            p.captures += 1
-            p.money += bounty
-            if (gs.ownerId === p.id) gs.money = p.money
-          }
-          const msg = `🚩 ${p?.username ?? who}, ${body.name} gezegenini ele geçirdi (+${bounty.toLocaleString('tr-TR')} ₡)!`
-          pushMpFeed(gs, msg, p?.color)
-          events.push({ type: 'capture', bodyId, ownerId: who, previousOwnerId: null, text: msg })
-        }
+        const rewardTxt = payBounty > 0 ? ` (+${payBounty.toLocaleString('tr-TR')} ₡)` : ''
+        const msg = `🛰️ ${p?.username ?? settler}, ${body.name} yüzeyine Uzay İstasyonu kurarak kolonileştirdi${rewardTxt}!`
+        pushMpFeed(gs, msg, p?.color)
+        events.push({ type: 'capture', bodyId, ownerId: settler, previousOwnerId: null, text: msg })
       } else if (activeOwners.length > 1) {
         cap.phase = 'contested'
+        cap.capturerId = null
+        cap.progress = 0
+      } else if (activeOwners.length === 1) {
+        // İniş yapıldı: henüz çalışan bir Uzay İstasyonu yok; üs kurulumuna hazır.
+        const who = activeOwners[0]!
+        cap.capturerId = who
+        cap.phase = 'claiming'
+        cap.progress = hasStation ? 0.65 : 0.25
       } else {
         cap.phase = 'idle'
-        cap.progress = Math.max(0, cap.progress - realDt / CAPTURE_CLAIM_SEC)
-        if (cap.progress <= 0) cap.capturerId = null
+        cap.progress = 0
+        cap.capturerId = null
       }
+    } else if (!hasStation) {
+      cap.ownerId = null
+      cap.phase = 'idle'
+      cap.progress = 0
+      cap.capturerId = null
     } else {
       const ownerShips = landedByOwner.get(cap.ownerId) ?? []
       const rivals = activeOwners.filter((id) => id !== cap.ownerId)
@@ -621,9 +637,8 @@ export function stepPlanetCaptures(gs: GameState, realDt: number, events: GameEv
           cap.capturerId = null
         }
       } else if (rivals.length === 1) {
-        // Savunucusu yok veya roket çarpışmasıyla yok edildi → rakip bayrağı indirip ele geçiriyor!
+        // Savunucusu yok → rakip Uzay İstasyonu'nu devre dışı bırakıyor (5 sn)!
         const challenger = rivals[0]!
-        const ship = landedByOwner.get(challenger)![0]!
         const prevOwner = cap.ownerId
         if (cap.capturerId !== challenger) {
           cap.capturerId = challenger
@@ -633,21 +648,27 @@ export function stepPlanetCaptures(gs: GameState, realDt: number, events: GameEv
         cap.phase = 'neutralizing'
         cap.progress = Math.max(0, cap.progress - realDt / CAPTURE_NEUTRALIZE_SEC)
         if (cap.progress <= 0) {
-          cap.ownerId = challenger
-          cap.flagAngle = Math.atan2(ship.pos.y, ship.pos.x)
-          cap.progress = 1
-          cap.capturerId = null
-          cap.phase = 'captured'
+          if (base?.sites) {
+            for (let i = 0; i < base.sites.length; i += 1) {
+              if (base.sites[i] === COLONY_STATION_ID) base.sites[i] = null
+            }
+            syncModules(base)
+            base.ownerId = challenger
+          }
+          const raidBounty = Math.round(bounty * 0.4)
+          cap.ownerId = null
+          cap.capturerId = challenger
+          cap.progress = 0.25
+          cap.phase = 'claiming'
           const winner = mp.players[challenger]
           const loser = mp.players[prevOwner]
           if (winner) {
-            winner.captures += 1
-            winner.money += bounty
+            winner.money += raidBounty
             if (gs.ownerId === winner.id) gs.money = winner.money
           }
-          const msg = `🚩 ${winner?.username ?? challenger}, ${body.name} bayrağını ${loser?.username ?? prevOwner} elinden kaptı (+${bounty.toLocaleString('tr-TR')} ₡)!`
+          const msg = `💥 ${winner?.username ?? challenger}, ${loser?.username ?? prevOwner} oyuncusunun ${body.name} Uzay İstasyonu'nu devre dışı bıraktı (+${raidBounty.toLocaleString('tr-TR')} ₡)!`
           pushMpFeed(gs, msg, winner?.color)
-          events.push({ type: 'capture', bodyId, ownerId: challenger, previousOwnerId: prevOwner, text: msg })
+          events.push({ type: 'capture', bodyId, ownerId: null, previousOwnerId: prevOwner, text: msg })
         }
       } else if (rivals.length > 1) {
         cap.phase = 'contested'
@@ -690,6 +711,16 @@ function closestApproach(a: Vessel, b: Vessel, maxLookSec = 25): { dist: number;
   const tca = vv > 1e-6 ? Math.max(0, Math.min(maxLookSec, -(dpX * dvX + dpY * dvY) / vv)) : 0
   const minAtTca = Math.hypot(dpX + dvX * tca, dpY + dvY * tca)
   return { dist, tca, minAtTca }
+}
+
+/** İniş sırasında irtifa ve çarpma süresine göre güvenli zaman çarpanı tavanını döndürür. */
+export function landingWarpCap(v: Vessel, st = vesselStats(v.parts, v.cargo)): { maxIdx: number; autoIdx: number } {
+  const s = situation(v, st)
+  const tGround = s.vr < -1 ? s.alt / -s.vr : Infinity
+  if (s.alt < 100 || tGround < 3.2) return { maxIdx: 0, autoIdx: 0 }
+  if (s.alt < 350 || tGround < 7.5) return { maxIdx: 2, autoIdx: 2 }
+  if (s.alt < 1500 || tGround < 15) return { maxIdx: 3, autoIdx: 3 }
+  return { maxIdx: PHYSICS_WARP_MAX_IDX, autoIdx: PHYSICS_WARP_MAX_IDX }
 }
 
 /**
@@ -769,40 +800,55 @@ export function computeDynamicWarp(
       }
     }
 
+    if (v.landed && (v.throttle > 0.01 || usingControls || recentManual)) {
+      tighten(0, 'burn', `${p.username}: kalkış hazırlığı`, p.username)
+    }
     if (!v.landed) {
-      // 2) Manuel iniş / yüzeye tehlikeli yaklaşma
-      if (body.landable && s.alt < 3000 && s.vr < -1 && ap === 'off') {
-        tighten(s.alt < 1200 ? 0 : 1, 'landing', `${p.username}: ${body.name} manuel inişi`, p.username)
-      } else if (body.landable && s.alt < 1200) {
-        tighten(ap === 'land' ? 2 : 1, 'landing', `${p.username}: ${body.name} yüzey yaklaşımı`, p.username)
-      } else if (body.atmoHeight > 0 && s.altSea < body.atmoHeight) {
-        tighten(recentManual || v.throttle > 0 ? 1 : 2, 'burn', `${p.username}: ${body.name} atmosferi`, p.username)
-      } else if (recentManual || (v.throttle > 0 && ap === 'off')) {
-        tighten(2, 'burn', `${p.username}: manuel uçuş`, p.username)
-      } else if (ap === 'land') {
-        tighten(s.alt < 500 ? 1 : 3, 'landing', `${p.username}: ${body.name} oto-iniş`, p.username)
-      } else if (ap === 'orbit' || ap === 'transfer') {
-        const autoWish = autopilotWantedByVessel.get(v.id)
-        if (v.throttle > 0) {
-          tighten(2, 'burn', `${p.username}: otopilot yanışı`, p.username)
-        } else if (needsPhysics(v, null)) {
-          const el = elementsFromState(v.pos, v.vel, body.mu)
-          const wait = orbitCoastWait(v, body, s)
-          if (wait !== null && wait > 20) {
-            maxAutoCoastWish = Math.max(maxAutoCoastWish, chooseCoastIdx(wait, 4))
-          } else {
-            const toAp = s.vr > 0 && el.e < 1 ? (el.ra - s.r) / Math.max(1, s.vr) : 0
-            if (toAp > 45) maxAutoCoastWish = Math.max(maxAutoCoastWish, 4)
-            else tighten(2, 'burn', `${p.username}: manevra hazırlığı`, p.username)
+      if (body.landable && ap === 'land') {
+        const cap = landingWarpCap(v, st)
+        tighten(
+          cap.maxIdx,
+          'landing',
+          cap.maxIdx === 0 ? `${p.username}: ${body.name} oto-iniş yaklaşımı` : `${p.username}: ${body.name} oto-iniş (${WARPS[cap.maxIdx]}×)`,
+          p.username,
+        )
+        maxAutoCoastWish = Math.max(maxAutoCoastWish, cap.autoIdx)
+      } else {
+        if (v.throttle > 0.01 || usingControls) {
+          tighten(s.alt < 12_000 ? 0 : 2, 'burn', `${p.username}: motor yanışı`, p.username)
+        }
+        // 2) Manuel iniş / yüzeye tehlikeli yaklaşma
+        if (body.landable && s.alt < 3000 && s.vr < -1 && ap === 'off') {
+          tighten(s.alt < 1200 ? 0 : 1, 'landing', `${p.username}: ${body.name} manuel inişi`, p.username)
+        } else if (body.landable && s.alt < 1200) {
+          tighten(1, 'landing', `${p.username}: ${body.name} yüzey yaklaşımı`, p.username)
+        } else if (body.atmoHeight > 0 && s.altSea < body.atmoHeight) {
+          tighten(recentManual || v.throttle > 0 ? 1 : 2, 'burn', `${p.username}: ${body.name} atmosferi`, p.username)
+        } else if (recentManual || (v.throttle > 0 && ap === 'off')) {
+          tighten(2, 'burn', `${p.username}: manuel uçuş`, p.username)
+        } else if (ap === 'orbit' || ap === 'transfer') {
+          const autoWish = autopilotWantedByVessel.get(v.id)
+          if (v.throttle > 0) {
+            tighten(2, 'burn', `${p.username}: otopilot yanışı`, p.username)
+          } else if (needsPhysics(v, null)) {
+            const el = elementsFromState(v.pos, v.vel, body.mu)
+            const wait = orbitCoastWait(v, body, s)
+            if (wait !== null && wait > 20) {
+              maxAutoCoastWish = Math.max(maxAutoCoastWish, chooseCoastIdx(wait, 4))
+            } else {
+              const toAp = s.vr > 0 && el.e < 1 ? (el.ra - s.r) / Math.max(1, s.vr) : 0
+              if (toAp > 45) maxAutoCoastWish = Math.max(maxAutoCoastWish, 4)
+              else tighten(2, 'burn', `${p.username}: manevra hazırlığı`, p.username)
+            }
+          } else if (autoWish !== undefined && autoWish > 0) {
+            maxAutoCoastWish = Math.max(maxAutoCoastWish, autoWish)
           }
-        } else if (autoWish !== undefined && autoWish > 0) {
-          maxAutoCoastWish = Math.max(maxAutoCoastWish, autoWish)
         }
       }
     }
 
     if (p.wantsWarpIdx >= 0) {
-      manualDesires.push({ who: p.username, idx: p.wantsWarpIdx, active: !v.landed && v.throttle > 0 })
+      manualDesires.push({ who: p.username, idx: p.wantsWarpIdx, active: !v.landed && ap === 'off' && v.throttle > 0 })
     }
   }
 

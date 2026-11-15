@@ -361,6 +361,7 @@ h1 span { color: var(--color-orange); }
 .stage-list li { display: flex; justify-content: space-between; font: 11.5px 'DM Mono', monospace; background: #16253f88; border-radius: 6px; padding: 6px 8px; }
 .dv-guide { font-size: 11px; color: var(--color-muted); line-height: 1.6; }
 .dv-guide b { color: var(--color-text); }
+.cargo-presets { display: flex; flex-wrap: wrap; gap: 5px; margin: 0 0 8px; }
 .cargo-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 5px; }
 .cargo-list li { display: flex; justify-content: space-between; align-items: center; font-size: 12px; }
 .cargo-list small { display: block; color: var(--color-muted); font: 10px 'DM Mono', monospace; }
@@ -602,12 +603,17 @@ kbd { background: #1b2b47; border: 1px solid #8296b355; border-bottom-width: 2px
 .colony-locked { position: absolute; inset: 0; display: grid; place-items: center; background: #050a16c0; text-align: center; padding: 20px; font-weight: 700; }
 .colony-info { min-height: 44px; display: flex; gap: 10px; align-items: center; justify-content: space-between; font-size: 12.5px; line-height: 1.45; background: #0b1424; border: 1px solid #8296b333; border-radius: 9px; padding: 8px 12px; color: #cfd8e6; }
 .colony-info.warn { border-color: var(--color-orange); }
+.colony-status-bar { font: 600 11.5px 'DM Mono', monospace; padding: 7px 11px; border-radius: 8px; border: 1px solid #8296b333; background: #0d1a30; color: #cbd5e1; text-align: center; }
+.colony-status-bar.is-active { border-color: #4ade8066; background: #0d2b22; color: #86efac; }
+.colony-status-bar.is-unpowered { border-color: #fb718566; background: #2c0b16; color: #fecdd3; }
+.colony-status-bar.is-none { border-color: #38d9e855; background: #0c1f33; color: #bae6fd; }
 .colony-build { background: #2f3f4b; border: 2px solid #5d7384; border-radius: 12px; padding: 8px 10px 10px; }
 .colony-build h3 { margin: 0 0 8px; font: 500 11px 'DM Mono', monospace; letter-spacing: .16em; text-transform: uppercase; color: #d6f4ff; text-align: center; }
 .colony-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; }
 .colony-card { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 4px; border-radius: 9px; border: 2px solid transparent; background: #24323d; cursor: grab; text-align: center; color: var(--color-text); }
 .colony-card:hover:not(:disabled) { border-color: #38d9e8; }
 .colony-card.is-picked { border-color: #4ade80; background: #1d3a34; }
+.colony-card.is-stock { border-color: #4ade8077; }
 .colony-card:disabled { cursor: not-allowed; }
 .colony-card.is-locked { opacity: .55; } .colony-card.is-poor .price { color: var(--color-error); }
 .colony-card-art { position: relative; height: 54px; width: 100%; display: flex; align-items: flex-end; justify-content: center; }
@@ -716,7 +722,7 @@ kbd { background: #1b2b47; border: 1px solid #8296b355; border-bottom-width: 2px
 .mp-planet-pill { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 99px; border: 1px solid #8296b344; background: #0c172bd9; color: #e2e8f0; font: 600 11px 'DM Mono', monospace; cursor: pointer; }
 .mp-planet-pill:hover { border-color: #7feaff; }
 .mp-planet-pill.is-target { box-shadow: 0 0 0 1px #ffffff88 inset; }
-.mp-planet-pill.is-contested { animation: alarmBlink .8s steps(2) infinite; }
+.mp-planet-pill.is-contested { border-color: #fb7185cc; background: #2a101cd9; box-shadow: 0 0 10px #fb718544; }
 .mp-capture-banner { display: flex; flex-direction: column; align-items: center; gap: 4px; background: #081224e6; border: 1px solid #38d9e877; padding: 6px 14px; border-radius: 10px; font-size: 12px; }
 .mp-cap-bar { width: 180px; height: 6px; border-radius: 99px; background: #1e293b; overflow: hidden; }
 .mp-cap-bar em { display: block; height: 100%; transition: width .12s linear; }

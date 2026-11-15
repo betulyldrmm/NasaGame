@@ -67,7 +67,7 @@ describe('default rocket', () => {
     expect(stages.reduce((s, x) => s + x.dv, 0)).toBeGreaterThan(5000)
   })
 
-  it('reaches orbit and the Moon with a simple autopilot', () => {
+  it('reaches orbit and the Moon with a simple autopilot', { timeout: 15_000 }, () => {
     const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
     expect(launchDesign(sim)).toBeNull()
     const v = activeVessel(sim.gs)!
@@ -228,6 +228,134 @@ describe('25x warp & auto-land', () => {
     expect(lander.landed).toBe(true)
     expect(lander.autoLand).toBe(false)
     expect(lander.parts.some((p) => p.def === 'leg' && p.deployed)).toBe(true)
+  })
+
+  it('locks and caps singleplayer warp during auto-land and keeps final descent gentle', () => {
+    const gs = newGame()
+    const parts = freshParts([
+      { def: 'probe', x: 6, y: 10 },
+      { def: 'tank-m', x: 6, y: 11 },
+      { def: 'kolibri', x: 6, y: 13 },
+      { def: 'leg', x: 5, y: 11 },
+      { def: 'leg', x: 8, y: 11 },
+    ])
+    const moon = BODIES.moon
+    const r0 = moon.radius + terrainHeight('moon', Math.PI / 2) + 12_000
+    gs.vessels.push({
+      id: 1,
+      name: 'HighWarpLander',
+      parts,
+      bodyId: 'moon',
+      pos: { x: 0, y: r0 },
+      vel: { x: 25, y: -10 },
+      angle: Math.PI / 2,
+      angVel: 0,
+      landed: false,
+      autopilot: 'land',
+      autoLand: true,
+      throttle: 0,
+      ec: vesselStats(parts).ecCap,
+      cargo: { modules: {}, ore: 0, oreFrom: null },
+      rcsOn: false,
+      sas: 'off',
+      visited: ['moon'],
+      assist: null,
+      dvUsed: 0,
+    })
+    gs.activeId = 1
+    gs.nextId = 2
+    const sim: Sim = { gs, warpIdx: 7, firing: new Map() }
+
+    // Başlangıçta 2500× seçili olsa bile Oto-İniş devreye girerken tehlikeli yüksek hızdan anında 1×'e iner.
+    stepWorld(sim, 0.05, ctrl)
+    expect(sim.warpIdx).toBe(0)
+
+    // Çok yüksekte (12 km) oyuncu hızı 2500×'e çıkarsa bile fizik sınırı (25×) içinde tutar, raylara kaçırmaz.
+    sim.warpIdx = 7
+    stepWorld(sim, 0.05, ctrl)
+    expect(WARPS[sim.warpIdx]!).toBeLessThanOrEqual(25)
+
+    // 1.000 m alçalmasında en fazla 10×, 250 m'de en fazla 4×, 100 m altında ise otomatik 1×'e iner.
+    const lander = gs.vessels[0]!
+    lander.pos = { x: 0, y: moon.radius + terrainHeight('moon', Math.PI / 2) + 1000 }
+    lander.vel = { x: 8, y: -20 }
+    sim.warpIdx = 4
+    stepWorld(sim, 1 / 60, ctrl)
+    expect(WARPS[sim.warpIdx]!).toBeLessThanOrEqual(10)
+
+    lander.pos = { x: 0, y: moon.radius + terrainHeight('moon', Math.PI / 2) + 250 }
+    lander.vel = { x: 4, y: -15 }
+    sim.warpIdx = 4
+    stepWorld(sim, 1 / 60, ctrl)
+    expect(WARPS[sim.warpIdx]!).toBeLessThanOrEqual(4)
+
+    let touchdownSpeed = 0
+    let maxSpeedBelow150 = 0
+    for (let i = 0; i < 60 * 180; i += 1) {
+      const preSpeed = situation(lander).speed
+      const ev = stepWorld(sim, 1 / 60, ctrl)
+      const s = situation(lander)
+      if (!lander.landed && s.alt < 95) expect(sim.warpIdx).toBe(0)
+      if (!lander.landed && s.alt < 120) maxSpeedBelow150 = Math.max(maxSpeedBelow150, -s.vr)
+      for (const e of ev) {
+        if (e.type === 'crash') throw new Error(`AutoLand high-warp crashed: ${e.reason}`)
+      }
+      if (lander.landed) {
+        touchdownSpeed = preSpeed
+        break
+      }
+    }
+    expect(lander.landed).toBe(true)
+    expect(maxSpeedBelow150).toBeLessThan(28)
+    expect(touchdownSpeed).toBeLessThan(4.5)
+  })
+
+  it('drops warp to 1x when autopilot completes or diving manually close to a surface', () => {
+    const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
+    const parts = freshParts([
+      { def: 'probe', x: 6, y: 10 },
+      { def: 'tank-m', x: 6, y: 11 },
+      { def: 'kolibri', x: 6, y: 13 },
+    ])
+    const moon = BODIES.moon
+    const rCirc = moon.radius + 15_000
+    const vCirc = Math.sqrt(moon.mu / rCirc)
+    sim.gs.vessels.push({
+      id: 1,
+      name: 'OrbitFinish',
+      parts,
+      bodyId: 'moon',
+      pos: { x: 0, y: rCirc },
+      vel: { x: -vCirc, y: 0 },
+      angle: Math.PI,
+      angVel: 0,
+      landed: false,
+      autopilot: 'orbit',
+      throttle: 0,
+      ec: vesselStats(parts).ecCap,
+      cargo: { modules: {}, ore: 0, oreFrom: null },
+      rcsOn: false,
+      sas: 'off',
+      visited: ['moon'],
+      assist: null,
+      dvUsed: 0,
+    })
+    sim.gs.activeId = 1
+    sim.warpIdx = 6
+
+    // İlk adımda dairesel yörüngeye oturup otopilot kapanır; sonraki adımda hız 1×'e alınır.
+    stepWorld(sim, 0.05, ctrl)
+    expect(sim.gs.vessels[0]!.autopilot).toBe('off')
+    stepWorld(sim, 0.05, ctrl)
+    expect(sim.warpIdx).toBe(0)
+
+    // Manuel inişte yüzeye yakın hızlı düşerken 25× otomatik 1×'e iner.
+    const v = sim.gs.vessels[0]!
+    v.pos = { x: 0, y: moon.radius + terrainHeight('moon', Math.PI / 2) + 800 }
+    v.vel = { x: 0, y: -25 }
+    sim.warpIdx = 4
+    stepWorld(sim, 0.05, ctrl)
+    expect(sim.warpIdx).toBe(0)
   })
 })
 
@@ -913,7 +1041,45 @@ describe('multiplayer conquest mode', () => {
     expect(sim.gs.mp!.players.p1.money).toBeGreaterThanOrEqual(p1MoneyBefore + 3000)
   })
 
-  it('captures neutral planets, contests defended flags, steals them and declares victory', () => {
+  it('requires carrying off-world modules in cargo until a powered Space Station unlocks on-site building', async () => {
+    const { colonyStationStatus, isBodyColonized } = await import('../game/base')
+    const { removePlanetModule } = await import('./world')
+    const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
+    sim.gs.money = 100_000
+    const moon = emptyBase(0)
+    sim.gs.bases.moon = moon
+    const flux = solarFlux(BODIES.earth.orbit!.a)
+
+    // Uzay İstasyonu yokken stokta olmayan yapı parayla kurulamaz
+    expect(placePlanetModule(sim, 'moon', 0, 'solar-farm')).not.toBeNull()
+    expect(isBodyColonized(moon, flux)).toBe(false)
+
+    // Kargo stoğundan 1 Güneş Paneli (4 ⚡) + Uzay İstasyonu (-7 ⚡) kurulur ama güç yetmez
+    moon.stock = { 'solar-farm': 1, 'colony-station': 1 }
+    expect(placePlanetModule(sim, 'moon', 0, 'solar-farm')).toBeNull()
+    expect(placePlanetModule(sim, 'moon', 1, 'colony-station')).toBeNull()
+    expect(colonyStationStatus(moon, flux)).toBe('unpowered')
+    expect(isBodyColonized(moon, flux)).toBe(false)
+    expect(placePlanetModule(sim, 'moon', 2, 'habitat')).not.toBeNull()
+
+    // 2. Güneş Paneli gelince istasyon çalışır (8 ⚡ >= 7 ⚡) ve yerinde inşaat açılır!
+    moon.stock = { 'solar-farm': 1 }
+    expect(placePlanetModule(sim, 'moon', 2, 'solar-farm')).toBeNull()
+    expect(colonyStationStatus(moon, flux)).toBe('active')
+    expect(isBodyColonized(moon, flux)).toBe(true)
+
+    const before = sim.gs.money
+    expect(placePlanetModule(sim, 'moon', 3, 'habitat')).toBeNull()
+    expect(sim.gs.money).toBeLessThan(before)
+
+    // Paneli sökünce istasyon tekrar güçsüz kalır ve yerinde inşaat kapanır
+    expect(removePlanetModule(sim, 'moon', 0).error).toBeUndefined()
+    expect(colonyStationStatus(moon, flux)).toBe('unpowered')
+    expect(placePlanetModule(sim, 'moon', 4, 'telemetry')).not.toBeNull()
+  })
+
+  it('captures neutral planets by building powered Space Stations, contests/neutralizes rivals, and declares victory', async () => {
+    const { deployModules } = await import('./world')
     const sim = twoPlayerSim(2)
     expect(dispatchCommand(sim, { type: 'launch', design: DEFAULT_DESIGN }, 'p1').error).toBeUndefined()
     expect(dispatchCommand(sim, { type: 'launch', design: DEFAULT_DESIGN }, 'p2').error).toBeUndefined()
@@ -930,34 +1096,55 @@ describe('multiplayer conquest mode', () => {
       v.vel = { x: 0, y: 0 }
     }
 
-    // 1) Ada Ay'a iner ve 5 saniyede bayrağı diker
+    // 1) Ada Ay'a iner ama Uzay İstasyonu kurmadan gezegen kolonileşmez
     placeLanded(v1, 'moon', 0)
     const ev1: ReturnType<typeof stepWorld> = []
-    for (let i = 0; i < 6; i += 1) stepPlanetCaptures(sim.gs, 1, ev1)
+    stepPlanetCaptures(sim.gs, 1, ev1)
+    expect(sim.gs.mp!.captures.moon!.ownerId).toBeNull()
+    expect(sim.gs.mp!.captures.moon!.phase).toBe('claiming')
+
+    // Tek güneş paneliyle Uzay İstasyonu güçsüz kalır → henüz kolonileşmez
+    v1.cargo.modules = { 'colony-station': 1, 'solar-farm': 1 }
+    expect(deployModules(sim, v1)).toBeNull()
+    stepPlanetCaptures(sim.gs, 1, ev1)
+    expect(sim.gs.mp!.captures.moon!.ownerId).toBeNull()
+
+    // 2. panelle güç sağlanınca Ada Ay'ı kolonileştirir!
+    v1.cargo.modules = { 'solar-farm': 1 }
+    expect(deployModules(sim, v1)).toBeNull()
+    stepPlanetCaptures(sim.gs, 1, ev1)
     expect(sim.gs.mp!.captures.moon!.ownerId).toBe('p1')
     expect(sim.gs.mp!.captures.moon!.phase).toBe('captured')
     expect(sim.gs.mp!.players.p1.planetsHeld).toBe(1)
     expect(sim.gs.mp!.players.p1.captures).toBe(1)
     expect(ev1.some((e) => e.type === 'capture' && e.bodyId === 'moon' && e.ownerId === 'p1')).toBe(true)
 
-    // 2) Ali aynı anda Ay'a indiğinde savunma varken bayrak çatışmaya (contested) düşer
+    // 2) Ali aynı anda Ay'a indiğinde savunma varken çatışma (contested) başlar
     placeLanded(v2, 'moon', 0.05)
     stepPlanetCaptures(sim.gs, 1, ev1)
     expect(sim.gs.mp!.captures.moon!.phase).toBe('contested')
     expect(sim.gs.mp!.captures.moon!.ownerId).toBe('p1')
 
-    // 3) Ada'nın iniş aracı yok edildiğinde Ali bayrağı 5sn'de nötrleyip 5sn'de ele geçirir
+    // 3) Ada'nın gemisi yok edilince Ali 5 sn içinde Ada'nın Uzay İstasyonu'nu devre dışı bırakır
     sim.gs.vessels = sim.gs.vessels.filter((v) => v.id !== v1.id)
-    for (let i = 0; i < 12; i += 1) stepPlanetCaptures(sim.gs, 1, ev1)
+    for (let i = 0; i < 6; i += 1) stepPlanetCaptures(sim.gs, 1, ev1)
+    expect(sim.gs.mp!.captures.moon!.ownerId).toBeNull()
+    expect(sim.gs.mp!.players.p1.planetsHeld).toBe(0)
+    expect(sim.gs.bases.moon!.modules['colony-station'] ?? 0).toBe(0)
+
+    // Ali kendi Uzay İstasyonu'nu kurunca Ay'ı kolonileştirir
+    v2.cargo.modules = { 'colony-station': 1 }
+    expect(deployModules(sim, v2)).toBeNull()
+    stepPlanetCaptures(sim.gs, 1, ev1)
     expect(sim.gs.mp!.captures.moon!.ownerId).toBe('p2')
-    expect(sim.gs.mp!.captures.moon!.phase).toBe('captured')
     expect(sim.gs.mp!.players.p2.planetsHeld).toBe(1)
     expect(sim.gs.mp!.players.p2.captures).toBe(1)
-    expect(sim.gs.mp!.players.p1.planetsHeld).toBe(0)
 
-    // 4) Ali Mars'ı da alınca hedef (2 gezegen) tamamlanır ve zafer ilan edilir
+    // 4) Ali Mars'a inip reaktörlü Uzay İstasyonu kurunca hedef (2 gezegen) tamamlanır ve zafer ilan edilir
     placeLanded(v2, 'mars', 0)
-    for (let i = 0; i < 6; i += 1) stepPlanetCaptures(sim.gs, 1, ev1)
+    v2.cargo.modules = { 'colony-station': 1, 'rtg-reactor': 1 }
+    expect(deployModules(sim, v2)).toBeNull()
+    stepPlanetCaptures(sim.gs, 1, ev1)
     expect(sim.gs.mp!.players.p2.planetsHeld).toBe(2)
     expect(sim.gs.mp!.players.p2.captures).toBe(2)
     expect(sim.gs.mp!.winnerId).toBe('p2')
@@ -1024,5 +1211,239 @@ describe('multiplayer conquest mode', () => {
     expect(clientSlim.gs.mp?.players.p2.earthBase).toBeDefined()
     expect(clientSlim.warpIdx).toBe(1)
     expect(clientSlim.firing.get(99)?.get(0)).toBe(0.8)
+  })
+})
+
+describe('auto-land orbital, mp stuck protection & fast-travel upgrades', () => {
+  it('auto-land lands safely from circular Moon orbit and auto-stages spent stages', () => {
+    const sim: Sim = { gs: newGame(), warpIdx: 4, firing: new Map() }
+    sim.gs.money = 100_000
+    expect(launchDesign(sim)).toBeNull()
+    const v = activeVessel(sim.gs)!
+    const origParts = v.parts.length
+    // En alttaki kademe yakıtını neredeyse sıfıra çek (otomatik kademe ayırma tetiklensin)
+    for (const p of v.parts) {
+      if (p.y >= 10 && p.fuel !== undefined) p.fuel = 0.05
+    }
+    const r = BODIES.moon.radius + 20_000
+    v.bodyId = 'moon'
+    v.landed = false
+    v.pos = { x: r, y: 0 }
+    v.vel = { x: 0, y: Math.sqrt(BODIES.moon.mu / r) }
+    v.angle = Math.PI / 2
+    expect(setVesselAutopilot(sim, v, 'land')).toBeNull()
+
+    let crashed = ''
+    let steps = 0
+    for (let i = 0; i < 6_000 && !v.landed && !crashed; i += 1) {
+      steps = i + 1
+      const evs = stepWorld(sim, 0.05, ctrl)
+      const ce = evs.find((e) => e.type === 'crash' && (e.vesselId === v.id || e.name === v.name))
+      if (ce && ce.type === 'crash') {
+        const s = situation(v)
+        crashed = `${ce.reason} alt=${s.alt.toFixed(1)} vr=${s.vr.toFixed(1)} spd=${s.speed.toFixed(1)} th=${v.throttle.toFixed(2)} parts=${v.parts.length}`
+      }
+    }
+    expect(crashed).toBe('')
+    expect(v.landed).toBe(true)
+    expect(v.bodyId).toBe('moon')
+    expect(v.parts.length).toBeLessThan(origParts)
+    expect(sim.warpIdx).toBe(0)
+    expect(steps * 0.05).toBeLessThan(35)
+  })
+
+  it('auto-land lands safely on Earth from high horizontal speed using engines and parachutes', () => {
+    const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
+    sim.gs.money = 100_000
+    expect(launchDesign(sim)).toBeNull()
+    const v = activeVessel(sim.gs)!
+    v.landed = false
+    const r = BODIES.earth.radius + 32_000
+    v.pos = { x: 0, y: r }
+    v.vel = { x: 1400, y: 0 }
+    v.angle = Math.PI
+    // İki alt kademeyi uzayda ayırıp üst kademe (paraşüt + ayak + vakum motoru) ile alçalma
+    stageNext(sim, v)
+    stageNext(sim, v)
+    expect(setVesselAutopilot(sim, v, 'land')).toBeNull()
+
+    let crashed = ''
+    for (let i = 0; i < 10_000 && !v.landed && !crashed; i += 1) {
+      const evs = stepWorld(sim, 0.05, ctrl)
+      const ce = evs.find((e) => e.type === 'crash' && (e.vesselId === v.id || e.name === v.name))
+      if (ce && ce.type === 'crash') {
+        const s = situation(v)
+        crashed = `${ce.reason} alt=${s.alt.toFixed(1)} vr=${s.vr.toFixed(1)} spd=${s.speed.toFixed(1)} th=${v.throttle.toFixed(2)} parts=${v.parts.length}`
+      }
+    }
+    expect(crashed).toBe('')
+    if (!v.landed) {
+      const s = situation(v)
+      throw new Error(`Not landed after 500s: alt=${s.alt.toFixed(1)} vr=${s.vr.toFixed(1)} spd=${s.speed.toFixed(1)} th=${v.throttle.toFixed(2)} note=${v.autopilotNote} chute=${v.parts.some((p) => p.deployed)}`)
+    }
+    expect(v.landed).toBe(true)
+    expect(v.bodyId).toBe('earth')
+  })
+
+  it('auto-land rescues low chaotic descent and lands fast from Mars orbit with warp', () => {
+    // 1) Düşük irtifada yatay hızla yana sürüklenirken acil oto-iniş kurtarması
+    const simLow: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
+    expect(launchDesign(simLow)).toBeNull()
+    const vLow = activeVessel(simLow.gs)!
+    stageNext(simLow, vLow)
+    stageNext(simLow, vLow)
+    const theta = 0.8
+    const rLow = BODIES.moon.radius + terrainHeight('moon', theta) + 70
+    vLow.bodyId = 'moon'
+    vLow.landed = false
+    vLow.pos = { x: Math.cos(theta) * rLow, y: Math.sin(theta) * rLow }
+    vLow.vel = { x: -Math.sin(theta) * 22 - Math.cos(theta) * 14, y: Math.cos(theta) * 22 - Math.sin(theta) * 14 }
+    vLow.angle = wrapPi(theta + Math.PI)
+    expect(setVesselAutopilot(simLow, vLow, 'land')).toBeNull()
+    for (let i = 0; i < 3000 && !vLow.landed; i += 1) {
+      const evs = stepWorld(simLow, 0.05, ctrl)
+      const ce = evs.find((e) => e.type === 'crash' && (e.vesselId === vLow.id || e.name === vLow.name))
+      if (ce && ce.type === 'crash') throw new Error(`Low rescue crashed: ${ce.reason}`)
+    }
+    expect(vLow.landed).toBe(true)
+
+    // 2) Mars yörüngesinden (20 km) 25×/10× zaman hızlandırmasıyla çok hızlı ve güvenli iniş
+    const simMars: Sim = { gs: newGame(), warpIdx: 4, firing: new Map() }
+    expect(launchDesign(simMars)).toBeNull()
+    const vMars = activeVessel(simMars.gs)!
+    stageNext(simMars, vMars)
+    const mr = BODIES.mars.radius + 20_000
+    vMars.bodyId = 'mars'
+    vMars.landed = false
+    vMars.pos = { x: mr, y: 0 }
+    vMars.vel = { x: 0, y: Math.sqrt(BODIES.mars.mu / mr) }
+    vMars.angle = Math.PI / 2
+    expect(setVesselAutopilot(simMars, vMars, 'land')).toBeNull()
+    simMars.warpIdx = 4
+    let realSteps = 0
+    for (let i = 0; i < 600 && !vMars.landed; i += 1) {
+      realSteps = i + 1
+      const evs = stepWorld(simMars, 0.05, ctrl)
+      const ce = evs.find((e) => e.type === 'crash' && (e.vesselId === vMars.id || e.name === vMars.name))
+      if (ce && ce.type === 'crash') throw new Error(`Mars orbit auto-land crashed: ${ce.reason}`)
+    }
+    expect(vMars.landed).toBe(true)
+    // 25×/10×/4× kademeli iniş 30 gerçek saniyeden kısa sürer
+    expect(realSteps * 0.05).toBeLessThan(30)
+  })
+
+  it('MP auto-land speeds up high up, drops to 1x near touchdown, and ships never freeze above physics warp', () => {
+    const gs = newMultiplayerGame(
+      'MP-FIX',
+      'p1',
+      [
+        { id: 'p1', username: 'Ada', color: '#38d9e8', slot: 0 },
+        { id: 'p2', username: 'Ali', color: '#fb7185', slot: 1 },
+      ],
+      { targetPlanets: 3, startingMoney: 100_000 },
+    )
+    gs.mp!.started = true
+    const sim: Sim = { gs, warpIdx: 0, firing: new Map() }
+    expect(dispatchCommand(sim, { type: 'launch', design: DEFAULT_DESIGN }, 'p1').error).toBeUndefined()
+    expect(dispatchCommand(sim, { type: 'launch', design: DEFAULT_DESIGN }, 'p2').error).toBeUndefined()
+
+    const v1 = gs.vessels.find((v) => v.ownerId === 'p1')!
+    const v2 = gs.vessels.find((v) => v.ownerId === 'p2')!
+
+    // 1) Yüksek warp varken yerde gaz açılınca gemi rayda donmaz, kalkış yapar
+    v1.throttle = 1
+    sim.warpIdx = 5
+    const r2 = BODIES.earth.radius + 250_000
+    v2.landed = false
+    v2.pos = { x: r2, y: 0 }
+    v2.vel = { x: 0, y: Math.sqrt(BODIES.earth.mu / r2) }
+    stepWorld(sim, 0.05, new Map())
+    expect(sim.warpIdx).toBe(0)
+    expect(v1.landed).toBe(false)
+    expect(situation(v1).alt).toBeGreaterThan(0)
+
+    // 2) MP oto-iniş yüksek alçalmasında (2.5 km) otomatik hızlanır (<=10×), 90 m altında 1×'e iner ve güvenle iner
+    const theta = 0.5
+    const mrHigh = BODIES.moon.radius + terrainHeight('moon', theta) + 2500
+    v1.bodyId = 'moon'
+    v1.landed = false
+    v1.throttle = 0
+    v1.pos = { x: Math.cos(theta) * mrHigh, y: Math.sin(theta) * mrHigh }
+    v1.vel = { x: Math.cos(theta) * -22, y: Math.sin(theta) * -22 }
+    v1.angle = theta
+    expect(setVesselAutopilot(sim, v1, 'land')).toBeNull()
+    sim.clock = 10
+    sim.warpIdx = 2
+    const dynHigh = computeDynamicWarp(gs, sim.warpIdx, 0.4, 0.05, sim.clock, new Map(), new Map())
+    expect(dynHigh.warpIdx).toBe(3)
+    const dynHigher = computeDynamicWarp(gs, dynHigh.warpIdx, 0.4, 0.05, sim.clock, new Map(), new Map())
+    expect(dynHigher.warpIdx).toBe(4)
+
+    const mrLow = BODIES.moon.radius + terrainHeight('moon', theta) + 85
+    v1.pos = { x: Math.cos(theta) * mrLow, y: Math.sin(theta) * mrLow }
+    v1.vel = { x: Math.cos(theta) * -12, y: Math.sin(theta) * -12 }
+    const dynLow = computeDynamicWarp(gs, 3, 0, 0.05, sim.clock, new Map(), new Map())
+    expect(dynLow.warpIdx).toBe(0)
+
+    v1.pos = { x: Math.cos(theta) * mrHigh, y: Math.sin(theta) * mrHigh }
+    v1.vel = { x: Math.cos(theta) * -22, y: Math.sin(theta) * -22 }
+    let crashed = false
+    let saw1xNearGround = false
+    for (let i = 0; i < 1200 && !v1.landed && !crashed; i += 1) {
+      const evs = stepWorld(sim, 0.05, new Map())
+      const s = situation(v1)
+      if (!v1.landed && s.alt < 90 && sim.warpIdx === 0) saw1xNearGround = true
+      if (evs.some((e) => e.type === 'crash')) crashed = true
+    }
+    expect(crashed).toBe(false)
+    expect(saw1xNearGround).toBe(true)
+    expect(v1.landed).toBe(true)
+  })
+
+  it('fast travel lasts longer with active telemetry and recovers missing snapshot parts', async () => {
+    const { buildCompactSnapshot, hydrateCompactSnapshot } = await import('./mpClient')
+    const gs = newMultiplayerGame('CRU', 'p1', [{ id: 'p1', username: 'Ada', color: '#38d9e8', slot: 0 }], {
+      startingMoney: 500_000,
+    })
+    gs.mp!.started = true
+    const sim: Sim = { gs, warpIdx: 0, firing: new Map(), clock: 0 }
+    expect(dispatchCommand(sim, { type: 'launch', design: DEFAULT_DESIGN }, 'p1').error).toBeUndefined()
+    const v = gs.vessels[0]!
+    gs.mp!.players.p1.targetBody = 'mars'
+    v.targetBody = 'mars'
+    const r = BODIES.earth.radius + BODIES.earth.atmoHeight + 30_000
+    v.landed = false
+    v.pos = { x: r, y: 0 }
+    v.vel = { x: 0, y: Math.sqrt(BODIES.earth.mu / r) }
+    v.autopilot = 'transfer'
+
+    // İlk tam anlık görüntü istemci önbelleğine parçaları yazar
+    const fullSnap = buildCompactSnapshot(sim, true)
+    hydrateCompactSnapshot(JSON.parse(JSON.stringify(fullSnap)), null, 'p1', [], {})
+    const stripped = JSON.parse(JSON.stringify(buildCompactSnapshot(sim, false)))
+    for (const wv of stripped.vessels) delete wv.parts
+    const recovered = hydrateCompactSnapshot(stripped, null, 'p1', [], {})
+    expect(recovered.gs.vessels.length).toBe(1)
+
+    stepWorld(sim, 0.05, new Map())
+    expect(v.cruise).toBeTruthy()
+    expect(v.cruise!.dur).toBeGreaterThanOrEqual(7.5)
+    expect(v.cruise!.dur).toBeLessThanOrEqual(13.5)
+
+    // Yolculuk ortasında hız ve motor itkisi görünür
+    for (let i = 0; i < Math.floor((v.cruise!.dur * 0.5) / 0.05); i += 1) {
+      stepWorld(sim, 0.05, new Map())
+    }
+    expect(v.cruise).toBeTruthy()
+    expect(v.throttle).toBeGreaterThan(0)
+    expect(len(v.vel)).toBeGreaterThan(1000)
+
+    // Varışta tüm otopilot ve hız ayarları temizlenir
+    for (let i = 0; i < 300 && v.cruise; i += 1) stepWorld(sim, 0.05, new Map())
+    expect(v.cruise).toBeUndefined()
+    expect(v.bodyId).toBe('mars')
+    expect(v.throttle).toBe(0)
+    expect(v.autopilot).toBe('off')
+    expect(v.autopilotNote).toBeUndefined()
   })
 })

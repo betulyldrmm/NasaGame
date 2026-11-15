@@ -190,6 +190,8 @@ export interface PlanetCapture {
   progress: number
   capturerId: string | null
   phase: 'idle' | 'neutralizing' | 'claiming' | 'contested' | 'captured'
+  /** Aynı istasyonu sök-tak yaparak tekrar tekrar fetih ödülü almayı engeller. */
+  lastRewardedId?: string
 }
 
 export interface MultiplayerPlayer {
@@ -304,6 +306,6 @@ export type GameEvent =
   | { type: 'soi'; from: BodyId; to: BodyId; ownerId?: string }
   | { type: 'explosion'; size: number }
   | { type: 'achievement'; id: string; title: string; text: string }
-  | { type: 'capture'; bodyId: BodyId; ownerId: string; previousOwnerId: string | null; text: string }
+  | { type: 'capture'; bodyId: BodyId; ownerId: string | null; previousOwnerId: string | null; text: string }
   | { type: 'kill'; attackerId: string | null; victimId: string | null; victimName: string; speed: number }
   | { type: 'victory'; winnerId: string; winnerName: string }

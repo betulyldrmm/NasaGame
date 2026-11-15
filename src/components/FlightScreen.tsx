@@ -58,10 +58,9 @@ import { createView, type FlightFrame, type MapFrame, pickPart, pickVesselFlight
 import PlanetGridPanel from './ColonyPanel'
 
 const DESTINATIONS: BodyId[] = ['moon', 'earth', 'mercury', 'venus', 'mars', 'ceres', 'ganymede', 'titan']
-const QUICK_WARPS = [
-  { label: '1×', idx: 0 },
-  { label: '25×', idx: 4 },
-]
+const QUICK_WARPS = [1, 4, 10, 25]
+  .map((w) => ({ label: `${w}×`, idx: WARPS.indexOf(w) }))
+  .filter((w) => w.idx >= 0)
 
 const ACH_NAMES: Record<string, string> = { hamilton: 'Margaret Hamilton', 'dont-panic': "Don't Panic", 'water-tower': 'Su Kulesi Fırlatıldı', istikbal: 'İstikbal Göklerdedir', cay: 'Çaylar Şirketten' }
 
@@ -393,7 +392,65 @@ export default function FlightScreen({ onBuilder }: Props) {
   const mapFrame = useRef<MapFrame>({ vessels: [], bodies: [] })
   const patchesRef = useRef<Patch[]>([])
   const [hud, setHud] = useState<Hud>(snapshot)
+  const [noVesselReady, setNoVesselReady] = useState(false)
+  const hadVesselRef = useRef(hud.has)
+  if (hud.has) hadVesselRef.current = true
+  useEffect(() => {
+    if (hud.has || (hud.isMp && isMpPendingLaunch())) {
+      setNoVesselReady(false)
+      return
+    }
+    const waitMs = hud.isMp && !hadVesselRef.current ? 1500 : 850
+    const id = window.setTimeout(() => setNoVesselReady(true), waitMs)
+    return () => window.clearTimeout(id)
+  }, [hud.has, hud.isMp])
   const [isMap, setIsMap] = useState(false)
+  const [showApproachWarn, setShowApproachWarn] = useState(false)
+  const approachHideAt = useRef(0)
+  const isCruising = hud.autopilotNote.startsWith('Hızlı yolculuk')
+  const rawApproach =
+    !hud.landed &&
+    !isCruising &&
+    ((Boolean(hud.approachWarn) && !hud.hasAutoLand) ||
+      (hud.landable && hud.vr < -14 && hud.alt < 25000 && !hud.hasAutoLand && hud.autopilot !== 'orbit'))
+  useEffect(() => {
+    if (hud.landed || hud.hasAutoLand || hud.autopilot === 'orbit' || isCruising) {
+      setShowApproachWarn(false)
+      return
+    }
+    if (rawApproach) {
+      const id = window.setTimeout(() => {
+        approachHideAt.current = performance.now() + 1400
+        setShowApproachWarn(true)
+      }, 180)
+      return () => window.clearTimeout(id)
+    }
+    const rem = Math.max(0, approachHideAt.current - performance.now())
+    const id = window.setTimeout(() => setShowApproachWarn(false), Math.max(250, rem))
+    return () => window.clearTimeout(id)
+  }, [rawApproach, hud.landed, hud.hasAutoLand, hud.autopilot, isCruising])
+
+  const [showLandAlert, setShowLandAlert] = useState(false)
+  const landHideAt = useRef(0)
+  const rawLandAlert = !isMap && !hud.landed && hud.landable && hud.alt < 1200 && hud.vr < -4.5 && !isCruising
+  useEffect(() => {
+    if (isMap || hud.landed || !hud.landable || hud.alt > 1350 || isCruising) {
+      setShowLandAlert(false)
+      return
+    }
+    if (rawLandAlert) {
+      const id = window.setTimeout(() => {
+        landHideAt.current = performance.now() + 1200
+        setShowLandAlert(true)
+      }, 150)
+      return () => window.clearTimeout(id)
+    }
+    if (hud.vr > -2.5) {
+      const rem = Math.max(0, landHideAt.current - performance.now())
+      const id = window.setTimeout(() => setShowLandAlert(false), Math.max(250, rem))
+      return () => window.clearTimeout(id)
+    }
+  }, [rawLandAlert, isMap, hud.landed, hud.landable, hud.alt, hud.vr, isCruising])
   const [toasts, setToasts] = useState<{ id: number; text: string; kind: string }[]>([])
   const [lost, setLost] = useState<string | null>(null)
   const [wreck, setWreck] = useState(false)
@@ -544,6 +601,9 @@ export default function FlightScreen({ onBuilder }: Props) {
         return
       }
       if (next === 'off') v.throttle = 0
+      if (next === 'land') {
+        sim.warpLockPrev = undefined
+      }
       const labels: Record<AutopilotMode, string> = {
         off: 'Otopilot kapatıldı.',
         orbit: '🛰️ Yörüngeye Yerleş otopilotu başlatıldı.',
@@ -988,10 +1048,12 @@ export default function FlightScreen({ onBuilder }: Props) {
                   <span>{BODIES[bid].name}</span>
                   {cap?.phase === 'contested' ? (
                     <small style={{ color: '#fb7185' }}>⚔</small>
-                  ) : cap?.phase === 'claiming' || cap?.phase === 'neutralizing' ? (
+                  ) : cap?.phase === 'neutralizing' ? (
                     <small style={{ color: col }}>{Math.round(cap.progress * 100)}%</small>
+                  ) : cap?.phase === 'claiming' ? (
+                    <small style={{ color: col }}>📍</small>
                   ) : owner ? (
-                    <small style={{ color: owner.color }}>🚩</small>
+                    <small style={{ color: owner.color }}>🛰️</small>
                   ) : null}
                 </button>
               )
@@ -1001,11 +1063,14 @@ export default function FlightScreen({ onBuilder }: Props) {
             <div className="mp-capture-banner">
               {hud.mpCaptures[hud.body]!.phase === 'contested' ? (
                 <span>⚔ <b>{BODIES[hud.body].name}</b> için çatışma — rakip gemileri yok et!</span>
+              ) : hud.mpCaptures[hud.body]!.phase === 'claiming' ? (
+                <span>
+                  📍 <b>{BODIES[hud.body].name}</b> yüzey kontrolü — kolonileştirmek için kargodan <b>Uzay İstasyonu + 7 ⚡</b> kur!
+                </span>
               ) : (
                 <>
                   <span>
-                    🚩 <b>{BODIES[hud.body].name}</b>{' '}
-                    {hud.mpCaptures[hud.body]!.phase === 'claiming' ? 'ele geçiriliyor' : 'bayrağı indiriliyor'}…{' '}
+                    💥 <b>{BODIES[hud.body].name}</b> Uzay İstasyonu devre dışı bırakılıyor…{' '}
                     {Math.round(hud.mpCaptures[hud.body]!.progress * 100)}%
                   </span>
                   <div className="mp-cap-bar">
@@ -1198,11 +1263,11 @@ export default function FlightScreen({ onBuilder }: Props) {
                 </>
               )}
             </div>
-            {hud.autopilot !== 'off' && hud.autopilotNote && (
+            {(hud.autopilot !== 'off' || hud.autopilotNote.startsWith('Hızlı yolculuk')) && hud.autopilotNote && (
               <div className="autopilot-note">{hud.autopilotNote}</div>
             )}
             {isMap && hud.plan.map((p) => <div key={p} className="plan">{p}</div>)}
-            {!hud.landed && ((hud.approachWarn && !hud.hasAutoLand) || (hud.landable && hud.vr < -12 && hud.alt < 25000 && !hud.hasAutoLand && hud.autopilot !== 'orbit')) && (
+            {showApproachWarn && (
               <div className="approach-warn">
                 <span>
                   ⚠ <b>{BODIES[hud.approachWarn ?? hud.body].name} yaklaşma uyarısı</b> ({km(hud.alt)} · {hud.speed.toFixed(0)} m/s) — Otomatik iniş henüz kapalı!
@@ -1211,6 +1276,7 @@ export default function FlightScreen({ onBuilder }: Props) {
                   type="button"
                   className="mini-warp-btn"
                   onClick={() => {
+                    setShowApproachWarn(false)
                     if (hud.isMp && hud.vesselId) {
                       hudCmd({ type: 'setAutopilot', vesselId: hud.vesselId, mode: 'off' })
                       hudCmd({ type: 'setSas', vesselId: hud.vesselId, sas: 'retrograde' })
@@ -1226,7 +1292,7 @@ export default function FlightScreen({ onBuilder }: Props) {
                 </button>
               </div>
             )}
-            {!isMap && !hud.landed && hud.landable && hud.alt < 1200 && hud.vr < -4 && (
+            {showLandAlert && (
               <div className="land-alert">
                 {hud.hasLegs && !hud.legsOpen
                   ? 'İniş yaklaşıyor: ayakları aç (G)!'
@@ -1532,7 +1598,7 @@ export default function FlightScreen({ onBuilder }: Props) {
         <div className="toast">🚀 Fırlatma hazırlanıyor…</div>
       )}
 
-      {!confirmDel && !wreck && !(hud.isMp && hud.mpWinnerId) && (lost || (!hud.has && !(hud.isMp && isMpPendingLaunch()))) && (
+      {!confirmDel && !wreck && !(hud.isMp && hud.mpWinnerId) && (lost || (noVesselReady && !hud.has && !(hud.isMp && isMpPendingLaunch()))) && (
         <div className="dialog-backdrop">
           <section className="dialog">
             <h2>{lost ? 'Araç kaybedildi' : 'Aktif araç yok'}</h2>

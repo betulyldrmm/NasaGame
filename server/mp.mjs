@@ -103,7 +103,7 @@ export function listPublicRooms() {
 
 // Yavaş bağlantıda anlık görüntüler kuyrukta birikip saniyelerce gecikmesin: tampon dolunca
 // yalnızca EN SON görüntü saklanır ve soket boşalınca gönderilir (eski kareler atılır).
-const SNAPSHOT_BACKPRESSURE_BYTES = 16 * 1024
+const SNAPSHOT_BACKPRESSURE_BYTES = 48 * 1024
 
 function broadcastRoom(room, obj, exceptClient = null, dropIfBacklogged = false) {
   let frame = null
@@ -270,7 +270,9 @@ function handleMessage(client, msg) {
     case 'hostSnapshot': {
       const room = client.roomCode ? rooms.get(client.roomCode) : null
       if (!room || room.host !== client) return
-      broadcastRoom(room, { type: 'snapshot', state: msg.state, events: msg.events }, client, true)
+      const hasParts = Boolean(msg.state?.vessels?.some?.((v) => Array.isArray(v?.parts) && v.parts.length > 0))
+      const important = (Array.isArray(msg.events) && msg.events.length > 0) || hasParts
+      broadcastRoom(room, { type: 'snapshot', state: msg.state, events: msg.events }, client, !important)
       return
     }
     case 'chat': {
@@ -328,6 +330,18 @@ export function attachMultiplayerWs(server) {
         `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
     )
     socket.setNoDelay?.(true)
+    socket.setKeepAlive?.(true, 10000)
+
+    const client = {
+      socket,
+      closed: false,
+      roomCode: null,
+      playerId: '',
+      username: '',
+      slot: 0,
+      color: PLAYER_COLORS[0],
+      pendingSnap: null,
+    }
     socket.on('drain', () => {
       const f = client.pendingSnap
       if (!f || client.closed || socket.destroyed || !socket.writable) return
@@ -338,16 +352,6 @@ export function attachMultiplayerWs(server) {
         /* yoksay */
       }
     })
-
-    const client = {
-      socket,
-      closed: false,
-      roomCode: null,
-      playerId: '',
-      username: '',
-      slot: 0,
-      color: PLAYER_COLORS[0],
-    }
     clients.add(client)
 
     let buf = head?.length ? Buffer.from(head) : Buffer.alloc(0)

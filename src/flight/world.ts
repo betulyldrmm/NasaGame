@@ -2,7 +2,7 @@
  * Açık dünya simülasyonu: tüm araçlar, zaman hızlandırma, etki alanı (SOI) geçişleri,
  * otopilotlar (yörünge & hedef transferi), gezegen gridi ve komut dağıtıcısı. React'ten bağımsızdır.
  */
-import { baseReport, colonyTier, emptyBase, ensureSites, ISS_SUPPLY_REWARD, MODULE_BY_ID, STARTER_EARTH_SITES, syncModules, tickBase, TIER_HINT, EARTH_MODULES } from '../game/base'
+import { baseReport, COLONY_STATION_ID, colonyStationStatus, colonyTier, emptyBase, ensureSites, ISS_SUPPLY_REWARD, MODULE_BY_ID, STARTER_EARTH_SITES, syncModules, tickBase, TIER_HINT, EARTH_MODULES } from '../game/base'
 import { DEFAULT_DESIGN, INITIAL_MONEY, ISS_ALTITUDE_M, ISS_DESIGN, partDef } from '../game/data'
 import { MISSION_BY_ID, MISSIONS } from '../game/missions'
 import { baseIncomeMultiplier, hasAutoLandTech, INITIAL_TECH, isModuleUnlocked, isPartUnlocked, orePriceMultiplier, requiredTechForModule, requiredTechForPart } from '../game/tech'
@@ -32,6 +32,7 @@ import {
   getActiveVesselForPlayer,
   getPlayerMoney,
   isAnyActivePlayerVessel,
+  landingWarpCap,
   PHYSICS_WARP_MAX_IDX,
   playerPadAngle,
   resolveVesselCollisions,
@@ -150,16 +151,17 @@ function signedWaitSec(targetPhase: number, currentPhase: number, phaseRate: num
 
 /** Tek oyunculu otopilot: raylarda en fazla bu oyun zamanına kadar güvenle süzülünür (bir sonraki yanış). */
 const apHold = new WeakMap<Vessel, number>()
+const apLastMode = new WeakMap<Vessel, AutopilotMode>()
 function isAutopilotOn(v: Vessel): boolean {
   const ap = effectiveAutopilot(v)
   return ap === 'orbit' || ap === 'transfer' || ap === 'land'
 }
-/** Otopilot alçakta değilse oyuncu istediği hızı seçebilir. */
+/** Yörünge/transfer otopilotu alçakta değilse oyuncu istediği hızı seçebilir; oto-iniş her zaman kontrollüdür. */
 export const AP_LOCK_ALT = 500
 function apFree(gs: GameState, v: Vessel | null): boolean {
   if (!v || gs.mp || v.id !== gs.activeId || v.landed) return false
   const ap = effectiveAutopilot(v)
-  if (ap !== 'orbit' && ap !== 'transfer' && ap !== 'land') return false
+  if (ap !== 'orbit' && ap !== 'transfer') return false
   return situation(v).alt >= AP_LOCK_ALT
 }
 /** Fizik alt adımı: atmosferde/yere yakınken sabit, boşlukta hızla birlikte büyür. */
@@ -328,7 +330,7 @@ function tryStartCruise(sim: Sim, v: Vessel, events: GameEvent[]): boolean {
     toRel: { x: dir.x * rA, y: dir.y * rA },
     toVel: { x: -dir.y * vc, y: dir.x * vc },
     start: sim.clock ?? 0,
-    dur: Math.max(3, Math.min(8, 3 + 2 * Math.log10(Math.max(1, dist / 1e6)))),
+    dur: Math.max(7.5, Math.min(13.5, 6.5 + 2.3 * Math.log10(Math.max(1, dist / 1e6)))),
   }
   v.throttle = 0
   v.autopilot = 'off'
@@ -350,6 +352,7 @@ export function stepCruise(gs: GameState, clock: number, v: Vessel): 'cruising' 
     v.vel = { ...c.toVel }
     v.angle = Math.atan2(c.toVel.y, c.toVel.x)
     v.angVel = 0
+    v.throttle = 0
     v.cruise = undefined
     v.autopilotNote = undefined
     if (!v.visited.includes(c.to)) v.visited.push(c.to)
@@ -383,8 +386,17 @@ export function stepCruise(gs: GameState, clock: number, v: Vessel): 'cruising' 
   const refAbs = ref === c.from ? fromAbs : toAbs
   v.bodyId = ref
   v.pos = { x: p.x - refAbs.x, y: p.y - refAbs.y }
-  v.vel = { x: 0, y: 0 }
-  if (len({ x: ahead.x - p.x, y: ahead.y - p.y }) > 1) v.angle = Math.atan2(ahead.y - p.y, ahead.x - p.x)
+  const dx = ahead.x - p.x
+  const dy = ahead.y - p.y
+  const dFwd = len({ x: dx, y: dy })
+  if (dFwd > 1) {
+    const moveAng = Math.atan2(dy, dx)
+    v.angle = u >= 0.74 ? wrapPi(moveAng + Math.PI) : moveAng
+  }
+  const cruiseSpeed = Math.max(1200, Math.sin(Math.PI * u) * (dist / Math.max(1, c.dur)) * 1.4)
+  v.vel = dFwd > 1 ? { x: (dx / dFwd) * cruiseSpeed, y: (dy / dFwd) * cruiseSpeed } : { x: 0, y: 0 }
+  v.throttle = u < 0.7 || u > 0.78 ? 0.92 : 0.25
+  v.autopilotNote = `Hızlı yolculuk → ${BODIES[c.to].name} (%${Math.round(u * 100)})`
   v.angVel = 0
   return 'cruising'
 }
@@ -1076,7 +1088,7 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
       if (!transferTargets) transferTargets = new Map()
       transferTargets.set(v.id, targetAngle)
     }
-    if (ap === 'orbit' || ap === 'transfer') {
+    if (ap === 'orbit' || ap === 'transfer' || ap === 'land') {
       autoStageIfSpent(sim, v, events)
     }
     if ((ap === 'orbit' || ap === 'transfer') && v.landed) {
@@ -1128,16 +1140,58 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
     )
     sim.warpIdx = dyn.warpIdx
     sim.warpRampTimer = dyn.rampTimer
-  } else if (!isMp && active && isAutopilotOn(active)) {
-    // Otopilot: 500 m altında 1×, üstünde oyuncunun seçtiği hız (seçimi hatırlanır).
-    if (!apFree(gs, active)) {
-      if (sim.warpIdx > 0) {
-        sim.warpLockPrev = sim.warpIdx
-        sim.warpIdx = 0
-      }
-    } else if (sim.warpLockPrev !== undefined) {
-      sim.warpIdx = sim.warpLockPrev
+  } else if (!isMp && active) {
+    const ap = effectiveAutopilot(active)
+    const prevAp = apLastMode.get(active)
+    if (ap === 'off') {
+      if (prevAp !== undefined) apLastMode.delete(active)
+    } else if (prevAp !== ap) {
+      apLastMode.set(active, ap)
+    }
+    if (ap === 'land') {
       sim.warpLockPrev = undefined
+      const cap = landingWarpCap(active)
+      if (prevAp !== 'land' && sim.warpIdx > PHYSICS_WARP_MAX_IDX) {
+        sim.warpIdx = 0
+        events.push({ type: 'toast', text: "Oto-İniş yaklaşımı: hız 1×'e düşürüldü." })
+      } else if (sim.warpIdx > cap.maxIdx) {
+        sim.warpIdx = cap.maxIdx
+        events.push({
+          type: 'toast',
+          text: cap.maxIdx === 0 ? "Oto-İniş yaklaşımı: hız 1×'e düşürüldü." : `Oto-İniş: hız en fazla ${WARPS[cap.maxIdx]}× ile sınırlandı.`,
+        })
+      }
+    } else if (ap === 'orbit' || ap === 'transfer') {
+      // Otopilot: 500 m altında 1×, üstünde oyuncunun seçtiği hız (seçimi hatırlanır).
+      if (!apFree(gs, active)) {
+        if (sim.warpIdx > 0) {
+          sim.warpLockPrev = sim.warpIdx
+          sim.warpIdx = 0
+        }
+      } else if (sim.warpLockPrev !== undefined) {
+        sim.warpIdx = sim.warpLockPrev
+        sim.warpLockPrev = undefined
+      }
+    } else {
+      sim.warpLockPrev = undefined
+      if (prevAp && sim.warpIdx > 0) {
+        sim.warpIdx = 0
+        events.push({ type: 'toast', text: "Otopilot tamamlandı: hız 1×'e alındı." })
+      } else if (sim.warpIdx > 0) {
+        const lb = BODIES[active.bodyId]
+        const nearSurface = !active.landed && lb.landable && active.pos.x * active.pos.x + active.pos.y * active.pos.y < (lb.radius + 20_000) ** 2
+        if (nearSurface) {
+          const ls = situation(active)
+          if (ls.vr < -8 && ls.alt < Math.max(1200, -15 * ls.vr)) {
+            sim.warpIdx = 0
+            events.push({ type: 'toast', text: "Yüzeye yakın: hız güvenli iniş için 1×'e düşürüldü." })
+          }
+        }
+        if (sim.warpIdx > PHYSICS_WARP_MAX_IDX && needsPhysics(active, singleCtrl)) {
+          sim.warpIdx = PHYSICS_WARP_MAX_IDX
+          events.push({ type: 'toast', text: 'Zaman hızlandırma 25×\'e düştü (itki / atmosfer / yüzey).' })
+        }
+      }
     }
   } else if (active && sim.warpIdx > PHYSICS_WARP_MAX_IDX && needsPhysics(active, singleCtrl)) {
     sim.warpIdx = PHYSICS_WARP_MAX_IDX
@@ -1188,10 +1242,12 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
       continue
     }
     const freeV = isActive && activeFree
-    if (needP && (sim.warpIdx <= PHYSICS_WARP_MAX_IDX || freeV)) {
-      const n = Math.min(4000, Math.max(1, Math.ceil(simDt / physStep(v, warp, freeV))))
-      const h = simDt / n
-      const manualScale = 1 / Math.max(1, warp)
+    if (needP && (sim.warpIdx <= PHYSICS_WARP_MAX_IDX || freeV || isMp)) {
+      const effSimDt = isMp && sim.warpIdx > PHYSICS_WARP_MAX_IDX ? Math.min(simDt, real * (WARPS[PHYSICS_WARP_MAX_IDX] ?? 10)) : simDt
+      const effWarp = isMp && sim.warpIdx > PHYSICS_WARP_MAX_IDX ? (WARPS[PHYSICS_WARP_MAX_IDX] ?? 10) : warp
+      const n = Math.min(4000, Math.max(1, Math.ceil(effSimDt / physStep(v, effWarp, freeV))))
+      const h = effSimDt / n
+      const manualScale = 1 / Math.max(1, effWarp)
       // Yüksek hızda transfer otopilotunun kararları kare başına değil, oyun zamanında sık sık yenilenir.
       const refreshEvery = freeV && apBefore === 'transfer' && n > 1 ? Math.max(1, Math.round(0.1 / h)) : 0
       let apTarget = extTarget
@@ -1446,7 +1502,7 @@ export function decouple(sim: Sim, v: Vessel, indices: number[]): GameEvent[] {
       v.parts = parts
       v.pos = pos
       v.landed = false
-      v.noCollideUntil = gs.time + 1.2
+      v.noCollideUntil = gs.time + 3.0
       const cap = st.cargoCap
       if (cargoMass(v.cargo) > cap + 1e-9) v.cargo = { modules: {}, ore: 0, oreFrom: null }
       v.ec = Math.min(v.ec, st.ecCap)
@@ -1457,7 +1513,7 @@ export function decouple(sim: Sim, v: Vessel, indices: number[]): GameEvent[] {
         id, name: parts.some((p) => p.def === 'iss-core') ? 'ISS' : st.hasCommand ? `${v.name}-B${id}` : `Kademe ${id}`, station: parts.some((p) => p.def === 'iss-core') || undefined, ownerId: v.ownerId, parts, bodyId: v.bodyId, pos, vel,
         angle: v.angle, angVel: v.angVel + (lx > 0 ? -0.15 : lx < 0 ? 0.15 : 0), landed: false, throttle: 0, ec: 0,
         cargo: { modules: {}, ore: 0, oreFrom: null }, rcsOn: false, sas: 'off', visited: [...v.visited], assist: null, dvUsed: 0,
-        noCollideUntil: gs.time + 1.2,
+        noCollideUntil: gs.time + 3.0,
       })
     }
   })
@@ -1493,26 +1549,31 @@ export function recoverVessel(sim: Sim, v: Vessel): GameEvent[] {
   return events
 }
 
-/** İnen aracın kargosundaki yapıları koloni deposuna indirir; oradan yuvalara kurulur. */
+/** İnen aracın kargosundaki yapıları koloniye kurar; boş yuva yoksa koloni deposuna koyar. */
 export function deployModules(sim: Sim, v: Vessel): string | null {
   if (!v.landed || v.bodyId === 'earth' || !BODIES[v.bodyId].landable) {
     return 'Yapıları indirmek için Dünya dışı bir gezegen veya uydu yüzeyine inmelisin.'
   }
   if (sim.gs.mp) {
-    const capOwner = sim.gs.mp.captures[v.bodyId]?.ownerId
-    if (capOwner && capOwner !== v.ownerId) return 'Bu gezegen rakip kontrolünde: önce bayrağı ele geçir.'
+    const cap = sim.gs.mp.captures[v.bodyId]
+    if (cap?.ownerId && cap.ownerId !== v.ownerId) return 'Bu gezegen rakip kontrolünde: önce bayrağı ele geçir.'
+    if (!cap?.ownerId && cap?.phase === 'contested') return 'İki oyuncu yüzeyde çatışıyor: önce rakibi uzaklaştır.'
   }
   const total = Object.values(v.cargo.modules).reduce((s, n) => s + n, 0)
   if (!total) return 'Kargoda indirilecek yapı yok.'
-  const base = (sim.gs.bases[v.bodyId] ??= emptyBase(Math.atan2(v.pos.y, v.pos.x), v.ownerId))
+  const existing = sim.gs.bases[v.bodyId]
+  const base = existing ?? (sim.gs.bases[v.bodyId] = emptyBase(Math.atan2(v.pos.y, v.pos.x), v.ownerId))
+  if (v.ownerId && !sim.gs.mp?.captures[v.bodyId]?.ownerId) base.ownerId = v.ownerId
   ensureSites(base)
   const stock = (base.stock ??= {})
-  for (const [id, n] of Object.entries(v.cargo.modules)) {
+  // Önce elektrik üreticileri (güneş paneli / reaktör) kurulur, ardından Uzay İstasyonu ve diğer yapılar.
+  const ordered = Object.entries(v.cargo.modules).sort(([a], [b]) => (MODULE_BY_ID[b]?.power ?? 0) - (MODULE_BY_ID[a]?.power ?? 0))
+  for (const [id, n] of ordered) {
     if (!MODULE_BY_ID[id] || id === 'iss-supplies') continue
-    // Boş yuva varsa ve kademe uygunsa doğrudan kur, kalanı depoya koy.
+    // Kargoyla taşınan yapılar önceden üretildiği için boş yuva varsa doğrudan kurulur.
     for (let i = 0; i < n; i += 1) {
       const free = base.sites!.indexOf(null)
-      if (free >= 0 && MODULE_BY_ID[id]!.tier <= colonyTier(base)) {
+      if (free >= 0) {
         base.sites![free] = id
         syncModules(base)
       } else stock[id] = (stock[id] ?? 0) + 1
@@ -1540,11 +1601,12 @@ function canEditPlanetBase(gs: GameState, bodyId: BodyId, actorId = gs.ownerId ?
   if (!BODIES[bodyId]?.landable) return 'Bu gök cisminde koloni kurulamaz.'
   if (bodyId === 'earth') return null
   if (gs.mp) {
-    const capOwner = gs.mp.captures[bodyId]?.ownerId
-    if (capOwner === actorId) return null
-    if (capOwner && capOwner !== actorId) return 'Bu gezegen rakip kontrolünde: önce bayrağı ele geçir.'
+    const cap = gs.mp.captures[bodyId]
+    if (cap?.ownerId === actorId) return null
+    if (cap?.ownerId && cap.ownerId !== actorId) return 'Bu gezegen rakip kontrolünde: önce bayrağı ele geçir.'
+    if (cap?.phase === 'contested') return 'İki oyuncu yüzeyde çatışıyor: önce rakibi uzaklaştır.'
     const landed = gs.vessels.find((v) => v.landed && v.bodyId === bodyId && v.ownerId === actorId)
-    if (!landed) return 'Önce bu gezegene inip bayrağı ele geçirmelisin.'
+    if (!landed) return 'Önce bu gezegene inip yüzey kontrolünü almalısın.'
     return null
   }
   if (gs.bases[bodyId]) return null
@@ -1553,7 +1615,7 @@ function canEditPlanetBase(gs: GameState, bodyId: BodyId, actorId = gs.ownerId ?
   return null
 }
 
-/** Seçilen yuvaya yapı kurar. Depoda varsa ücretsiz, yoksa bütçeden ödenir. */
+/** Seçilen yuvaya yapı kurar. Depoda varsa ücretsiz, yoksa aktif Uzay İstasyonu gerekir. */
 export function placePlanetModule(sim: Sim, bodyId: BodyId, slot: number, moduleId: string, ownerId = sim.gs.ownerId ?? 'local'): string | null {
   const gs = sim.gs
   const m = MODULE_BY_ID[moduleId]
@@ -1567,10 +1629,19 @@ export function placePlanetModule(sim: Sim, bodyId: BodyId, slot: number, module
   if (!base) {
     base = emptyBase(siteAngle, ownerId)
     setActorBase(gs, bodyId, ownerId, base)
+  } else if (gs.mp && bodyId !== 'earth' && !gs.mp.captures[bodyId]?.ownerId) {
+    base.ownerId = ownerId
   }
   const sites = ensureSites(base)
-  if (bodyId !== 'earth' && m.tier > colonyTier(base)) return TIER_HINT[m.tier] ?? 'Bu yapı henüz açılmadı.'
   if (slot < 0 || slot >= sites.length || sites[slot]) return 'Boş bir yuva seç.'
+  const inStock = (base.stock?.[moduleId] ?? 0) > 0
+  if (bodyId !== 'earth' && !inStock) {
+    const flux = solarFlux(len(bodyAbsState(bodyId, gs.time).r))
+    const st = colonyStationStatus(base, flux)
+    if (st === 'none') return 'Yerinde üretim için önce kargoyla Uzay İstasyonu ve güç getirip kurmalısın (veya kargoyla taşı).'
+    if (st === 'unpowered') return 'Uzay İstasyonu elektriksiz! Yerinde inşaat için 7 ⚡ güç sağla (veya kargoyla taşı).'
+  }
+  if (bodyId !== 'earth' && !inStock && m.tier > colonyTier(base)) return TIER_HINT[m.tier] ?? 'Bu yapı henüz açılmadı.'
   const price = modulePrice(gs, bodyId, moduleId, ownerId)
   if (getPlayerMoney(gs, ownerId) < price) return `${price.toLocaleString('tr-TR')} ₡ gerekli.`
   if (price === 0 && base.stock?.[moduleId]) base.stock[moduleId]! -= 1
@@ -1584,8 +1655,13 @@ export function placePlanetModule(sim: Sim, bodyId: BodyId, slot: number, module
 export function removePlanetModule(sim: Sim, bodyId: BodyId, slot: number, ownerId = sim.gs.ownerId ?? 'local'): { error?: string; refund?: number } {
   const gs = sim.gs
   if (gs.mp && bodyId !== 'earth') {
-    const capOwner = gs.mp.captures[bodyId]?.ownerId
-    if (capOwner && capOwner !== ownerId) return { error: 'Bu gezegen rakip kontrolünde.' }
+    const cap = gs.mp.captures[bodyId]
+    if (cap?.ownerId && cap.ownerId !== ownerId) return { error: 'Bu gezegen rakip kontrolünde.' }
+    if (!cap?.ownerId) {
+      if (cap?.phase === 'contested') return { error: 'İki oyuncu yüzeyde çatışıyor.' }
+      const landed = gs.vessels.find((v) => v.landed && v.bodyId === bodyId && v.ownerId === ownerId)
+      if (!landed) return { error: 'Sökmek için yüzeye inmelisin.' }
+    }
   }
   const base = getActorBase(gs, bodyId, ownerId)
   if (!base) return { error: 'Bu gezegende koloni yok.' }
@@ -1596,6 +1672,13 @@ export function removePlanetModule(sim: Sim, bodyId: BodyId, slot: number, owner
   addPlayerMoney(gs, refund, ownerId)
   sites[slot] = null
   syncModules(base)
+  if (gs.mp && bodyId !== 'earth' && id === COLONY_STATION_ID && gs.mp.captures[bodyId]?.ownerId === ownerId) {
+    const cap = gs.mp.captures[bodyId]!
+    cap.ownerId = null
+    cap.phase = 'idle'
+    cap.progress = 0
+    cap.capturerId = null
+  }
   return { refund }
 }
 
@@ -1813,6 +1896,11 @@ export function setVesselAutopilot(sim: Sim, v: Vessel, mode: AutopilotMode): st
   v.autopilot = mode
   v.autoLand = mode === 'land'
   v.approachWarn = null
+  if (mode === 'land' && !sim.gs.mp) {
+    const cap = landingWarpCap(v)
+    const baseIdx = sim.warpIdx <= PHYSICS_WARP_MAX_IDX ? sim.warpIdx : 0
+    sim.warpIdx = Math.min(cap.maxIdx, Math.max(baseIdx, cap.autoIdx))
+  }
   if ((mode === 'orbit' || mode === 'transfer') && v.landed) {
     v.throttle = 1
   }
@@ -1926,7 +2014,17 @@ export function dispatchCommand(
         }
         case 'deployModules': {
           const err = deployModules(sim, v)
-          return err ? { events, error: err } : { events }
+          if (err) return { events, error: err }
+          const flux = solarFlux(len(bodyAbsState(v.bodyId, gs.time).r))
+          const st = colonyStationStatus(gs.bases[v.bodyId], flux)
+          const text =
+            st === 'active'
+              ? `${BODIES[v.bodyId].name} kolonileştirildi! Uzay İstasyonu çalışıyor.`
+              : st === 'unpowered'
+                ? 'Kargolar indirildi! Uzay İstasyonu için 7 ⚡ elektrik sağla.'
+                : 'Kargodaki yapılar koloniye indirildi.'
+          events.push({ type: 'toast', ownerId: v.ownerId, text })
+          return { events }
         }
         case 'loadOre': {
           const err = loadOre(sim, v)

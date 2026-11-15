@@ -219,6 +219,17 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
     bump()
   }
 
+  const applyCargoPreset = (preset: Record<string, number>) => {
+    setError(null)
+    if (inMp) {
+      setLocalMpDesign(design, { ...preset })
+      return
+    }
+    sim.gs.designCargo = { ...preset }
+    void saveGame()
+    bump()
+  }
+
   const launch = () => {
     if (inMp) {
       if (cost > gs.money) {
@@ -418,6 +429,34 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
           {(stats.cargoCap > 0 || cargoT > 0) ? (
             <>
               <h3>Kargo <small>{cargoT.toFixed(1)} / {stats.cargoCap} t</small></h3>
+              {stats.cargoCap >= 4 && (
+                <div className="cargo-presets">
+                  {stats.cargoCap >= 6 ? (
+                    <>
+                      <button type="button" className="mini-warp-btn" onClick={() => applyCargoPreset({ 'colony-station': 1, 'solar-farm': 2 })} title="Ay / iç gezegenler için tam koloni paketi (6 t)">
+                        🛰️ Ay Koloni Kiti
+                      </button>
+                      <button type="button" className="mini-warp-btn" onClick={() => applyCargoPreset({ 'colony-station': 1, 'rtg-reactor': 1 })} title="Mars ve uzak dünyalar için nükleer koloni paketi (6 t)">
+                        ☢️ Uzak Dünya Kiti
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button type="button" className="mini-warp-btn" onClick={() => applyCargoPreset({ 'colony-station': 1 })} title="Uzay İstasyonu (4 t, 7 ⚡ ister)">
+                        🛰️ İstasyon (4t)
+                      </button>
+                      <button type="button" className="mini-warp-btn" onClick={() => applyCargoPreset({ 'solar-farm': 2 })} title="2× Güneş Paneli (2 t, +8 ⚡)">
+                        🔆 2× Panel (2t)
+                      </button>
+                    </>
+                  )}
+                  {cargoT > 0 && (
+                    <button type="button" className="mini-warp-btn" onClick={() => applyCargoPreset({})}>
+                      Temizle
+                    </button>
+                  )}
+                </div>
+              )}
               <ul className="cargo-list">
                 {[ISS_SUPPLY, ...MODULES].map((m) => {
                   const unlocked = isModuleUnlocked(gs, m.id)
@@ -439,7 +478,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
               </ul>
             </>
           ) : (
-            <p className="dv-guide">Modül taşımak için <b>Kargo Gövdesi</b> ekle — veya gezegene indiğinde üs panelinden kur.</p>
+            <p className="dv-guide">Dünya dışına modül götürmek için <b>Kargo Gövdesi</b> ekle ve yükle — yerinde inşaat yalnızca çalışan bir <b>Uzay İstasyonu</b> ile açılır.</p>
           )}
           {(error ?? problem) && <p className="builder-error">{error ?? problem}</p>}
           <button className="launch-btn" onClick={launch} disabled={!!problem}>Rampaya çıkar — {fmt(cost)} ₡</button>

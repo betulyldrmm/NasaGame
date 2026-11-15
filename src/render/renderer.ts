@@ -1,14 +1,15 @@
 /** Uçuş görünümü ve uzay haritası çizimi (Canvas 2D, 2.5D gölgelendirme). */
 import { partDef } from '../game/data'
-import { MODULE_BY_ID } from '../game/base'
+import { isBodyColonized, MODULE_BY_ID } from '../game/base'
 import type { Vessel } from '../game/types'
 import { vesselStats } from '../game/vessel'
 import { bodyAbsState, len, stateAtAnomaly, type Vec, wrapPi } from '../flight/orbit'
 import { airDensity, PAD_ANGLE, situation, terrainHeight } from '../flight/physics'
 import type { Patch } from '../flight/predict'
 import { padAngleForSlot, playerPadAngle } from '../flight/multiplayerSim'
+import { getVisualPos } from '../flight/mpClient'
 import { activeVessel, type Sim } from '../flight/world'
-import { BODIES, BODY_LIST, type BodyDef, type BodyId } from '../nasa/bodies'
+import { BODIES, BODY_LIST, solarFlux, type BodyDef, type BodyId } from '../nasa/bodies'
 import { drawVesselParts } from './partArt'
 
 type Ctx = CanvasRenderingContext2D
@@ -662,10 +663,105 @@ function vesselCell(st: ReturnType<typeof vesselStats>, z: number, minPx: number
   return Math.max(z, minPx / Math.max(1, st.maxY - st.minY))
 }
 
+/** Hızlı yolculuk (cruise) sırasında hız şeritleri, hız/ilerleme göstergesi ve şok parıltısı çizer. */
+function drawCruiseWarp(ctx: Ctx, sim: Sim, view: View, camRot: number) {
+  const v = activeVessel(sim.gs)
+  const c = v?.cruise
+  if (!v || !c) return
+  const clock = sim.clock ?? 0
+  const u = Math.max(0, Math.min(1, (clock - c.start) / Math.max(0.5, c.dur)))
+  const spd = Math.sin(Math.PI * u)
+  const vLen = Math.hypot(v.vel.x, v.vel.y)
+  const worldHeading = vLen > 1 ? Math.atan2(v.vel.y, v.vel.x) : u >= 0.74 ? v.angle + Math.PI : v.angle
+  const ang = -(worldHeading + camRot)
+  const span = Math.hypot(view.w, view.h) + 280
+  const travel = (clock * (1.2 + 2.8 * spd) + u * 6) % 1000
+
+  ctx.save()
+  ctx.translate(view.w / 2, view.h / 2)
+  ctx.rotate(ang)
+  ctx.globalCompositeOperation = 'lighter'
+
+  // Hızlandıkça uzayan yıldız ve kozmik toz şeritleri
+  const count = 88
+  for (let i = 0; i < count; i += 1) {
+    const lane = (hash(i * 19.7 + 3) - 0.5) * span
+    const phase = (hash(i * 7.3 + 11) + travel * (0.45 + 0.9 * hash(i * 3.1))) % 1
+    const ux = (0.5 - phase) * span
+    const streakLen = 14 + (50 + 180 * hash(i * 5.9)) * spd
+    const alpha = (0.14 + 0.42 * spd) * (0.35 + 0.65 * hash(i * 13.3))
+    const grad = ctx.createLinearGradient(ux + streakLen * 0.5, lane, ux - streakLen * 0.5, lane)
+    const warm = i % 5 === 0
+    grad.addColorStop(0, warm ? `rgba(255,228,155,${alpha})` : `rgba(175,245,255,${alpha})`)
+    grad.addColorStop(0.35, warm ? `rgba(255,185,95,${alpha * 0.7})` : `rgba(56,217,232,${alpha * 0.65})`)
+    grad.addColorStop(1, 'rgba(56,217,232,0)')
+    ctx.strokeStyle = grad
+    ctx.lineWidth = 1 + 1.6 * hash(i * 29.1) * (0.3 + spd)
+    ctx.beginPath()
+    ctx.moveTo(ux + streakLen * 0.5, lane)
+    ctx.lineTo(ux - streakLen * 0.5, lane)
+    ctx.stroke()
+  }
+
+  // Kenar hız tüneli vinyeti
+  if (spd > 0.05) {
+    ctx.rotate(-ang)
+    const vig = ctx.createRadialGradient(0, 0, Math.min(view.w, view.h) * 0.25, 0, 0, span * 0.52)
+    vig.addColorStop(0, 'rgba(56,217,232,0)')
+    vig.addColorStop(0.72, `rgba(25,110,180,${0.05 * spd})`)
+    vig.addColorStop(1, `rgba(120,235,255,${0.16 * spd})`)
+    ctx.fillStyle = vig
+    ctx.fillRect(-view.w / 2, -view.h / 2, view.w, view.h)
+  }
+  ctx.restore()
+}
+
 function drawVesselAt(ctx: Ctx, sim: Sim, v: Vessel, p: Vec, rot: number, cell: number, clock: number, vac: number, rcsTx: number) {
   ctx.save()
   ctx.translate(p.x, p.y)
   ctx.rotate(Math.PI / 2 - (v.angle + rot))
+  if (v.cruise) {
+    const c = v.cruise
+    const u = Math.max(0, Math.min(1, (clock - c.start) / Math.max(0.5, c.dur)))
+    const spd = Math.sin(Math.PI * u)
+    const st = vesselStats(v.parts)
+    const tailY = (st.maxY - st.comY) * cell
+    const topY = (st.minY - st.comY) * cell
+    const R = Math.max(18, cell * 4.5)
+    ctx.save()
+    ctx.globalCompositeOperation = 'lighter'
+    // İyon / Plazma egzoz huzmesi (motorun altından uzar)
+    const flicker = 0.92 + 0.08 * Math.sin(clock * 48)
+    const tailLen = R * (1.4 + 3.2 * spd) * flicker
+    const tg = ctx.createLinearGradient(0, tailY, 0, tailY + tailLen)
+    tg.addColorStop(0, `rgba(235,252,255,${0.85 * (0.4 + spd)})`)
+    tg.addColorStop(0.3, `rgba(56,217,232,${0.65 * (0.4 + spd)})`)
+    tg.addColorStop(0.7, `rgba(120,165,255,${0.25 * (0.4 + spd)})`)
+    tg.addColorStop(1, 'rgba(56,217,232,0)')
+    ctx.fillStyle = tg
+    ctx.beginPath()
+    ctx.moveTo(-cell * 0.55, tailY)
+    ctx.lineTo(0, tailY + tailLen)
+    ctx.lineTo(cell * 0.55, tailY)
+    ctx.closePath()
+    ctx.fill()
+    // Parlak çekirdek alev
+    ctx.fillStyle = `rgba(255,255,255,${0.65 * (0.3 + spd)})`
+    ctx.beginPath()
+    ctx.ellipse(0, tailY + R * 0.25, cell * 0.35, R * (0.45 + 0.65 * spd), 0, 0, 6.283)
+    ctx.fill()
+    // Hız şok halesi (gidiş yönünde)
+    if (spd > 0.08) {
+      const forwardNose = u < 0.74
+      ctx.strokeStyle = `rgba(145,240,255,${0.5 * spd})`
+      ctx.lineWidth = Math.max(1.5, cell * 0.22)
+      ctx.beginPath()
+      if (forwardNose) ctx.arc(0, topY + R * 0.25, R * 0.95, Math.PI * 1.15, Math.PI * 1.85)
+      else ctx.arc(0, tailY - R * 0.25, R * 0.95, Math.PI * 0.15, Math.PI * 0.85)
+      ctx.stroke()
+    }
+    ctx.restore()
+  }
   drawVesselParts(ctx, v.parts, cell, { firing: sim.firing.get(v.id), time: clock, vacuum: vac, rcsTx })
   ctx.restore()
 }
@@ -691,16 +787,18 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
   const bodyId: BodyId = v?.bodyId ?? (lastView && view.clock < lastView.until ? lastView.bodyId : 'earth')
   const body = BODIES[bodyId]
   const padR = BODIES.earth.radius + 14
+  const vPos = v ? getVisualPos(v) : null
   // Araç kaybedilince kamera son konumda kalır: enkazın savrulup patlaması izlenebilsin.
-  if (v) lastView = { bodyId: v.bodyId, pos: { ...v.pos }, until: view.clock + 8 }
+  if (v && vPos) lastView = { bodyId: v.bodyId, pos: { ...vPos }, until: view.clock + 8 }
   const hold = !v && lastView && view.clock < lastView.until ? lastView : null
   const defPad = gs.mp ? playerPadAngle(gs, gs.ownerId) : PAD_ANGLE
-  let center = v ? v.pos : hold ? hold.pos : { x: Math.cos(defPad) * padR, y: Math.sin(defPad) * padR }
+  let center = vPos ? vPos : hold ? hold.pos : { x: Math.cos(defPad) * padR, y: Math.sin(defPad) * padR }
   const r = len(center)
   const theta = Math.atan2(center.y, center.x)
-  if (v && body.landable) {
+  if (v && vPos && body.landable) {
     // Yüzeye yakınken kamerayı aşağı kaydır: zemin her zaman görünür kalsın.
-    const a = Math.max(0, situation(v).alt)
+    const vs = vPos === v.pos ? v : { ...v, pos: vPos }
+    const a = Math.max(0, situation(vs).alt)
     const shift = Math.min(a * 0.6 + 6, (0.27 * view.h) / view.zoom) * (1 - Math.min(1, a / 4000))
     center = { x: center.x - (center.x / r) * shift, y: center.y - (center.y / r) * shift }
   }
@@ -714,6 +812,7 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
   const rho = airDensity(body, altSea)
   const sky = body.rho0 > 0 ? Math.min(1, (rho / body.rho0) ** 0.4) : 0
   drawStars(ctx, view, 1 - sky * 0.95, cam.rot)
+  drawCruiseWarp(ctx, sim, view, cam.rot)
   if (sky > 0.01) {
     const g = ctx.createLinearGradient(0, 0, 0, view.h)
     g.addColorStop(0, mix('#02040a', body.colors.sky, sky * 0.75))
@@ -765,13 +864,15 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
   const vac = 1 - Math.min(1, rho / 1.2)
   for (const o of gs.vessels) {
     if (o.bodyId !== bodyId) continue
-    const p = toScreen(cam, o.pos)
+    const oPos = getVisualPos(o)
+    const p = toScreen(cam, oPos)
     if (p.x < -400 || p.x > view.w + 400 || p.y < -400 || p.y > view.h + 400) continue
     const st = vesselStats(o.parts)
     const isActive = o === v
     const cell = o.debris ? Math.max(cam.z, 2.2) : vesselCell(st, cam.z, isActive ? 40 : 18)
     if (o.bodyId === bodyId && cam.z > 0.8) {
-      const s = situation(o, st)
+      const vo = oPos === o.pos ? o : { ...o, pos: oPos }
+      const s = situation(vo, st)
       if (s.alt < 90 && s.alt > -20 && body.landable && !o.cruise) {
         withSurfaceFrame(ctx, cam, body, s.theta, () => {
           const a = 0.38 * (1 - Math.max(0, s.alt) / 90)
@@ -832,9 +933,10 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
       if (!o.ownerId || o.ownerId === gs.ownerId) continue
       const owner = gs.mp.players[o.ownerId]
       if (!owner) continue
-      const dist = Math.hypot(o.pos.x - center.x, o.pos.y - center.y)
+      const oPos = getVisualPos(o)
+      const dist = Math.hypot(oPos.x - center.x, oPos.y - center.y)
       if (dist > 80_000) continue
-      const p = toScreen(cam, o.pos)
+      const p = toScreen(cam, oPos)
       const distLabel = dist >= 1000 ? `${(dist / 1000).toFixed(1)} km` : `${Math.round(dist)} m`
       const inView = p.x >= 28 && p.x <= view.w - 28 && p.y >= 28 && p.y <= view.h - 28
       ctx.save()
@@ -952,6 +1054,67 @@ export function mapFocusAbs(sim: Sim, view: View): Vec {
   return { x: f.x + view.mapPan.x, y: f.y + view.mapPan.y }
 }
 
+function drawMapCruiseArcs(ctx: Ctx, sim: Sim, S: (p: Vec) => Vec, abs: Record<string, Vec>) {
+  const clock = sim.clock ?? 0
+  for (const v of sim.gs.vessels) {
+    const c = v.cruise
+    if (!c) continue
+    const fromAbs = abs[c.from] ?? bodyAbsState(c.from, sim.gs.time).r
+    const toAbs = abs[c.to] ?? bodyAbsState(c.to, sim.gs.time).r
+    const p0 = { x: fromAbs.x + c.fromRel.x, y: fromAbs.y + c.fromRel.y }
+    const p3 = { x: toAbs.x + c.toRel.x, y: toAbs.y + c.toRel.y }
+    const dist = Math.max(1, len({ x: p3.x - p0.x, y: p3.y - p0.y }))
+    const n0 = Math.max(1, len(c.fromRel))
+    const n3 = Math.max(1, len(c.toRel))
+    const k0 = Math.max(dist * 0.45, BODIES[c.from].radius * 2)
+    const k3 = Math.max(dist * 0.3, BODIES[c.to].radius * 2)
+    const p1 = { x: p0.x + (c.fromRel.x / n0) * k0, y: p0.y + (c.fromRel.y / n0) * k0 }
+    const p2 = { x: p3.x + (c.toRel.x / n3) * k3, y: p3.y + (c.toRel.y / n3) * k3 }
+    const bez = (t: number) => {
+      const m = 1 - t
+      const w0 = m * m * m
+      const w1 = 3 * m * m * t
+      const w2 = 3 * m * t * t
+      const w3 = t * t * t
+      return { x: w0 * p0.x + w1 * p1.x + w2 * p2.x + w3 * p3.x, y: w0 * p0.y + w1 * p1.y + w2 * p2.y + w3 * p3.y }
+    }
+    const u = Math.max(0, Math.min(1, (clock - c.start) / Math.max(0.5, c.dur)))
+    const e = u * u * (3 - 2 * u)
+    const N = 36
+    ctx.save()
+    // Hedefe kalan rota (kesikli turkuaz)
+    ctx.setLineDash([5, 5])
+    ctx.strokeStyle = 'rgba(56,217,232,.42)'
+    ctx.lineWidth = 1.6
+    ctx.beginPath()
+    for (let i = 0; i <= N; i += 1) {
+      const sp = S(bez(i / N))
+      if (i === 0) ctx.moveTo(sp.x, sp.y)
+      else ctx.lineTo(sp.x, sp.y)
+    }
+    ctx.stroke()
+    // Geçilen sıcak plazma izi
+    ctx.setLineDash([])
+    ctx.strokeStyle = '#7feaff'
+    ctx.lineWidth = 2.6
+    ctx.beginPath()
+    const stepsDone = Math.max(2, Math.round(N * e))
+    for (let i = 0; i <= stepsDone; i += 1) {
+      const sp = S(bez((e * i) / stepsDone))
+      if (i === 0) ctx.moveTo(sp.x, sp.y)
+      else ctx.lineTo(sp.x, sp.y)
+    }
+    ctx.stroke()
+    // Anlık hızlandırılmış gemi konumu üstünde nabız halkası
+    const cur = S(bez(e))
+    ctx.fillStyle = '#e0faff'
+    ctx.beginPath()
+    ctx.arc(cur.x, cur.y, 4.2, 0, 6.283)
+    ctx.fill()
+    ctx.restore()
+  }
+}
+
 export function renderMap(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): MapFrame {
   const gs = sim.gs
   const frame: MapFrame = { vessels: [], bodies: [] }
@@ -966,6 +1129,7 @@ export function renderMap(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): Map
 
   const abs: Record<string, Vec> = {}
   for (const b of BODY_LIST) abs[b.id] = bodyAbsState(b.id, gs.time).r
+  drawMapCruiseArcs(ctx, sim, S, abs)
 
   // etki alanları (SOI)
   for (const b of BODY_LIST) {
@@ -1048,14 +1212,23 @@ export function renderMap(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): Map
       } else if (owner) {
         ctx.fillStyle = owner.color
         ctx.font = 'bold 10px "DM Mono", monospace'
-        ctx.fillText(`🚩 ${owner.username}`, p.x, p.y + rpx + 29)
+        ctx.fillText(`🛰️ ${owner.username}`, p.x, p.y + rpx + 29)
+        ctx.font = '12px "DM Mono", monospace'
+      } else if (capturer && cap.phase === 'neutralizing') {
+        ctx.fillStyle = capturer.color
+        ctx.font = 'bold 10px "DM Mono", monospace'
+        ctx.fillText(`⚔ ${Math.round(cap.progress * 100)}%`, p.x, p.y + rpx + 29)
         ctx.font = '12px "DM Mono", monospace'
       } else if (capturer && cap.progress > 0) {
         ctx.fillStyle = capturer.color
         ctx.font = 'bold 10px "DM Mono", monospace'
-        ctx.fillText(`${Math.round(cap.progress * 100)}%`, p.x, p.y + rpx + 29)
+        ctx.fillText(`📍 ${capturer.username}`, p.x, p.y + rpx + 29)
         ctx.font = '12px "DM Mono", monospace'
       }
+    } else if (!gs.mp && b.id !== 'earth' && gs.bases[b.id]) {
+      const col = isBodyColonized(gs.bases[b.id], solarFlux(len(abs[b.id]!)))
+      ctx.fillStyle = col ? '#4ade80' : 'rgba(255,255,255,.78)'
+      ctx.fillText(col ? `${b.name} 🛰️` : `${b.name} 📍`, p.x, p.y + rpx + 16)
     } else {
       ctx.fillStyle = 'rgba(255,255,255,.6)'
       ctx.fillText(b.name, p.x, p.y + rpx + 16)
@@ -1133,7 +1306,8 @@ export function renderMap(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): Map
   for (const v of gs.vessels) {
     if (v.debris) continue
     const o = abs[v.bodyId]!
-    const p = S({ x: o.x + v.pos.x, y: o.y + v.pos.y })
+    const vp = getVisualPos(v)
+    const p = S({ x: o.x + vp.x, y: o.y + vp.y })
     frame.vessels.push({ id: v.id, x: p.x, y: p.y })
     const active = v.id === gs.activeId
     const mpCol = gs.mp && v.ownerId ? gs.mp.players[v.ownerId]?.color : undefined

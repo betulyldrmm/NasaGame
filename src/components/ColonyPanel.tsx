@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { baseReport, COLONY_SLOTS, colonyTier, EARTH_MODULES, ensureSites, MODULE_BY_ID, MODULES, TIER_HINT } from '../game/base'
+import { baseReport, COLONY_SLOTS, colonyStationStatus, colonyTier, EARTH_MODULES, ensureSites, isBodyColonized, MODULE_BY_ID, MODULES, TIER_HINT } from '../game/base'
 import { runCommand, useActiveGame } from '../game/store'
 import { BODIES, type BodyId, solarFlux } from '../nasa/bodies'
 import { bodyAbsState, len } from '../flight/orbit'
@@ -56,6 +56,8 @@ export default function ColonyPanel({ initialBody = 'earth', onNotify }: Props) 
   const sites = base ? ensureSites(base) : Array.from({ length: COLONY_SLOTS }, () => null)
   const report = base ? baseReport(base, flux) : null
   const tier = colonyTier(base)
+  const stationStatus = colonyStationStatus(base, flux)
+  const colonized = bodyId === 'earth' || isBodyColonized(base, flux)
   const idx = tabs.indexOf(bodyId)
 
   const say = (text: string, kind: 'info' | 'warn' = 'info') => {
@@ -160,8 +162,8 @@ export default function ColonyPanel({ initialBody = 'earth', onNotify }: Props) 
         {!canBuild && (
           <div className="colony-locked">
             {gs.mp && mpCapOwner && mpCapOwner !== myId
-              ? `${body.name} şu an başka bir oyuncunun kontrolünde — önce bayrağı ele geçir.`
-              : `Buraya koloni kurmak için önce ${body.name} yüzeyine bir araç indir.`}
+              ? `${body.name} şu an başka bir oyuncunun kontrolünde — önce Uzay İstasyonu'nu devre dışı bırak.`
+              : `Buraya üs kurmak için önce ${body.name} yüzeyine bir araç indir.`}
           </div>
         )}
       </div>
@@ -179,23 +181,38 @@ export default function ColonyPanel({ initialBody = 'earth', onNotify }: Props) 
         )}
       </div>
 
+      {bodyId !== 'earth' && (
+        <div className={`colony-status-bar is-${stationStatus}`}>
+          {stationStatus === 'active'
+            ? '🛰️ Kolonileştirildi · Yerinde üretim açık'
+            : stationStatus === 'unpowered'
+              ? '⚡ Uzay İstasyonu elektriksiz (7 ⚡ gerekir) · Yerinde üretim kilitli'
+              : '📦 Kargo Modu · Yerinde üretim için kargoyla Uzay İstasyonu kur (-7 ⚡)'}
+        </div>
+      )}
+
       <div className="colony-build">
         <h3>İnşaat</h3>
         <div className="colony-cards">
           {MODULES.filter((m) => bodyId !== 'earth' || EARTH_MODULES.includes(m.id)).map((m) => {
-            const locked = bodyId !== 'earth' && m.tier > tier
             const stock = base?.stock?.[m.id] ?? 0
+            const tierLocked = bodyId !== 'earth' && !stock && m.tier > tier
+            const cargoOnly = bodyId !== 'earth' && !stock && !colonized
+            const locked = tierLocked || cargoOnly
             const price = modulePrice(gs, bodyId, m.id)
             const afford = gs.money >= price
             const power = m.power > 0 ? m.power * (m.constantPower ? 1 : flux) : m.power
             const disabled = locked || !canBuild
+            const lockHint = cargoOnly
+              ? 'Yerinde inşaat kapalı: önce kargoyla getir veya gezegende çalışan bir Uzay İstasyonu kur.'
+              : TIER_HINT[m.tier]
             return (
               <button
                 key={m.id}
-                className={`colony-card${picked === m.id ? ' is-picked' : ''}${locked ? ' is-locked' : ''}${!afford && !locked ? ' is-poor' : ''}`}
+                className={`colony-card${picked === m.id ? ' is-picked' : ''}${locked ? ' is-locked' : ''}${stock > 0 ? ' is-stock' : ''}${!afford && !locked ? ' is-poor' : ''}`}
                 draggable={!disabled}
                 disabled={disabled}
-                title={locked ? TIER_HINT[m.tier] : m.desc}
+                title={locked ? lockHint : m.desc}
                 onDragStart={(e) => {
                   e.dataTransfer.setData('text/plain', m.id)
                   e.dataTransfer.effectAllowed = 'copy'
@@ -211,7 +228,15 @@ export default function ColonyPanel({ initialBody = 'earth', onNotify }: Props) 
                 <span className="colony-card-art"><img src={spriteUrl(m.sprite)} alt="" draggable={false} />{locked && <span className="colony-lock">🔒</span>}</span>
                 <b>{m.name}</b>
                 <small className={power > 0 ? 'ok' : ''}>{power > 0 ? `+${power.toFixed(1)}` : power} ⚡</small>
-                <small className={afford ? 'price' : 'price bad'}>{locked ? TIER_HINT[m.tier] : stock > 0 ? `Depoda: ${stock}` : `${fmt(price)} ₡`}</small>
+                <small className={stock > 0 ? 'price ok' : afford && !cargoOnly ? 'price' : 'price bad'}>
+                  {cargoOnly
+                    ? (stationStatus === 'unpowered' ? '⚡ İstasyon güçsüz' : '📦 Kargo gerekli')
+                    : tierLocked
+                      ? TIER_HINT[m.tier]
+                      : stock > 0
+                        ? `Depoda: ${stock}`
+                        : `${fmt(price)} ₡`}
+                </small>
               </button>
             )
           })}
