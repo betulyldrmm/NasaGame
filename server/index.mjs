@@ -9,6 +9,7 @@ import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { extname, join, normalize, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { attachMultiplayerWs, listPublicRooms } from './mp.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const dist = join(root, 'dist')
@@ -121,9 +122,14 @@ async function getSessionUser(req) {
   return { key: sess.key, username: u.username, token }
 }
 
-createServer(async (req, res) => {
+const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url ?? '/', 'http://localhost')
+
+    if (url.pathname === '/api/mp/rooms' && req.method === 'GET') {
+      sendJson(res, 200, { rooms: listPublicRooms() })
+      return
+    }
 
     if (url.pathname === '/api/auth/me' && req.method === 'GET') {
       const user = await getSessionUser(req)
@@ -258,4 +264,7 @@ createServer(async (req, res) => {
     }
     res.writeHead(400).end('Bad request')
   }
-}).listen(port, () => console.log(`NasaGame sunucusu: http://localhost:${port}`))
+})
+
+attachMultiplayerWs(server)
+server.listen(port, () => console.log(`NasaGame sunucusu: http://localhost:${port}`))

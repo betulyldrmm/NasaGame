@@ -112,6 +112,25 @@ export interface Vessel {
   debris?: { ttl: number }
   /** yörünge yakalama yanışı başladı: bitene kadar kesilmez (titreşimi önler) */
   captureLatch?: boolean
+  /** çok oyunculu modda her aracın/oyuncunun kendi hedef gök cismi */
+  targetBody?: BodyId
+  /** ayrılma/enkaz sonrası aynı sahibin parçalarıyla kısa çarpışma muafiyeti (oyun zamanı s) */
+  noCollideUntil?: number
+  /** son çarpışmada hasar veren oyuncu */
+  lastAttackerId?: string
+  /** Tek oyunculu "hedefe git": hedefte yörüngeye oturunca otomatik inişe geçilecek cisim */
+  landAt?: BodyId
+  /** Çok oyunculu arcade hızlı yolculuk: başlangıç ve varış (atmosfer sınırı) arasında kısa süreli geçiş */
+  cruise?: {
+    from: BodyId
+    fromRel: { x: number; y: number }
+    to: BodyId
+    toRel: { x: number; y: number }
+    toVel: { x: number; y: number }
+    /** gerçek saat (sim.clock) */
+    start: number
+    dur: number
+  }
 }
 
 export type TileKind = 'fog' | 'clear' | 'crater' | 'vein' | 'built'
@@ -158,6 +177,73 @@ export interface PlayerMeta {
   color?: string
 }
 
+export interface MultiplayerConfig {
+  /** Kazanmak için gereken gezegen sayısı (0 = sınırsız fetih) */
+  targetPlanets: number
+  startingMoney: number
+  passiveBonusPerPlanet: number
+  allowAutoWarp: boolean
+}
+
+export interface PlanetCapture {
+  bodyId: BodyId
+  ownerId: string | null
+  flagAngle: number
+  progress: number
+  capturerId: string | null
+  phase: 'idle' | 'neutralizing' | 'claiming' | 'contested' | 'captured'
+  /** Aynı istasyonu sök-tak yaparak tekrar tekrar fetih ödülü almayı engeller. */
+  lastRewardedId?: string
+}
+
+export interface MultiplayerPlayer {
+  id: string
+  username: string
+  color: string
+  slot: number
+  money: number
+  targetBody: BodyId
+  activeVesselId: number | null
+  /** -1 = akıllı otomatik zaman hızı, 0..N = oyuncu tercihi */
+  wantsWarpIdx: number
+  /** true: oyuncu zaman hızını 1×'e kilitli tutar */
+  warpAnchor: boolean
+  /** son manuel kontrol zamanı (Date.now / clock s) */
+  lastManualAt?: number
+  planetsHeld: number
+  captures: number
+  kills: number
+  earthBase?: Base
+}
+
+export interface DynamicWarpInfo {
+  warpIdx: number
+  warp: number
+  mode: 'auto' | 'manual' | 'combat' | 'landing' | 'burn' | 'anchor'
+  reason: string
+  throttledBy?: string
+  nearestInterceptM?: number | null
+}
+
+export interface MultiplayerFeedItem {
+  id: number
+  time: number
+  text: string
+  color?: string
+}
+
+export interface MultiplayerState {
+  roomId: string
+  hostId: string
+  started: boolean
+  winnerId: string | null
+  config: MultiplayerConfig
+  players: Record<string, MultiplayerPlayer>
+  captures: Partial<Record<BodyId, PlanetCapture>>
+  warpInfo: DynamicWarpInfo
+  feed: MultiplayerFeedItem[]
+}
+
 export interface GameState {
   /** oyun saati (s) */
   time: number
@@ -166,6 +252,8 @@ export interface GameState {
   protocolVersion?: number
   ownerId?: string
   players?: Record<string, PlayerMeta>
+  /** Çok oyunculu "Gezegenleri Ele Geçir" maç durumu (yalnızca çok oyunculu modda) */
+  mp?: MultiplayerState
   money: number
   vessels: Vessel[]
   activeId: number | null
@@ -190,7 +278,12 @@ export interface GameState {
 
 /** Çok oyunculu hazırlığı: serileştirilebilir oyuncu komutları. */
 export type GameCommand =
-  | { type: 'launch' }
+  | { type: 'launch'; design?: PartInst[]; designCargo?: Record<string, number> }
+  | { type: 'setActive'; vesselId: number }
+  | { type: 'setThrottle'; vesselId: number; throttle: number }
+  | { type: 'emergencyStop'; vesselId: number }
+  | { type: 'clickPart'; vesselId: number; index: number }
+  | { type: 'setWarpPref'; warpIdx: number; anchor?: boolean }
   | { type: 'stage'; vesselId: number }
   | { type: 'dock'; vesselId: number; targetId: number }
   | { type: 'deleteVessel'; vesselId: number }
@@ -200,7 +293,8 @@ export type GameCommand =
   | { type: 'setSas'; vesselId: number; sas: SasMode }
   | { type: 'toggleRcs'; vesselId: number }
   | { type: 'togglePartKind'; vesselId: number; kind: 'solar' | 'leg' | 'chute' }
-  | { type: 'deployModules'; vesselId: number }
+  | { type: 'deployModules'; vesselId: number; moduleId?: string }
+  | { type: 'pickupModule'; vesselId: number; moduleId: string }
   | { type: 'loadOre'; vesselId: number }
   | { type: 'refuelAtBase'; vesselId: number }
   | { type: 'buyModule'; bodyId: BodyId; moduleId: string }
@@ -209,9 +303,12 @@ export type GameCommand =
   | { type: 'rendezvous'; vesselId: number }
 
 export type GameEvent =
-  | { type: 'toast'; text: string }
-  | { type: 'crash'; name: string; wasActive: boolean; reason: string }
+  | { type: 'toast'; text: string; ownerId?: string }
+  | { type: 'crash'; name: string; wasActive: boolean; reason: string; ownerId?: string; vesselId?: number }
   | { type: 'mission'; id: string; title: string; reward: number }
-  | { type: 'soi'; from: BodyId; to: BodyId }
-  | { type: 'explosion'; size: number }
+  | { type: 'soi'; from: BodyId; to: BodyId; ownerId?: string }
+  | { type: 'explosion'; size: number; bodyId?: BodyId; x?: number; y?: number }
   | { type: 'achievement'; id: string; title: string; text: string }
+  | { type: 'capture'; bodyId: BodyId; ownerId: string | null; previousOwnerId: string | null; text: string }
+  | { type: 'kill'; attackerId: string | null; victimId: string | null; victimName: string; speed: number }
+  | { type: 'victory'; winnerId: string; winnerName: string }

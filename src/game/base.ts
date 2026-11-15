@@ -40,7 +40,10 @@ export const MODULES: ModuleDef[] = [
   { id: 'lab', name: 'Bilim Lab', icon: '🔬', sprite: 'lab', mass: 2, cost: 4800, power: -3, income: 1300, ore: 0, tier: 2, desc: 'Deneyler yapar; en yüksek geliri getirir ama çok elektrik ister.' },
   { id: 'rtg-reactor', name: 'Reaktör', icon: '☢️', sprite: 'reactor', mass: 2, cost: 6500, power: 15, income: 0, ore: 0, constantPower: true, tier: 3, desc: 'Güneş\'ten bağımsız bol elektrik. Mars ve ötesi için ideal.' },
   { id: 'isru', name: 'Yakıt Tesisi', icon: '⛽', sprite: 'isru', mass: 2, cost: 5000, power: -2, income: 0, ore: 0, tier: 3, desc: 'Madenden roket yakıtı üretir (1 t maden → 4 t yakıt).' },
+  { id: 'colony-station', name: 'Uzay İstasyonu', icon: '🛰️', sprite: 'station', mass: 4, cost: 8000, power: -7, income: 1600, ore: 0, tier: 1, desc: 'Yüksek elektrik ister (-7 ⚡); çalışırken gezegeni kolonileştirir ve gelir getirir.' },
 ]
+
+export const COLONY_STATION_ID = 'colony-station'
 
 /** Yalnızca kargo olarak taşınan, koloniye kurulmayan yük: ISS ikmal paketi. */
 export const ISS_SUPPLY: ModuleDef = { id: 'iss-supplies', name: 'ISS İkmal Kargosu', icon: '📦', sprite: 'battery', mass: 1, cost: 800, power: 0, income: 0, ore: 0, tier: 1, desc: 'ISS\'e kenetlenip teslim et: paket başına 4.500 ₡ kazandırır.' }
@@ -166,4 +169,19 @@ export function tickBase(base: Base, solarFactor: number, dtS: number, incomeMul
   const earned = rep.incomePerHour * hours
   base.earned += earned
   return earned
+}
+
+export type StationStatus = 'none' | 'unpowered' | 'active'
+
+/** Gezegen yüzeyinde elektriği yeten aktif bir Uzay İstasyonu varsa gezegen kolonileşmiştir. */
+export function isBodyColonized(base: Base | undefined, solarFactor: number): boolean {
+  if (!base) return false
+  if (!(base.modules[COLONY_STATION_ID] ?? 0)) return false
+  const rep = baseReport(base, solarFactor)
+  return rep.sites.some((s) => s.id === COLONY_STATION_ID && s.powered)
+}
+
+export function colonyStationStatus(base: Base | undefined, solarFactor: number): StationStatus {
+  if (!base || !(base.modules[COLONY_STATION_ID] ?? 0)) return 'none'
+  return isBodyColonized(base, solarFactor) ? 'active' : 'unpowered'
 }

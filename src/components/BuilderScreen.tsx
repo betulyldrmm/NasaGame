@@ -2,10 +2,14 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { audio } from '../audio'
 import { MODULES, ISS_SUPPLY } from '../game/base'
 import { GRID_H, GRID_W, partDef, PARTS, SHIP_PRESETS, SHIP_SLOT_COUNT } from '../game/data'
-import { bump, saveGame, setIdleWarp, sim, useAuthState, useGame } from '../game/store'
+import { bump, saveGame, setIdleWarp, sim, useActiveGame, useAuthState } from '../game/store'
 import { isModuleUnlocked, isPartUnlocked, requiredTechForModule, requiredTechForPart } from '../game/tech'
 import type { PartCategory, PartInst } from '../game/types'
-import { canPlace, cargoMass, estimateDeltaV, partAt, vesselStats } from '../game/vessel'
+import { canPlace, cargoMass, estimateDeltaV, partAt, vesselStats, centerDesign } from '../game/vessel'
+import { wrapPi } from '../flight/orbit'
+import { BODIES } from '../nasa/bodies'
+import { getLocalMpDesign, sendMpCommand, setLocalMpDesign, useMultiplayer } from '../flight/mpClient'
+import { playerPadAngle, playerPassiveIncomePerHour } from '../flight/multiplayerSim'
 import { designCost, launchDesign, totalPassiveIncomePerHour, validateDesign } from '../flight/world'
 import { drawPart } from '../render/partArt'
 import PartIcon from './PartIcon'
@@ -21,8 +25,10 @@ interface Props {
 }
 
 export default function BuilderScreen({ onBack, onFly }: Props) {
-  const gs = useGame()
+  const gs = useActiveGame()
   const auth = useAuthState()
+  const mp = useMultiplayer()
+  const inMp = mp.active && mp.inMatch
   const [selected, setSelected] = useState<string | null>(null)
   const [mirror, setMirror] = useState(true)
   const [hover, setHover] = useState<{ x: number; y: number } | null>(null)
@@ -36,10 +42,16 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [cell, setCell] = useState(24)
 
-  const design = gs.design
+  const localMp = inMp ? getLocalMpDesign() : null
+  const design = localMp ? localMp.design : gs.design
+  const designCargo = localMp ? localMp.cargo : gs.designCargo
   const setDesign = (next: PartInst[]) => {
-    sim.gs.design = next
     setError(null)
+    if (inMp) {
+      setLocalMpDesign(next, designCargo)
+      return
+    }
+    sim.gs.design = next
     void saveGame()
     bump()
   }
@@ -47,21 +59,39 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
   useEffect(() => {
     const el = wrapRef.current
     if (!el) return
-    const fit = () => setCell(Math.max(12, Math.floor(Math.min(el.clientHeight / GRID_H, el.clientWidth / GRID_W))))
+    // Hücre boyu eski 30 satırlık ızgaraya göre kalır (parçalar küçülmez); büyüyen alan kaydırılarak gezilir.
+    const fit = () => setCell(Math.max(14, Math.floor(Math.min(el.clientHeight / 30, (el.clientWidth - 16) / GRID_W))))
     fit()
     const ro = new ResizeObserver(fit)
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
 
+  // Izgara büyüdü: eski/hazır tasarımlar ortalanır (simetri ekseni ızgaranın ortasıdır).
+  useEffect(() => {
+    const c = centerDesign(design)
+    if (c !== design) setDesign(c)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Hangar açılınca ızgaranın altına (roketin durduğu yere) kaydır.
+  useEffect(() => {
+    const el = wrapRef.current
+    if (!el) return
+    const t = window.setTimeout(() => {
+      el.scrollTop = el.scrollHeight
+    }, 60)
+    return () => window.clearTimeout(t)
+  }, [cell])
+
   const stats = useMemo(() => vesselStats(design), [design])
-  const cargoT = cargoMass({ modules: gs.designCargo, ore: 0, oreFrom: null })
+  const cargoT = cargoMass({ modules: designCargo, ore: 0, oreFrom: null })
   const stages = useMemo(() => estimateDeltaV(design, cargoT), [design, cargoT])
   const totalDv = stages.reduce((s, x) => s + x.dv, 0)
-  const cost = designCost(design, gs.designCargo)
-  const problem = validateDesign(design, gs.designCargo, gs)
+  const cost = designCost(design, designCargo)
+  const problem = validateDesign(design, designCargo, gs)
   const twr = stages[0]?.twr ?? 0
-  const passivePerHr = totalPassiveIncomePerHour(gs)
+  const passivePerHr = inMp && gs.ownerId ? playerPassiveIncomePerHour(gs, gs.ownerId) : totalPassiveIncomePerHour(gs)
 
   const mirrorX = (x: number, w: number) => GRID_W - x - w
 
@@ -171,20 +201,70 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
     return p
   }
 
-  const onClick = (e: React.MouseEvent) => {
-    const c = cellFromEvent(e)
-    if (!selected) {
-      const p = removeAt(c.x, c.y)
-      if (p) setSelected(p.def)
-      return
-    }
-    const d = partDef(selected)
-    let next = design
+  /** Seçili parçayı (simetriyle birlikte) verilen hücreye yerleştirir; yerleşti mi? */
+  const placeAt = (base: PartInst[], def: string, c: { x: number; y: number }): PartInst[] | null => {
+    const d = partDef(def)
+    let next = base
     const spots = [{ x: c.x, y: c.y }]
     const mx = mirrorX(c.x, d.w)
     if (mirror && mx !== c.x) spots.push({ x: mx, y: c.y })
-    for (const s of spots) if (canPlace(next, d, s.x, s.y)) next = [...next, { def: selected, x: s.x, y: s.y }]
-    if (next !== design) setDesign(next)
+    for (const sp of spots) if (canPlace(next, d, sp.x, sp.y)) next = [...next, { def, x: sp.x, y: sp.y }]
+    return next !== base ? next : null
+  }
+
+  // Yerleşik parçayı tutup sürükleme: basılı tutup kaydırınca parça kalkar ve imleçle gelir.
+  const press = useRef<{ x: number; y: number; cell: { x: number; y: number } } | null>(null)
+  const carry = useRef<{ def: string; original: PartInst[] } | null>(null)
+
+  const onMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0) return
+    press.current = { x: e.clientX, y: e.clientY, cell: cellFromEvent(e) }
+  }
+  const onMouseMove = (e: React.MouseEvent) => {
+    const pr = press.current
+    if (pr && !carry.current && !selected && Math.hypot(e.clientX - pr.x, e.clientY - pr.y) > 5) {
+      const i = partAt(design, pr.cell.x, pr.cell.y)
+      if (i >= 0) {
+        const p = design[i]!
+        let rest = design.filter((_, j) => j !== i)
+        if (mirror) {
+          const mx = mirrorX(p.x, partDef(p.def).w)
+          rest = rest.filter((q) => !(q.def === p.def && q.x === mx && q.y === p.y))
+        }
+        carry.current = { def: p.def, original: design }
+        setDesign(rest)
+        setSelected(p.def)
+      }
+    }
+    setHover(cellFromEvent(e))
+  }
+  const onMouseUp = (e: React.MouseEvent) => {
+    const pr = press.current
+    press.current = null
+    if (e.button !== 0) return
+    const c = cellFromEvent(e)
+    if (carry.current) {
+      const { def, original } = carry.current
+      carry.current = null
+      const next = placeAt(design, def, c)
+      setDesign(next ?? original)
+      setSelected(null)
+      return
+    }
+    if (selected && pr) {
+      // Paletten seçilen parça bir kez yerleşir; Shift basılıysa seçili kalır (art arda koymak için).
+      const next = placeAt(design, selected, c)
+      if (next) setDesign(next)
+      if (!e.shiftKey) setSelected(null)
+    }
+  }
+  const cancelCarry = () => {
+    press.current = null
+    if (carry.current) {
+      setDesign(carry.current.original)
+      carry.current = null
+      setSelected(null)
+    }
   }
 
   const changeCargo = (id: string, delta: number) => {
@@ -193,17 +273,53 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
       setError(`"${id}" modülü için teknoloji gerekli: ${req?.name ?? 'Teknoloji Ağacı'}.`)
       return
     }
-    const cur = sim.gs.designCargo[id] ?? 0
+    const cur = designCargo[id] ?? 0
     const n = Math.max(0, cur + delta)
-    const next = { ...sim.gs.designCargo, [id]: n }
+    const next = { ...designCargo, [id]: n }
     if (!n) delete next[id]
-    sim.gs.designCargo = next
     setError(null)
+    if (inMp) {
+      setLocalMpDesign(design, next)
+      return
+    }
+    sim.gs.designCargo = next
+    void saveGame()
+    bump()
+  }
+
+  const applyCargoPreset = (preset: Record<string, number>) => {
+    setError(null)
+    if (inMp) {
+      setLocalMpDesign(design, { ...preset })
+      return
+    }
+    sim.gs.designCargo = { ...preset }
     void saveGame()
     bump()
   }
 
   const launch = () => {
+    if (inMp) {
+      if (cost > gs.money) {
+        setError(`Bütçe yetersiz: ${fmt(cost)} ₡ gerekli.`)
+        return
+      }
+      const padTheta = playerPadAngle(gs, gs.ownerId)
+      const onPad = gs.vessels.find(
+        (v) => v.bodyId === 'earth' && v.landed && Math.abs(wrapPi(Math.atan2(v.pos.y, v.pos.x) - padTheta)) * BODIES.earth.radius < 25,
+      )
+      if (onPad) {
+        setError('Rampa dolu: önce rampadaki aracı kurtar veya sil.')
+        return
+      }
+      const res = sendMpCommand({ type: 'launch', design, designCargo })
+      if (res.error) {
+        setError(res.error)
+        return
+      }
+      onFly()
+      return
+    }
     const err = launchDesign(sim)
     if (err) {
       setError(err)
@@ -214,44 +330,60 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
     onFly()
   }
 
-  const slots = Array.from({ length: SHIP_SLOT_COUNT }, (_, i) => gs.shipSlots?.[i] ?? null)
+  const slots = Array.from({ length: SHIP_SLOT_COUNT }, (_, i) => sim.gs.shipSlots?.[i] ?? null)
   const writeSlots = (next: typeof slots) => {
     sim.gs.shipSlots = next
     void saveGame(true)
     bump()
   }
   const loadShip = (d: PartInst[], cargo: Record<string, number>) => {
-    sim.gs.designCargo = { ...cargo }
     setSelected(null)
-    setDesign(d.map((p) => ({ def: p.def, x: p.x, y: p.y })))
+    const cloned = centerDesign(d.map((p) => ({ def: p.def, x: p.x, y: p.y })))
+    if (inMp) {
+      setLocalMpDesign(cloned, { ...cargo })
+      return
+    }
+    sim.gs.designCargo = { ...cargo }
+    setDesign(cloned)
   }
   const saveSlot = (i: number) => {
     const name = window.prompt('Gemi adı:', slots[i]?.name ?? `Gemim ${i + 1}`)?.trim()
     if (!name) return
-    writeSlots(slots.map((s, j) => (j === i ? { name: name.slice(0, 18), design: design.map((p) => ({ def: p.def, x: p.x, y: p.y })), cargo: { ...gs.designCargo } } : s)))
+    writeSlots(slots.map((s, j) => (j === i ? { name: name.slice(0, 18), design: design.map((p) => ({ def: p.def, x: p.x, y: p.y })), cargo: { ...designCargo } } : s)))
   }
   const clearSlot = (i: number) => {
     if (window.confirm('Bu slot boşaltılsın mı?')) writeSlots(slots.map((s, j) => (j === i ? null : s)))
   }
   const sel = selected ? partDef(selected) : null
+  const myVesselCount = inMp ? gs.vessels.filter((v) => v.ownerId === gs.ownerId && !v.debris && !v.station).length : gs.vessels.length
 
   return (
     <main className="builder">
       <header className="builder-top">
-        <button className="hud-btn" onClick={onBack}>← Ana menü</button>
+        {!inMp ? (
+          <button className="hud-btn" onClick={onBack}>← Ana menü</button>
+        ) : (
+          <button className="hud-btn" onClick={onFly}>← Uçuşa dön</button>
+        )}
         <h1>Roket Montaj Binası</h1>
-        <div className="idle-warp-group" title="Oyun hızı (pasif gelir en fazla 5× artar)">
-          {IDLE_WARPS.map((w) => (
-            <button
-              key={w}
-              type="button"
-              className={`mini-warp-btn${auth.idleWarp === w ? ' is-on' : ''}`}
-              onClick={() => setIdleWarp(w)}
-            >
-              {w}×
-            </button>
-          ))}
-        </div>
+        {!inMp ? (
+          <div className="idle-warp-group" title="Oyun hızı (pasif gelir en fazla 5× artar)">
+            {IDLE_WARPS.map((w) => (
+              <button
+                key={w}
+                type="button"
+                className={`mini-warp-btn${auth.idleWarp === w ? ' is-on' : ''}`}
+                onClick={() => setIdleWarp(w)}
+              >
+                {w}×
+              </button>
+            ))}
+          </div>
+        ) : (
+          <span className="mp-warp-chip" title={gs.mp?.warpInfo?.reason ?? ''}>
+            ⏱ {(gs.mp?.warpInfo?.warp ?? 1).toLocaleString('tr-TR')}×
+          </span>
+        )}
         <button className="hud-btn" onClick={() => setShowGrid(true)}>
           🏗️ Koloni
         </button>
@@ -259,7 +391,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
           Bütçe <b>{fmt(gs.money)} ₡</b> <small className="income-sub">+{fmt(passivePerHr)} ₡/sa</small>
         </div>
         <button className="hud-btn" onClick={onFly}>
-          {gs.vessels.length > 0 ? `Uçuşa dön (${gs.vessels.length} araç) →` : 'Uzay & Üs Ekranı →'}
+          {myVesselCount > 0 ? `Uçuşa dön (${myVesselCount} araç) →` : 'Uzay & Üs Ekranı →'}
         </button>
       </header>
 
@@ -275,6 +407,13 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
                   return (
                     <button
                       key={p.id}
+                      draggable={unlocked}
+                      onDragStart={(e) => {
+                        e.dataTransfer.setData('text/plain', p.id)
+                        e.dataTransfer.effectAllowed = 'copy'
+                        setSelected(p.id)
+                      }}
+                      onDragEnd={() => setSelected(null)}
                       className={`palette-item${selected === p.id ? ' is-selected' : ''}${unlocked ? '' : ' is-locked'}`}
                       onClick={() => {
                         if (!unlocked) {
@@ -299,7 +438,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
         <section className="grid-area">
           <div className="grid-tools">
             <button className={`hud-btn${mirror ? ' is-on' : ''}`} onClick={() => setMirror(!mirror)}>⇄ Simetri {mirror ? 'açık' : 'kapalı'}</button>
-            <button className="hud-btn" onClick={() => setSelected(null)} disabled={!selected}>✋ Taşı / sil modu</button>
+            <button className="hud-btn" onClick={() => setSelected(null)} disabled={!selected}>✋ Seçimi bırak</button>
             <button className="hud-btn" onClick={() => setDesign([])}>Temizle</button>
           </div>
           <div className="ship-bar">
@@ -322,9 +461,26 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
             <canvas
               ref={canvasRef}
               className="grid-canvas"
-              onMouseMove={(e) => setHover(cellFromEvent(e))}
-              onMouseLeave={() => setHover(null)}
-              onClick={onClick}
+              onMouseDown={onMouseDown}
+              onMouseMove={onMouseMove}
+              onMouseUp={onMouseUp}
+              onMouseLeave={() => {
+                setHover(null)
+                cancelCarry()
+              }}
+              onDragOver={(e) => {
+                e.preventDefault()
+                e.dataTransfer.dropEffect = 'copy'
+                setHover(cellFromEvent(e))
+              }}
+              onDrop={(e) => {
+                e.preventDefault()
+                const id = e.dataTransfer.getData('text/plain') || selected
+                if (!id || !PARTS.some((q) => q.id === id)) return
+                const next = placeAt(design, id, cellFromEvent(e))
+                if (next) setDesign(next)
+                setSelected(null)
+              }}
               onContextMenu={(e) => {
                 e.preventDefault()
                 if (selected) setSelected(null)
@@ -336,7 +492,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
             />
           </div>
           <p className="grid-hint">
-            {sel ? <><b>{sel.name}</b> — {sel.desc} Yerleştirmek için kareye tıkla, bırakmak için sağ tık.</> : 'Paletten parça seç ve kare grid\'e yerleştir.'}
+            {sel ? <><b>{sel.name}</b> — {sel.desc} Yerleştirmek için kareye tıkla (Shift: art arda koy), vazgeçmek için sağ tık.</> : 'Parçayı paletten sürükleyip ızgaraya bırak ya da seçip kareye tıkla. Yerleşik parçayı tutup sürükleyerek taşı, sağ tıkla sil.'}
           </p>
         </section>
 
@@ -365,6 +521,34 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
           {(stats.cargoCap > 0 || cargoT > 0) ? (
             <>
               <h3>Kargo <small>{cargoT.toFixed(1)} / {stats.cargoCap} t</small></h3>
+              {stats.cargoCap >= 4 && (
+                <div className="cargo-presets">
+                  {stats.cargoCap >= 6 ? (
+                    <>
+                      <button type="button" className="mini-warp-btn" onClick={() => applyCargoPreset({ 'colony-station': 1, 'solar-farm': 2 })} title="Ay / iç gezegenler için tam koloni paketi (6 t)">
+                        🛰️ Ay Koloni Kiti
+                      </button>
+                      <button type="button" className="mini-warp-btn" onClick={() => applyCargoPreset({ 'colony-station': 1, 'rtg-reactor': 1 })} title="Mars ve uzak dünyalar için nükleer koloni paketi (6 t)">
+                        ☢️ Uzak Dünya Kiti
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button type="button" className="mini-warp-btn" onClick={() => applyCargoPreset({ 'colony-station': 1 })} title="Uzay İstasyonu (4 t, 7 ⚡ ister)">
+                        🛰️ İstasyon (4t)
+                      </button>
+                      <button type="button" className="mini-warp-btn" onClick={() => applyCargoPreset({ 'solar-farm': 2 })} title="2× Güneş Paneli (2 t, +8 ⚡)">
+                        🔆 2× Panel (2t)
+                      </button>
+                    </>
+                  )}
+                  {cargoT > 0 && (
+                    <button type="button" className="mini-warp-btn" onClick={() => applyCargoPreset({})}>
+                      Temizle
+                    </button>
+                  )}
+                </div>
+              )}
               <ul className="cargo-list">
                 {[ISS_SUPPLY, ...MODULES].map((m) => {
                   const unlocked = isModuleUnlocked(gs, m.id)
@@ -376,8 +560,8 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
                         <small>{unlocked ? `${m.mass} t · ${fmt(m.cost)} ₡` : `🔒 ${req?.name ?? 'Teknoloji'}`}</small>
                       </span>
                       <span className="stepper">
-                        <button onClick={() => changeCargo(m.id, -1)} disabled={!gs.designCargo[m.id]}>−</button>
-                        <b>{gs.designCargo[m.id] ?? 0}</b>
+                        <button onClick={() => changeCargo(m.id, -1)} disabled={!designCargo[m.id]}>−</button>
+                        <b>{designCargo[m.id] ?? 0}</b>
                         <button onClick={() => changeCargo(m.id, 1)} disabled={!unlocked || cargoT + m.mass > stats.cargoCap + 1e-9}>＋</button>
                       </span>
                     </li>
@@ -386,7 +570,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
               </ul>
             </>
           ) : (
-            <p className="dv-guide">Modül taşımak için <b>Kargo Gövdesi</b> ekle — veya gezegene indiğinde üs panelinden kur.</p>
+            <p className="dv-guide">Dünya dışına modül götürmek için <b>Kargo Gövdesi</b> ekle ve yükle — uzay kolonilerinde yalnızca getirdiğin yapılar kurulur.</p>
           )}
           {(error ?? problem) && <p className="builder-error">{error ?? problem}</p>}
           <button className="launch-btn" onClick={launch} disabled={!!problem}>Rampaya çıkar — {fmt(cost)} ₡</button>

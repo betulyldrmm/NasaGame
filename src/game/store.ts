@@ -7,6 +7,7 @@ import type { GameCommand, GameState } from './types'
 import type { BodyId } from '../nasa/bodies'
 import { PAD_ANGLE } from '../flight/physics'
 import { dispatchCommand, newGame, type Sim, tickBasesOnly } from '../flight/world'
+import { getMpSim, isMpMatchActive, sendMpCommand, useMultiplayer } from '../flight/mpClient'
 
 const KEY_PREFIX = 'nasagame-save-v3:'
 
@@ -67,7 +68,24 @@ export function setIdleWarp(w: number) {
   bump()
 }
 
+export function getActiveSim(): Sim {
+  return isMpMatchActive() ? (getMpSim() ?? sim) : sim
+}
+
+export function useActiveGame(): GameState {
+  const spGs = useGame()
+  const mp = useMultiplayer()
+  if (mp.active && mp.inMatch) {
+    return getMpSim()?.gs ?? spGs
+  }
+  return spGs
+}
+
 export function runCommand(cmd: GameCommand) {
+  if (isMpMatchActive()) {
+    const res = sendMpCommand(cmd)
+    return { events: res.events ?? [], error: res.error }
+  }
   const res = dispatchCommand(sim, cmd, authUser?.username ?? 'local')
   void saveGame(true)
   bump()

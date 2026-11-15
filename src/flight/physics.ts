@@ -17,6 +17,12 @@ export interface Controls {
   /** RCS öteleme, gemi ekseninde: tx sağ, ty ileri */
   tx: number
   ty: number
+  /** Çok oyunculu: istemcinin kendi aracında yerelde hesapladığı burun yönü (anında tepki için) */
+  vid?: number
+  angle?: number
+  angVel?: number
+  /** ev sahibi bu yön bilgisini bir kez uyguladı mı */
+  applied?: boolean
 }
 
 export interface StepResult {
@@ -209,6 +215,8 @@ export function safeOrbitAlt(body: BodyDef): number {
 }
 
 /** Yakalama aşamasında şu an motor yakılmalı mı? (rehberlik ve ray/fizik seçimi ortak kullanır) */
+const CORRECTION_NOTE = 'Çarpışma rotası düzeltiliyor…'
+
 function captureWantsBurn(body: BodyDef, s: Situation, el: ReturnType<typeof elementsFromState>): boolean {
   const targetR = body.radius + safeOrbitAlt(body)
   const safePeri = body.radius + (body.atmoHeight > 0 ? body.atmoHeight + 4000 : Math.max(4000, safeOrbitAlt(body) * 0.5))
@@ -282,6 +290,19 @@ function autoOrbitGuidance(
   if (!v.landed && (el.e >= 1 || el.ra > body.soi * 0.85)) {
     // Hız çok düşükken "geri yön" belirsizdir; gemi kendi etrafında dönmesin diye mevcut yön korunur.
     const retro = s.speed > 20 ? Math.atan2(-v.vel.y, -v.vel.x) : v.angle
+    // Çarpışma rotasında ve henüz uzaktayken: hıza dik, gezegenden dışarı doğru kısa bir düzeltme
+    // yanışı enberiyi çok az yakıtla güvenli yüksekliğe çıkarır (geri yanış enberiyi daha da düşürürdü).
+    const midPeri = (safePeri + targetR) / 2
+    const correcting = v.autopilotNote === CORRECTION_NOTE
+    if (s.speed > 20 && s.r > targetR * 2 && (el.rp < safePeri || (correcting && el.rp < midPeri))) {
+      const velA = Math.atan2(v.vel.y, v.vel.x)
+      const out = Math.cos(velA + Math.PI / 2 - s.theta) > Math.cos(velA - Math.PI / 2 - s.theta) ? velA + Math.PI / 2 : velA - Math.PI / 2
+      const align = Math.cos(wrapPi(v.angle - out))
+      v.captureLatch = false
+      v.throttle = align > 0.6 ? Math.max(0.15, Math.min(1, (midPeri - el.rp) / Math.max(1, targetR * 0.25))) : 0
+      v.autopilotNote = CORRECTION_NOTE
+      return out
+    }
     const lowering = el.rp > targetR * 3
     if (!lowering && Math.abs(el.nu) < 0.7) v.captureLatch = true
     if (lowering) v.captureLatch = false
@@ -340,48 +361,106 @@ function autoOrbitGuidance(
 
 function autoLandGuidance(v: Vessel, st: VesselStats, body: BodyDef, s: Situation, pressure: number, rho: number): number | null {
   if (!body.landable || v.landed) return null
-  if (s.alt < 450) {
-    for (const p of v.parts) if (partDef(p.def).kind === 'leg') p.deployed = true
-  }
-  if (body.atmoHeight > 0 && rho > 0.0005 && s.alt < 8000 && s.vr < 0) {
-    for (const p of v.parts) if (partDef(p.def).kind === 'chute') p.deployed = true
-  }
-  const up = { x: v.pos.x / s.r, y: v.pos.y / s.r }
   const maxF = maxThrustAvailable(v, pressure)
   const maxAccel = maxF / Math.max(0.1, st.mass)
   const g = body.mu / (s.r * s.r)
+  const canHover = maxAccel > g * 1.05
+  if (s.alt < 450) {
+    for (const p of v.parts) if (partDef(p.def).kind === 'leg') p.deployed = true
+  }
+  const chuteAlt = canHover ? 550 : rho >= 0.08 ? (maxAccel <= 0.05 ? 1600 : 1100) : 4500
+  const up = { x: v.pos.x / s.r, y: v.pos.y / s.r }
+  const tan = { x: -up.y, y: up.x }
+  const vt = v.vel.x * tan.x + v.vel.y * tan.y
+  const vh = Math.abs(vt)
+  if (body.atmoHeight > 0 && rho > 0.0004 && s.alt < chuteAlt && (s.vr < -2 || s.speed > 55) && (!canHover || vh < 120 || s.alt < 420)) {
+    for (const p of v.parts) if (partDef(p.def).kind === 'chute') p.deployed = true
+  }
+  const chuteActive = body.atmoHeight > 0 && st.chutesDeployed > 0 && rho > 0.0004
+  const tol = landingTolerance(st)
+  const coastAim = s.alt < 80 ? s.theta : s.vr <= -2 ? Math.atan2(-v.vel.y, -v.vel.x) : s.theta
   if (maxAccel <= 0.05) {
     v.throttle = 0
-    v.autopilotNote = 'Oto-İniş: yakıt yok!'
-    return s.speed > 2 ? Math.atan2(-v.vel.y, -v.vel.x) : s.theta
+    v.autopilotNote = chuteActive ? 'Oto-İniş: paraşütle alçalış…' : 'Oto-İniş: yakıt yok!'
+    return coastAim
   }
-  const vh = Math.hypot(v.vel.x - s.vr * up.x, v.vel.y - s.vr * up.y)
-  const aNet = Math.max(0.25, maxAccel - g)
-  const brakeLimit = Math.sqrt(2 * aNet * Math.max(0, s.alt - 25)) * 0.62
-  const targetVr =
-    s.alt > 2500 && vh > 35
-      ? -Math.min(40, Math.max(6, s.alt * 0.015))
-      : s.alt > 45
-        ? -Math.max(4, Math.min(130, brakeLimit, s.alt * 0.14))
-        : -1.8
-  const vDes = { x: up.x * targetVr, y: up.y * targetVr }
-  const dv = { x: vDes.x - v.vel.x, y: vDes.y - v.vel.y }
-  const tau = s.alt < 500 ? 0.9 : 1.4
-  const aCmd = { x: dv.x / tau + up.x * g, y: dv.y / tau + up.y * g }
-  let targetAngle = Math.atan2(aCmd.y, aCmd.x)
-  if (s.alt < 28) {
-    const tilt = wrapPi(targetAngle - s.theta)
-    targetAngle = s.theta + Math.max(-0.28, Math.min(0.28, tilt))
-  }
-  const dStop = (s.speed * s.speed) / (2 * aNet * 0.65)
-  if (s.alt > 80 && vh < 15 && s.alt > dStop * 1.6 + 180 && s.vr > targetVr * 0.85) {
-    v.throttle = 0
-    v.autopilotNote = 'Oto-İniş: kontrollü alçalma…'
+
+  // Motor itkisi yerel yerçekimini yenemiyorsa (ör. kalın atmosferde vakum motoru): yatay hızı sıfırla,
+  // kalan düşüşte yakıtı gereksiz yere yakma ve yalnızca yüzeye yakın frenleyip paraşüte destek ol.
+  if (!canHover) {
+    if (!chuteActive && vh > 14 && !(rho > 0.12 && vh < 45)) {
+      const aTan = -Math.sign(vt) * maxAccel
+      const targetAngle = Math.atan2(tan.y * aTan, tan.x * aTan)
+      const align = Math.cos(wrapPi(v.angle - targetAngle))
+      v.throttle = align > 0.35 ? Math.min(1, Math.max(0.25, vh / 18)) : 0
+      v.autopilotNote = 'Oto-İniş: yörünge hızı düşürülüyor…'
+      return targetAngle
+    }
+    const needCushion = chuteActive
+      ? s.alt < 150 && s.vr < -Math.min(5.5, tol * 0.55)
+      : s.alt < Math.min(500, Math.max(120, (s.speed * s.speed) / Math.max(0.5, 2 * maxAccel) * 2.2)) && s.vr < -Math.min(4.5, tol * 0.45)
+    if (!needCushion) {
+      v.throttle = 0
+      v.autopilotNote = chuteActive ? 'Oto-İniş: paraşütle alçalış…' : 'Oto-İniş: kontrollü alçalma…'
+      return coastAim
+    }
+    const targetAngle = s.theta
+    const align = Math.cos(wrapPi(v.angle - targetAngle))
+    v.throttle = align > 0.35 ? 1 : 0
+    v.autopilotNote = 'Oto-İniş: dikey iniş freni…'
     return targetAngle
   }
+
+  // Güvenli dikey frenleme eğrisi: yüksekte hızlı alçalır, geç ve güçlü frenleyip son anda yumuşak oturur.
+  const aNet = Math.max(0.4, maxAccel * 0.9 - g)
+  const maxDesc = Math.min(600, Math.max(110, body.radius * 0.0055))
+  const touchSpeed = Math.min(3.6, Math.max(2.2, tol * 0.36))
+  const vBrake = Math.sqrt(2 * aNet * Math.max(0, s.alt - 4)) * 0.86
+  const flareLimit = touchSpeed + Math.max(0, s.alt - 3) * 0.19
+  let targetVr = s.alt > 4 ? -Math.max(touchSpeed, Math.min(maxDesc, vBrake, flareLimit)) : -touchSpeed
+  if (vh > 4) {
+    if (s.alt < 90) {
+      const hold = Math.min(1, (vh - 4) / 8)
+      const holdVr = (s.alt > 20 ? 0 : -1.5) * hold + targetVr * (1 - hold)
+      targetVr = Math.max(targetVr, holdVr)
+    } else {
+      const tStopH = vh / Math.max(0.4, maxAccel * 0.8)
+      const reserveAlt = Math.min(s.alt * 0.35, Math.max(160, maxDesc * 0.5))
+      const vhCap = Math.max(3, (s.alt - reserveAlt) / Math.max(3, tStopH * 1.15))
+      targetVr = Math.max(targetVr, -vhCap)
+    }
+  }
+
+  const tauV = s.alt < 150 ? 0.52 : s.alt < 800 ? 0.75 : 1.0
+  const tauH = s.alt < 150 ? 0.65 : s.alt < 800 ? 0.9 : 1.2
+  const aUpFloor = s.alt < 60 && s.vr < 0 ? Math.min(maxAccel * 0.8, g * 0.45) : 0
+  const aUp = Math.min(maxAccel * 0.96, Math.max(aUpFloor, g + (targetVr - s.vr) / tauV))
+  const aTanBudget = Math.sqrt(Math.max(0, maxAccel * maxAccel - aUp * aUp))
+  const aTanWant = -vt / tauH
+  const aTan = Math.max(-aTanBudget, Math.min(aTanBudget, aTanWant))
+  const aCmd = { x: up.x * aUp + tan.x * aTan, y: up.y * aUp + tan.y * aTan }
+  const cmdMag = len(aCmd)
+  let targetAngle = cmdMag > 1e-4 ? Math.atan2(aCmd.y, aCmd.x) : coastAim
+  if (s.alt < 65) {
+    const tilt = wrapPi(targetAngle - s.theta)
+    const lim = s.alt < 10 && vh < 4 ? 0.18 : s.alt < 25 ? 0.36 : 0.52
+    targetAngle = s.theta + Math.max(-lim, Math.min(lim, tilt))
+  }
+
+  const vDown = Math.max(0, -s.vr)
+  const dStopV = (vDown * vDown) / (2 * aNet)
+  const safeCoast = s.alt > 90 && vh < 8 && s.alt > dStopV * 1.22 + vDown * 1.1 + 70 && s.vr > targetVr * 0.94
+  const safeChute = chuteActive && s.alt > 75 && vh < 12 && s.vr > -Math.max(4.5, st.legTolerance * 0.8)
+  if (cmdMag < 0.05 || safeCoast || safeChute) {
+    v.throttle = 0
+    v.autopilotNote = chuteActive ? 'Oto-İniş: paraşütle alçalış…' : 'Oto-İniş: kontrollü alçalma…'
+    return coastAim
+  }
+
   const align = Math.cos(wrapPi(v.angle - targetAngle))
-  const req = len(aCmd) / maxAccel
-  v.throttle = align > 0.55 ? Math.max(0, Math.min(1, req * align)) : 0
+  const req = cmdMag / maxAccel
+  const ramp = align <= 0.35 ? 0 : Math.min(1, (align - 0.35) / 0.35)
+  v.throttle = ramp > 0 ? Math.max(0, Math.min(1, req * ramp)) : 0
   v.autopilotNote = vh > 35 ? 'Oto-İniş: yörünge hızı düşürülüyor…' : 'Oto-İniş: dikey iniş freni…'
   return targetAngle
 }
@@ -441,9 +520,15 @@ export function stepPhysics(
   ax -= up.x * g
   ay -= up.y * g
 
-  // Paraşüt açıkken araç hız vektörünün tersine (burun yukarı) döner.
+  // Paraşüt açıkken araç hız vektörünün tersine (burun yukarı) döner; oto-inişte motor
+  // çalışırken veya son alçalışta düzleşme hedefi önceliklidir.
   const chuting = st.chutesDeployed > 0 && rho > 0.0005 && s.speed > 2
-  const forcedTarget = chuting ? Math.atan2(-v.vel.y, -v.vel.x) : autoTarget
+  let chuteAngle: number | null = chuting ? Math.atan2(-v.vel.y, -v.vel.x) : null
+  if (chuteAngle !== null && s.alt < 25) {
+    const tilt = wrapPi(chuteAngle - s.theta)
+    chuteAngle = s.theta + Math.max(-0.45, Math.min(0.45, tilt))
+  }
+  const forcedTarget = chuteAngle !== null && !(ap === 'land' && (v.throttle > 0.05 || s.alt < 60)) ? chuteAngle : autoTarget
   rotateVessel(v, st, dt, ctrl, forcedTarget, manualScale)
 
   v.vel = { x: v.vel.x + ax * dt, y: v.vel.y + ay * dt }
