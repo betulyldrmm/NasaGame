@@ -118,6 +118,8 @@ export interface Vessel {
   noCollideUntil?: number
   /** son çarpışmada hasar veren oyuncu */
   lastAttackerId?: string
+  /** Tek oyunculu "hedefe git": hedefte yörüngeye oturunca otomatik inişe geçilecek cisim */
+  landAt?: BodyId
   /** Çok oyunculu arcade hızlı yolculuk: başlangıç ve varış (atmosfer sınırı) arasında kısa süreli geçiş */
   cruise?: {
     from: BodyId

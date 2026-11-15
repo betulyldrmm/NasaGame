@@ -238,7 +238,7 @@ function App() {
         <IntroCutscene
           onFinish={() => {
             setShowCutscene(false)
-            setScreen('assembly')
+            setScreen('home')
           }}
         />
       )}

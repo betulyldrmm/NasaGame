@@ -706,6 +706,8 @@ export function landingWarpCap(v: Vessel, st = vesselStats(v.parts, v.cargo)): {
   const s = situation(v, st)
   const tGround = s.vr < -1 ? s.alt / -s.vr : Infinity
   if (s.alt < 100 || tGround < 3.2) return { maxIdx: 0, autoIdx: 0 }
+  // Dünya dışındaki gök cisimlerinde 1000 m altında hız 1×'e kilitlenir.
+  if (v.bodyId !== 'earth' && s.alt < 1000) return { maxIdx: 0, autoIdx: 0 }
   if (s.alt < 350 || tGround < 7.5) return { maxIdx: 2, autoIdx: 2 }
   if (s.alt < 1500 || tGround < 15) return { maxIdx: 3, autoIdx: 3 }
   return { maxIdx: PHYSICS_WARP_MAX_IDX, autoIdx: PHYSICS_WARP_MAX_IDX }

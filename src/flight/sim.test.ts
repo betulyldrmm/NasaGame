@@ -772,7 +772,7 @@ describe('ISS, break-up and easter eggs', () => {
     expect(sim.gs.achievements).toContain('hamilton')
   })
 
-  it('hedefe git 1×ten başlasa da hızı kendisi yükseltip Ay yörüngesine makul sürede varır', () => {
+  it('hedefe git 1×ten başlasa da hızı kendisi yükseltip Ay yüzeyine iner (yörüngede 5 sn 1× molası)', () => {
     const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
     sim.gs.money = 100_000
     expect(launchDesign(sim)).toBeNull()
@@ -780,15 +780,28 @@ describe('ISS, break-up and easter eggs', () => {
     sim.gs.targetBody = 'moon'
     expect(setVesselAutopilot(sim, v, 'transfer')).toBeNull()
     let frames = 0
-    for (; frames < 12_000; frames += 1) {
+    let sawHold = false
+    let sawLand = false
+    for (; frames < 20_000; frames += 1) {
       stepWorld(sim, 1 / 60, ctrl)
       v = activeVessel(sim.gs)!
-      if (v.bodyId === 'moon' && v.autopilot === 'off') break
+      if (sim.warpHoldUntil !== undefined) {
+        sawHold = true
+        expect(sim.warpIdx).toBe(0)
+      }
+      if (v.autopilot === 'land') sawLand = true
+      if (v.bodyId === 'moon' && v.autopilot === 'land') {
+        const alt = Math.hypot(v.pos.x, v.pos.y) - BODIES.moon.radius - terrainHeight('moon', Math.atan2(v.pos.y, v.pos.x))
+        if (alt < 900) expect(sim.warpIdx).toBe(0) // Dünya dışında 1000 m altı 1×
+      }
+      if (v.landed && v.bodyId === 'moon') break
     }
+    expect(sawHold).toBe(true)
+    expect(sawLand).toBe(true)
     expect(v.bodyId).toBe('moon')
-    expect(v.autopilot).toBe('off')
-    expect(frames / 60).toBeLessThan(180) // gerçek saniye
-  }, 60_000)
+    expect(v.landed).toBe(true)
+    expect(frames / 60).toBeLessThan(300) // gerçek saniye
+  }, 90_000)
 
   it('otopilot 500 m altında 1×, üstünde oyuncunun seçtiği hız', () => {
     const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }

@@ -3,7 +3,7 @@
  * gezegenler, koloni yapıları) kullanılır; böylece öğretilen şey oyunda görülenle aynıdır.
  * Sahnedeki yazılar Türkçe yazılır; dil katmanı fillText'i çevirir.
  */
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { partDef } from '../game/data'
 import { estimateDeltaV, freshParts, vesselStats } from '../game/vessel'
 import { BODIES } from '../nasa/bodies'
@@ -212,7 +212,10 @@ function sceneJourney(ctx: Ctx, w: number, h: number, t: number) {
   drawRocket(ctx, SHUTTLE, p.x, p.y, Math.max(2.2, h / 70), ang, burn, t, 1)
 }
 
-function sceneBuild(ctx: Ctx, w: number, h: number, t: number) {
+/** Montaj sahnesi adım sayısı: 7 parça adımı + TWR kontrolü + kalkış. */
+export const BUILD_STEPS = BUILD.length + 2
+
+function sceneBuild(ctx: Ctx, w: number, h: number, t: number, manual?: { step: number; since: number }) {
   // mavi kopya kâğıdı ızgarası
   ctx.fillStyle = '#071328'
   ctx.fillRect(0, 0, w, h)
@@ -239,9 +242,11 @@ function sceneBuild(ctx: Ctx, w: number, h: number, t: number) {
   }
   const STEP = 1.35
   const nSteps = BUILD.length
-  const tl = t % (nSteps * STEP + 6)
-  const step = Math.min(nSteps, Math.floor(tl / STEP))
-  const lift = clamp01((tl - nSteps * STEP - 2.6) / 2.6)
+  // Elle ilerletilen modda adım tıklamayla değişir; zaman o adımın başından sayılır.
+  const mStep = manual ? Math.min(manual.step, nSteps + 1) : 0
+  const tl = manual ? (mStep >= nSteps ? nSteps * STEP + (mStep > nSteps ? 2.6 : 0) + (t - manual.since) : mStep * STEP + (t - manual.since)) : t % (nSteps * STEP + 6)
+  const step = manual ? Math.min(nSteps, mStep) : Math.min(nSteps, Math.floor(tl / STEP))
+  const lift = manual ? (mStep > nSteps ? clamp01((t - manual.since) / 2.6) : 0) : clamp01((tl - nSteps * STEP - 2.6) / 2.6)
   // parçalar
   let idx = 0
   ctx.save()
@@ -290,6 +295,10 @@ function sceneBuild(ctx: Ctx, w: number, h: number, t: number) {
     label(ctx, `TWR ${num(BUILD_TWR)} ✓`, tx, by + 44, '#4ade80', 15, 'left', 800)
     label(ctx, L(`Toplam Δv ≈ ${Math.round(BUILD_DV).toLocaleString('tr-TR')} m/s`, `Total Δv ≈ ${Math.round(BUILD_DV).toLocaleString('en-US')} m/s`), tx, by + 66, '#cbd5e1', 13)
     if (lift > 0) label(ctx, L('Rampaya çıkar ve fırlat! 🚀', 'Roll out and launch! 🚀'), tx, by + 92, '#fbbf24', 14, 'left', 800)
+  }
+  if (manual && mStep <= nSteps) {
+    const blink = 0.55 + 0.45 * Math.sin(t * 4)
+    label(ctx, L('Devam için tıkla ▸', 'Click to continue ▸'), w - 14, h - 16, `rgba(251,191,36,${blink.toFixed(2)})`, 13, 'right', 800)
   }
 }
 
@@ -498,7 +507,7 @@ function sceneColony(ctx: Ctx, w: number, h: number, t: number) {
   label(ctx, L('Paneller elektrik üretir; yapılar elektrikle çalışıp para kazandırır.', 'Panels make power; buildings run on it and earn money.'), w * 0.5, h * 0.93, '#fde68a', 12, 'center')
 }
 
-const SCENES: Record<SceneId, (ctx: Ctx, w: number, h: number, t: number) => void> = {
+const SCENES: Record<SceneId, (ctx: Ctx, w: number, h: number, t: number, manual?: { step: number; since: number }) => void> = {
   journey: sceneJourney,
   build: sceneBuild,
   land: sceneLand,
@@ -508,14 +517,24 @@ const SCENES: Record<SceneId, (ctx: Ctx, w: number, h: number, t: number) => voi
   colony: sceneColony,
 }
 
-/** Canlı sahne: kendi kendine döngüde oynar. */
-export default function GuideScene({ scene, height = 240 }: { scene: SceneId; height?: number }) {
+/**
+ * Canlı sahne: kendi kendine döngüde oynar. Montaj sahnesi ('build') tıklamayla adım adım ilerler;
+ * `step` verilirse adımı dışarıdan yönetilir (tanıtımdaki "Sonraki" düğmesi), verilmezse sahneye
+ * tıklayınca ilerler.
+ */
+export default function GuideScene({ scene, height = 240, step, onAdvance }: { scene: SceneId; height?: number; step?: number; onAdvance?: () => void }) {
   const ref = useRef<HTMLCanvasElement>(null)
+  const [ownStep, setOwnStep] = useState(0)
+  const cur = step ?? ownStep
+  const since = useRef({ step: -1, at: 0 })
+  const startRef = useRef(performance.now())
+  if (since.current.step !== cur) since.current = { step: cur, at: (performance.now() - startRef.current) / 1000 }
+  const manualRef = useRef<{ step: number; since: number } | undefined>(undefined)
+  manualRef.current = scene === 'build' ? { step: cur, since: since.current.at } : undefined
   useEffect(() => {
     const cv = ref.current
     if (!cv) return
     let raf = 0
-    const start = performance.now()
     const draw = () => {
       const dpr = window.devicePixelRatio || 1
       const w = cv.clientWidth || 600
@@ -528,7 +547,7 @@ export default function GuideScene({ scene, height = 240 }: { scene: SceneId; he
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
       ctx.clearRect(0, 0, w, h)
       try {
-        SCENES[scene](ctx, w, h, (performance.now() - start) / 1000)
+        SCENES[scene](ctx, w, h, (performance.now() - startRef.current) / 1000, manualRef.current)
       } catch {
         /* görsel yardımcı: hata oyunu durdurmasın */
       }
@@ -537,5 +556,18 @@ export default function GuideScene({ scene, height = 240 }: { scene: SceneId; he
     raf = requestAnimationFrame(draw)
     return () => cancelAnimationFrame(raf)
   }, [scene, height])
-  return <canvas ref={ref} className="guide-scene" style={{ width: '100%', height }} aria-hidden="true" />
+  const advance = () => {
+    if (scene !== 'build') return
+    if (onAdvance) onAdvance()
+    else setOwnStep((s) => (s + 1) % BUILD_STEPS)
+  }
+  return (
+    <canvas
+      ref={ref}
+      className={`guide-scene${scene === 'build' ? ' is-clickable' : ''}`}
+      style={{ width: '100%', height }}
+      onClick={advance}
+      aria-hidden="true"
+    />
+  )
 }

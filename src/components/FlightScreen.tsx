@@ -1231,6 +1231,12 @@ export default function FlightScreen({ onBuilder }: Props) {
           </div>
 
           <div className="hud hud-bc">
+            {/* Bildirimler alt paneldeki diğer yazıların üstünde sıralanır; üst üste binmez. */}
+            {toasts.length > 0 && (
+              <div className="toasts in-stack">
+                {toasts.slice(-3).map((t) => <div key={t.id} className={`toast ${t.kind}`}>{t.text}</div>)}
+              </div>
+            )}
             <div className="target-bar">
               <span>Hedef:</span>
               <select
@@ -1424,9 +1430,11 @@ export default function FlightScreen({ onBuilder }: Props) {
         </>
       )}
 
-      <div className="toasts">
-        {toasts.map((t) => <div key={t.id} className={`toast ${t.kind}`}>{t.text}</div>)}
-      </div>
+      {!hud.has && (
+        <div className="toasts">
+          {toasts.map((t) => <div key={t.id} className={`toast ${t.kind}`}>{t.text}</div>)}
+        </div>
+      )}
 
       {panel === 'chat' && hud.isMp && (
         <aside className="side-panel">

@@ -785,3 +785,8 @@ kbd { background: #1b2b47; border: 1px solid #8296b355; border-bottom-width: 2px
 .guide-open { width: 100%; margin: 4px 0 10px; }
 .cutscene-stage { padding: 0; overflow: hidden; }
 @media (max-width: 760px) { .guide-modal { grid-template-columns: 1fr; height: 94vh; } .guide-nav { flex-direction: row; overflow-x: auto; padding: 8px; } .guide-nav h2 { display: none; } .guide-nav button { white-space: nowrap; } }
+
+/* Alt paneldeki bildirim yığını: diğer HUD öğeleriyle birlikte akar, üst üste binmez. */
+.toasts.in-stack { position: static; transform: none; margin-bottom: 8px; z-index: auto; }
+.hud-bc > .plan, .hud-bc > .hint { margin-bottom: 4px; }
+.guide-scene.is-clickable { cursor: pointer; }

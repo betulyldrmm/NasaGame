@@ -73,6 +73,8 @@ export interface Sim {
   warpLockPrev?: number
   /** Otopilot sırasında oyuncu hızı kendisi düşürdüyse otomatik hızlandırma yapılmaz (otopilot bitince sıfırlanır). */
   apWarpPinned?: boolean
+  /** Bu gerçek saate (sim.clock) kadar zaman 1×'te tutulur (hedef yörüngesine oturunca kısa mola). */
+  warpHoldUntil?: number
   rcsPulses?: number[]
 }
 
@@ -160,11 +162,13 @@ function isAutopilotOn(v: Vessel): boolean {
 }
 /** Yörünge/transfer otopilotu alçakta değilse oyuncu istediği hızı seçebilir; oto-iniş her zaman kontrollüdür. */
 export const AP_LOCK_ALT = 500
+/** Otopilotta 1× kilidinin yüksekliği: Dünya'da 500 m, diğer gök cisimlerinde 1000 m. */
+export const apLockAlt = (bodyId: BodyId) => (bodyId === 'earth' ? AP_LOCK_ALT : 1000)
 function apFree(gs: GameState, v: Vessel | null): boolean {
   if (!v || gs.mp || v.id !== gs.activeId || v.landed) return false
   const ap = effectiveAutopilot(v)
   if (ap !== 'orbit' && ap !== 'transfer') return false
-  return situation(v).alt >= AP_LOCK_ALT
+  return situation(v).alt >= apLockAlt(v.bodyId)
 }
 /** Fizik alt adımı: atmosferde/yere yakınken sabit, boşlukta hızla birlikte büyür. */
 function physStep(v: Vessel, warp: number, free: boolean): number {
@@ -712,7 +716,13 @@ function triggerProximityArrival(sim: Sim, v: Vessel, bodyId: BodyId, events: Ga
   v.sas = 'retrograde'
   v.approachWarn = bodyId
   if (sim.gs.mp && sim.warpIdx > 2) sim.warpIdx = 0
-  events.push({ type: 'toast', text: `✓ ${b.name} hedefine ulaşıldı. Otopilot yörüngeye giriyor; inmek için Oto-İniş'e bas.` })
+  // Tek oyunculu "hedefe git" yüzeye kadar götürür: önce yörüngeye oturur, sonra kendiliğinden iner.
+  const willLand = !sim.gs.mp && b.landable && hasAutoLandTech(sim.gs)
+  if (willLand) v.landAt = bodyId
+  events.push({
+    type: 'toast',
+    text: willLand ? `✓ ${b.name} hedefine ulaşıldı. Otopilot önce yörüngeye girecek, sonra yüzeye inecek.` : `✓ ${b.name} hedefine ulaşıldı. Otopilot yörüngeye giriyor; inmek için Oto-İniş'e bas.`,
+  })
 }
 
 /** Yamalı konikler: araç hangi cismin etki alanındaysa yalnızca onun çekimini hisseder. */
@@ -1132,6 +1142,17 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
     sim.warpIdx = dyn.warpIdx
     sim.warpRampTimer = dyn.rampTimer
   } else if (!isMp && active) {
+    // "Hedefe git" hedefte yörüngeye oturdu: kısa bir 1× molası ve ardından otomatik iniş.
+    if (active.landAt && effectiveAutopilot(active) === 'off' && !active.landed) {
+      const target = active.landAt
+      active.landAt = undefined
+      if (active.bodyId === target && !setVesselAutopilot(sim, active, 'land')) {
+        active.landAt = undefined
+        events.push({ type: 'toast', text: `${BODIES[target].name} yörüngesine oturuldu; otomatik iniş başlıyor.` })
+      }
+      sim.warpIdx = 0
+      sim.warpHoldUntil = (sim.clock ?? 0) + 5
+    }
     const ap = effectiveAutopilot(active)
     const prevAp = apLastMode.get(active)
     if (ap === 'off') {
@@ -1178,7 +1199,8 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
       sim.warpLockPrev = undefined
       if (prevAp && sim.warpIdx > 0) {
         sim.warpIdx = 0
-        events.push({ type: 'toast', text: "Otopilot tamamlandı: hız 1×'e alındı." })
+        sim.warpHoldUntil = (sim.clock ?? 0) + 5
+        events.push({ type: 'toast', text: "Otopilot tamamlandı: hız 5 sn boyunca 1×'te." })
       } else if (sim.warpIdx > 0) {
         const lb = BODIES[active.bodyId]
         const nearSurface = !active.landed && lb.landable && active.pos.x * active.pos.x + active.pos.y * active.pos.y < (lb.radius + 20_000) ** 2
@@ -1200,6 +1222,13 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
     events.push({ type: 'toast', text: 'Zaman hızlandırma 25×\'e düştü (itki / atmosfer / yüzey).' })
   }
   if (!isMp && !(active && isAutopilotOn(active))) sim.warpLockPrev = undefined
+  // Yörüngeye oturduktan sonraki 5 sn: hız 1×'te tutulur (yüksek hızda takılı kalıp zaman kaçmasın).
+  if (!isMp && sim.warpHoldUntil !== undefined) {
+    if ((sim.clock ?? 0) < sim.warpHoldUntil) {
+      sim.warpIdx = 0
+      sim.warpLockPrev = undefined
+    } else sim.warpHoldUntil = undefined
+  }
   const warp = WARPS[sim.warpIdx]!
   let simDt = real * warp
   const t0 = gs.time
@@ -1898,6 +1927,7 @@ export function setVesselAutopilot(sim: Sim, v: Vessel, mode: AutopilotMode): st
   }
   v.autopilot = mode
   v.autoLand = mode === 'land'
+  v.landAt = undefined
   v.approachWarn = null
   if (mode === 'land' && !sim.gs.mp) {
     const cap = landingWarpCap(v)
