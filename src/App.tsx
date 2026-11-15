@@ -1,3 +1,4 @@
+import { menuState } from './components/menuState'
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { effectiveIncomeDt, tickBasesOnly, totalPassiveIncomePerHour } from './flight/world'
 import { enterMpMode, exitMpMode, useMultiplayer } from './flight/mpClient'
@@ -68,6 +69,11 @@ function App() {
     }, 250)
     return () => clearInterval(timer)
   }, [auth.user, auth.idleWarp, screen, mp.active])
+
+  const showMenu = !auth.user || (screen === 'home' && !mp.active && !mp.inMatch)
+  useEffect(() => {
+    menuState.set(showMenu)
+  }, [showMenu])
 
   if (!auth.checked) {
     return <main className="flight-loading">Hesap kontrol ediliyor…</main>

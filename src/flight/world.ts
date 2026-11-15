@@ -767,18 +767,32 @@ function stepEggs(sim: Sim, active: Vessel | null, real: number, events: GameEve
     return
   }
   setIspBoost(gs.buffUntil && Date.now() < gs.buffUntil ? 1.15 : 1)
-  // Su kulesi: rampada 5 sn egzoza maruz kalırsa kendisi fırlar.
-  if (!sim.towerGone && active && active.bodyId === 'earth' && active.throttle > 0 && (sim.firing.get(active.id)?.size ?? 0) > 0 && padDistance(active) < 70) {
+  // Su kulesi: roket motoru çalışırken rampada 30 sn boyunca 50 m'nin üstüne çıkamazsa kule
+  // egzoza dayanamayıp kendisi fırlar. 50 m'yi aşınca, rampadan uzaklaşınca ya da motor 2 sn'den
+  // uzun susunca sayaç sıfırlanır.
+  if (!sim.towerGone && active && active.bodyId === 'earth' && padDistance(active) < 70) {
     const alt = Math.hypot(active.pos.x, active.pos.y) - BODIES.earth.radius
-    if (alt < 60) {
+    const firing = active.throttle > 0 && (sim.firing.get(active.id)?.size ?? 0) > 0
+    if (alt > 50) {
+      sim.padLinger = 0
+      sim.towerHeat = 0
+    } else if (firing) {
+      sim.padLinger = (sim.padLinger ?? 0) + real
+      sim.towerHeat = 0
+    } else {
       sim.towerHeat = (sim.towerHeat ?? 0) + real
-      if (sim.towerHeat >= 5) {
-        sim.towerGone = true
-        const r = BODIES.earth.radius
-        ;(sim.fx ??= []).push({ kind: 'tower', bodyId: 'earth', x: Math.cos(PAD_ANGLE) * r, y: Math.sin(PAD_ANGLE) * r, born: sim.clock ?? 0, size: 1 })
-        grant(gs, 'water-tower', 'Su Kulesi Fırlatıldı', 'Rampadaki su kulesi egzozuna dayanamadı ve kendi yoluna gitti.', events, 1500)
-      }
+      if (sim.towerHeat > 2) sim.padLinger = 0
     }
+    if ((sim.padLinger ?? 0) >= 30) {
+      sim.towerGone = true
+      sim.padLinger = 0
+      const r = BODIES.earth.radius
+      ;(sim.fx ??= []).push({ kind: 'tower', bodyId: 'earth', x: Math.cos(PAD_ANGLE) * r, y: Math.sin(PAD_ANGLE) * r, born: sim.clock ?? 0, size: 1 })
+      grant(gs, 'water-tower', 'Su Kulesi Fırlatıldı', 'Rampada 30 saniye oyalandın; su kulesi egzoza dayanamadı ve kendi yoluna gitti.', events, 1500)
+    }
+  } else {
+    sim.padLinger = 0
+    sim.towerHeat = 0
   }
 }
 

@@ -504,7 +504,7 @@ export const EN: Record<string, string> = {
   'Çayı dökmeden indin: +5.000 ₡.': 'You landed without spilling the tea: +{n} ₡.',
   'Çaylar şirketten! Çay dökülmedi: +5.000 ₡': 'Tea is on the house! No tea was spilled: +{n} ₡',
   'Su Kulesi Fırlatıldı': 'Water Tower Launched',
-  'Rampadaki su kulesi egzozuna dayanamadı ve kendi yoluna gitti.': 'The water tower by the pad could not take your exhaust and went its own way.',
+  'Rampada 30 saniye oyalandın; su kulesi egzoza dayanamadı ve kendi yoluna gitti.': 'You lingered on the pad for 30 seconds; the water tower could not take your exhaust and went its own way.',
 
   'yüzeyde': 'landed',
   'Başarımlar': 'Achievements',

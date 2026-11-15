@@ -665,6 +665,34 @@ describe('ISS, break-up and easter eggs', () => {
     expect(sim.warpIdx).toBe(7)
   })
 
+  it('su kulesi yalnızca roket 30 sn boyunca 50 m altında ateşlerse uçar', () => {
+    const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
+    sim.gs.money = 100_000
+    expect(launchDesign(sim)).toBeNull()
+    const v = activeVessel(sim.gs)!
+    // Normal kalkış: kule yerinde kalır.
+    v.throttle = 1
+    for (let i = 0; i < 400 && Math.hypot(v.pos.x, v.pos.y) - BODIES.earth.radius < 300; i += 1) stepWorld(sim, 0.05, ctrl)
+    expect(sim.towerGone).toBeFalsy()
+    // Rampada alçakta oyalanma: motor açık, roket 50 m altında tutulur.
+    const sim2: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
+    sim2.gs.money = 100_000
+    expect(launchDesign(sim2)).toBeNull()
+    const w = activeVessel(sim2.gs)!
+    let flew = false
+    for (let i = 0; i < 700 && !flew; i += 1) {
+      w.throttle = 0.3
+      const r = Math.hypot(w.pos.x, w.pos.y)
+      if (r - BODIES.earth.radius > 20) {
+        w.pos = { x: (w.pos.x / r) * (BODIES.earth.radius + 20), y: (w.pos.y / r) * (BODIES.earth.radius + 20) }
+        w.vel = { x: 0, y: 0 }
+      }
+      if (stepWorld(sim2, 0.05, ctrl).some((e) => e.type === 'achievement' && e.id === 'water-tower')) flew = true
+      if (i === 500) expect(flew).toBe(false)
+    }
+    expect(flew).toBe(true)
+  })
+
   it('istasyonu seçmek görev tamamlamaz', async () => {
     const { ensureStation, isStationVessel } = await import('./world')
     const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
