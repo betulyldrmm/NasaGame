@@ -1589,7 +1589,7 @@ export function recoverVessel(sim: Sim, v: Vessel): GameEvent[] {
 }
 
 /** İnen aracın kargosundaki yapıları koloniye kurar; boş yuva yoksa koloni deposuna koyar. */
-export function deployModules(sim: Sim, v: Vessel): string | null {
+export function deployModules(sim: Sim, v: Vessel, onlyId?: string): string | null {
   if (!v.landed || v.bodyId === 'earth' || !BODIES[v.bodyId].landable) {
     return 'Yapıları indirmek için Dünya dışı bir gezegen veya uydu yüzeyine inmelisin.'
   }
@@ -1598,7 +1598,7 @@ export function deployModules(sim: Sim, v: Vessel): string | null {
     if (cap?.ownerId && cap.ownerId !== v.ownerId) return 'Bu gezegen başka bir oyuncunun kolonisi.'
     if (!cap?.ownerId && cap?.phase === 'contested') return 'Yüzeyde başka bir oyuncu da var: ilk çalışan Uzay İstasyonunu kuran koloniyi alır.'
   }
-  const total = Object.values(v.cargo.modules).reduce((s, n) => s + n, 0)
+  const total = Object.entries(v.cargo.modules).reduce((s, [id, n]) => s + (id === 'iss-supplies' || (onlyId && id !== onlyId) ? 0 : n), 0)
   if (!total) return 'Kargoda indirilecek yapı yok.'
   const existing = sim.gs.bases[v.bodyId]
   const base = existing ?? (sim.gs.bases[v.bodyId] = emptyBase(Math.atan2(v.pos.y, v.pos.x), v.ownerId))
@@ -1606,7 +1606,7 @@ export function deployModules(sim: Sim, v: Vessel): string | null {
   ensureSites(base)
   const stock = (base.stock ??= {})
   // Önce elektrik üreticileri (güneş paneli / reaktör) kurulur, ardından Uzay İstasyonu ve diğer yapılar.
-  const ordered = Object.entries(v.cargo.modules).sort(([a], [b]) => (MODULE_BY_ID[b]?.power ?? 0) - (MODULE_BY_ID[a]?.power ?? 0))
+  const ordered = Object.entries(v.cargo.modules).filter(([id]) => !onlyId || id === onlyId).sort(([a], [b]) => (MODULE_BY_ID[b]?.power ?? 0) - (MODULE_BY_ID[a]?.power ?? 0))
   for (const [id, n] of ordered) {
     if (!MODULE_BY_ID[id] || id === 'iss-supplies') continue
     // Kargoyla taşınan yapılar önceden üretildiği için boş yuva varsa doğrudan kurulur.
@@ -1618,8 +1618,26 @@ export function deployModules(sim: Sim, v: Vessel): string | null {
       } else stock[id] = (stock[id] ?? 0) + 1
     }
   }
+  if (onlyId) {
+    delete v.cargo.modules[onlyId]
+    return null
+  }
   const keep = v.cargo.modules['iss-supplies']
   v.cargo.modules = keep ? { 'iss-supplies': keep } : {}
+  return null
+}
+
+/** Koloni deposundaki (kurulmamış) bir yapıyı yeniden gemiye yükler: başka bir koloniye taşımak için. */
+export function pickupModule(sim: Sim, v: Vessel, moduleId: string): string | null {
+  const m = MODULE_BY_ID[moduleId]
+  if (!m) return 'Bilinmeyen yapı.'
+  const base = getActorBase(sim.gs, v.bodyId, v.ownerId ?? sim.gs.ownerId ?? 'local')
+  if (!v.landed || !base) return 'Yük almak için koloninin olduğu yüzeye inmelisin.'
+  if (!(base.stock?.[moduleId] ?? 0)) return 'Depoda bu yapı yok.'
+  const free = vesselStats(v.parts).cargoCap - cargoMass(v.cargo)
+  if (free + 1e-9 < m.mass) return `Kargoda yer yok (${m.mass} t gerekli).`
+  base.stock![moduleId]! -= 1
+  v.cargo.modules[moduleId] = (v.cargo.modules[moduleId] ?? 0) + 1
   return null
 }
 
@@ -2053,8 +2071,12 @@ export function dispatchCommand(
           if (o !== null) events.push({ type: 'toast', text: `${cmd.kind}: ${o ? 'açık' : 'kapalı'}` })
           return { events }
         }
+        case 'pickupModule': {
+          const err = pickupModule(sim, v, cmd.moduleId)
+          return err ? { events, error: err } : { events }
+        }
         case 'deployModules': {
-          const err = deployModules(sim, v)
+          const err = deployModules(sim, v, cmd.moduleId)
           if (err) return { events, error: err }
           const flux = solarFlux(len(bodyAbsState(v.bodyId, gs.time).r))
           const st = colonyStationStatus(gs.bases[v.bodyId], flux)

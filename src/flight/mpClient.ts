@@ -202,6 +202,7 @@ const STATIC_DIRTY_CMDS = new Set<GameCommand['type']>([
   'placeGridModule',
   'removeGridModule',
   'deployModules',
+  'pickupModule',
   'loadOre',
   'refuelAtBase',
 ])

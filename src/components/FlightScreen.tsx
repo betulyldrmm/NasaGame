@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { MODULE_BY_ID } from '../game/base'
 import { MISSIONS } from '../game/missions'
 import { audio } from '../audio'
-import { lang } from '../i18n'
+import { lang, T } from '../i18n'
 import { bump, getActiveSim, runCommand, saveGame, sim, useAuthState } from '../game/store'
 import type {
   AutopilotMode,
@@ -24,6 +24,7 @@ import {
   activeVessel,
   clickPart,
   deployModules,
+  pickupModule,
   launchDesign,
   loadOre,
   recoverVessel,
@@ -456,6 +457,7 @@ export default function FlightScreen({ onBuilder }: Props) {
   const [lost, setLost] = useState<string | null>(null)
   const [wreck, setWreck] = useState(false)
   const [showGuide, setShowGuide] = useState(false)
+  const [showCargo, setShowCargo] = useState(false)
   const [alarm, setAlarm] = useState(false)
   const spam = useRef<number[]>([])
   const typed = useRef('')
@@ -914,7 +916,6 @@ export default function FlightScreen({ onBuilder }: Props) {
   }
 
   const curSim = getActiveSim()
-  const base = curSim.gs.bases[hud.body]
   const baseBody = BODIES[hud.body]
   const pct = (a: number, b: number) => `${b > 0 ? Math.max(0, Math.min(100, (a / b) * 100)) : 0}%`
 
@@ -1402,6 +1403,9 @@ export default function FlightScreen({ onBuilder }: Props) {
                 </button>
               )}
               {hud.landed && hud.body !== 'earth' && <button className="hud-btn recover" onClick={() => setPanel('base')}>{baseBody.name} gridi</button>}
+              {hud.landed && hud.body !== 'earth' && (
+                <button className={`hud-btn recover${showCargo ? ' is-on' : ''}`} onClick={() => setShowCargo((x) => !x)}>🚚 Yükle / İndir</button>
+              )}
             </div>
           </div>
 
@@ -1505,31 +1509,7 @@ export default function FlightScreen({ onBuilder }: Props) {
 
           {hud.has && hud.landed && hud.body !== 'earth' && (
             <div className="base-actions">
-              <p>İnen araç: <b>{hud.name}</b>{hud.cargo ? ` — ${hud.cargo}` : ''}</p>
-              {hud.cargo && (
-                <button
-                  className="hud-btn"
-                  onClick={() => (hud.isMp && hud.vesselId ? hudCmd({ type: 'deployModules', vesselId: hud.vesselId }) : act((v) => deployModules(sim, v)))}
-                >
-                  Kargodaki modülleri kur
-                </button>
-              )}
-              {base && (
-                <button
-                  className="hud-btn"
-                  onClick={() => (hud.isMp && hud.vesselId ? hudCmd({ type: 'loadOre', vesselId: hud.vesselId }) : act((v) => loadOre(sim, v)))}
-                >
-                  Madeni araca yükle
-                </button>
-              )}
-              {base && (
-                <button
-                  className="hud-btn"
-                  onClick={() => (hud.isMp && hud.vesselId ? hudCmd({ type: 'refuelAtBase', vesselId: hud.vesselId }) : act((v) => refuelAtBase(sim, v)))}
-                >
-                  Yakıt ikmali (ISRU: 1 t maden → 4 t yakıt)
-                </button>
-              )}
+              <button className="hud-btn" onClick={() => setShowCargo(true)}>🚚 Yükle / İndir penceresini aç</button>
             </div>
           )}
         </aside>
@@ -1555,6 +1535,122 @@ export default function FlightScreen({ onBuilder }: Props) {
       )}
 
       {showGuide && <HowToPlay onClose={() => setShowGuide(false)} />}
+
+      {showCargo && hud.has && hud.landed && hud.body !== 'earth' && (() => {
+        const cv = activeVessel(curSim.gs)
+        if (!cv) return null
+        const cb = curSim.gs.bases[cv.bodyId]
+        const cap = vesselStats(cv.parts).cargoCap
+        const used = cargoMass(cv.cargo)
+        const free = Math.max(0, cap - used)
+        const tanks = cv.parts.filter((p) => partDef(p.def).kind === 'tank')
+        const fuelNow = tanks.reduce((a, p) => a + (p.fuel ?? 0), 0)
+        const fuelCap = tanks.reduce((a, p) => a + (partDef(p.def).fuel ?? 0), 0)
+        const hasIsru = (cb?.modules.isru ?? 0) > 0
+        const stock = Object.entries(cb?.stock ?? {}).filter(([, n]) => n > 0)
+        const inCargo = Object.entries(cv.cargo.modules).filter(([id, n]) => n > 0 && id !== 'iss-supplies')
+        const run = (cmd: GameCommand, sp: (v: Vessel) => string | null | GameEvent[]) => {
+          if (hud.isMp) hudCmd(cmd)
+          else act(sp)
+        }
+        const W = (tr: string, en: string) => (lang === 'en' ? en : tr)
+        const modName = (id: string) => { const n = MODULE_BY_ID[id]?.name ?? id; return lang === 'en' ? T(n) : n }
+        const bodyName = (id: BodyId) => (lang === 'en' ? T(BODIES[id].name) : BODIES[id].name)
+        const img = (id: string) => `/assets/colony/${MODULE_BY_ID[id]?.sprite ?? 'battery'}.png`
+        return (
+          <section className="cargo-window" role="dialog" aria-label={W('Yükle / İndir', 'Load / Unload')} data-no-i18n>
+            <header>
+              <h2>🚚 {bodyName(cv.bodyId)} · {W('Yükle / İndir', 'Load / Unload')}</h2>
+              <button onClick={() => setShowCargo(false)} aria-label={W('Kapat', 'Close')}>×</button>
+            </header>
+            <div className="cargo-capbar" title={W('Kargo gövdesi doluluğu', 'Cargo bay fill')}>
+              <span>{W('Kargo', 'Cargo')}</span>
+              <i><em style={{ width: pct(used, cap) }} /></i>
+              <small>{used.toFixed(1)} / {cap} t</small>
+            </div>
+            <div className="cargo-cols">
+              <div className="cargo-col">
+                <h3>{W('⬆ Gemiye al', '⬆ Take on board')}</h3>
+                <div className="cargo-row">
+                  <span className="cargo-ico">⛏️</span>
+                  <div><b>{W('Maden', 'Ore')}</b><small>{W('Depoda', 'In storage')} {(cb?.ore ?? 0).toFixed(1)} t</small></div>
+                  <button
+                    className="hud-btn"
+                    disabled={!cb || (cb.ore ?? 0) < 0.01 || free < 0.01}
+                    onClick={() => run({ type: 'loadOre', vesselId: cv.id }, (v) => loadOre(sim, v))}
+                  >
+                    {W('Yükle', 'Load')}
+                  </button>
+                </div>
+                <div className="cargo-row">
+                  <span className="cargo-ico">⛽</span>
+                  <div>
+                    <b>{W('Yakıt', 'Fuel')}</b>
+                    <small>{hasIsru ? W(`Tanklar ${fuelNow.toFixed(1)} / ${fuelCap.toFixed(0)} t · 1 t maden → 4 t yakıt`, `Tanks ${fuelNow.toFixed(1)} / ${fuelCap.toFixed(0)} t · 1 t ore → 4 t fuel`) : W('Yakıt Tesisi kurulmamış', 'No Fuel Plant built')}</small>
+                  </div>
+                  <button
+                    className="hud-btn"
+                    disabled={!hasIsru || (cb?.ore ?? 0) < 0.01 || fuelNow >= fuelCap - 0.01}
+                    onClick={() => run({ type: 'refuelAtBase', vesselId: cv.id }, (v) => refuelAtBase(sim, v))}
+                  >
+                    {W('Doldur', 'Refuel')}
+                  </button>
+                </div>
+                {stock.length === 0 ? (
+                  <p className="cargo-empty">{W('Depoda kurulmamış yapı yok.', 'No unbuilt buildings in storage.')}</p>
+                ) : (
+                  stock.map(([id, n]) => (
+                    <div key={id} className="cargo-row">
+                      <img className="cargo-ico" src={img(id)} alt="" />
+                      <div><b>{modName(id)} ×{n}</b><small>{W('Depoda', 'In storage')} · {MODULE_BY_ID[id]?.mass ?? 0} t</small></div>
+                      <button
+                        className="hud-btn"
+                        disabled={free + 1e-9 < (MODULE_BY_ID[id]?.mass ?? 0)}
+                        onClick={() => run({ type: 'pickupModule', vesselId: cv.id, moduleId: id }, (v) => pickupModule(sim, v, id))}
+                      >
+                        {W('Al', 'Take')}
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+              <div className="cargo-col">
+                <h3>{W('⬇ İndir', '⬇ Unload')}</h3>
+                {inCargo.length === 0 ? (
+                  <p className="cargo-empty">{W('Kargoda indirilecek yapı yok.', 'No buildings in cargo to unload.')}</p>
+                ) : (
+                  inCargo.map(([id, n]) => (
+                    <div key={id} className="cargo-row">
+                      <img className="cargo-ico" src={img(id)} alt="" />
+                      <div><b>{modName(id)} ×{n}</b><small>{W('Boş yuvaya kurulur', 'Built into an empty slot')}</small></div>
+                      <button
+                        className="hud-btn"
+                        onClick={() => run({ type: 'deployModules', vesselId: cv.id, moduleId: id }, (v) => deployModules(sim, v, id))}
+                      >
+                        {W('İndir', 'Unload')}
+                      </button>
+                    </div>
+                  ))
+                )}
+                {cv.cargo.ore > 0.01 && (
+                  <div className="cargo-row">
+                    <span className="cargo-ico">⛏️</span>
+                    <div><b>{W('Maden', 'Ore')} {cv.cargo.ore.toFixed(1)} t</b><small>{W("Dünya'ya götür, inince satılır", 'Take it to Earth; it sells on landing')}</small></div>
+                  </div>
+                )}
+                {inCargo.length > 1 && (
+                  <button
+                    className="hud-btn cargo-all"
+                    onClick={() => run({ type: 'deployModules', vesselId: cv.id }, (v) => deployModules(sim, v))}
+                  >
+                    {W('Hepsini indir ve kur', 'Unload and build all')}
+                  </button>
+                )}
+              </div>
+            </div>
+          </section>
+        )
+      })()}
 
       {confirmDel && (
         <div className="dialog-backdrop" role="presentation" onClick={() => setConfirmDel(null)}>

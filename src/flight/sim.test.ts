@@ -1069,6 +1069,26 @@ describe('multiplayer colony race', () => {
     expect(sim.gs.mp!.players.p1.money).toBeLessThan(p1MoneyBefore + 100) // yalnızca pasif gelir, ödül yok
   })
 
+  it('yükle/indir: kargodan tek tür indirilir, depodaki yapı gemiye geri alınır', async () => {
+    const { deployModules, pickupModule } = await import('./world')
+    const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
+    sim.gs.money = 100_000
+    expect(launchDesign(sim)).toBeNull()
+    const v = activeVessel(sim.gs)!
+    v.bodyId = 'moon'
+    v.landed = true
+    v.cargo.modules = { 'solar-farm': 2, habitat: 1 }
+    expect(deployModules(sim, v, 'habitat')).toBeNull()
+    expect(v.cargo.modules).toEqual({ 'solar-farm': 2 })
+    const moon = sim.gs.bases.moon!
+    expect(moon.modules.habitat).toBe(1)
+    moon.stock = { battery: 1 }
+    expect(pickupModule(sim, v, 'battery')).toBeNull()
+    expect(v.cargo.modules.battery).toBe(1)
+    expect(moon.stock.battery).toBe(0)
+    expect(pickupModule(sim, v, 'battery')).not.toBeNull()
+  })
+
   it('uzay kolonisinde yalnızca kargoyla getirilen yapılar kurulur (istasyon olsa da)', async () => {
     const { colonyStationStatus, isBodyColonized } = await import('../game/base')
     const { removePlanetModule } = await import('./world')

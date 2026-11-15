@@ -293,7 +293,8 @@ export type GameCommand =
   | { type: 'setSas'; vesselId: number; sas: SasMode }
   | { type: 'toggleRcs'; vesselId: number }
   | { type: 'togglePartKind'; vesselId: number; kind: 'solar' | 'leg' | 'chute' }
-  | { type: 'deployModules'; vesselId: number }
+  | { type: 'deployModules'; vesselId: number; moduleId?: string }
+  | { type: 'pickupModule'; vesselId: number; moduleId: string }
   | { type: 'loadOre'; vesselId: number }
   | { type: 'refuelAtBase'; vesselId: number }
   | { type: 'buyModule'; bodyId: BodyId; moduleId: string }
