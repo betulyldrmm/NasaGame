@@ -33,7 +33,7 @@ export default function MultiplayerLobby({ defaultName, onBack }: Props) {
   const [joinCode, setJoinCode] = useState('')
   const [targetPlanets, setTargetPlanets] = useState(4)
   const [startingMoney, setStartingMoney] = useState(50_000)
-  const [allowAutoWarp, setAllowAutoWarp] = useState(true)
+  const [allowAutoWarp] = useState(true)
   const [chatText, setChatText] = useState('')
   const [copied, setCopied] = useState(false)
 
@@ -79,8 +79,8 @@ export default function MultiplayerLobby({ defaultName, onBack }: Props) {
       <header className="topbar">
         <div className="wordmark">
           <span className="wordmark-icon" aria-hidden="true">🪐</span>
-          <span>GEZEGEN FETİH MODU</span>
-          <small className="mp-sub-badge">ÇOK OYUNCULU · BAYRAK KAPMACA</small>
+          <span>KOLONİ YARIŞI</span>
+          <small className="mp-sub-badge">ÇOK OYUNCULU · İLK KOLONİYİ KUR</small>
         </div>
         <div className="topbar-account">
           {mp.connected && mp.pingMs !== null && (
@@ -155,14 +155,6 @@ export default function MultiplayerLobby({ defaultName, onBack }: Props) {
                   </select>
                 </label>
               </div>
-              <label className="mp-check">
-                <input
-                  type="checkbox"
-                  checked={allowAutoWarp}
-                  onChange={(e) => setAllowAutoWarp(e.target.checked)}
-                />
-                <span>Akıllı Zaman Hızlandırma (otopilotta otomatik hızlan, yakın temasta 1×)</span>
-              </label>
               <button type="submit" className="button button-primary">
                 ＋ Oda Oluştur
               </button>
@@ -237,12 +229,12 @@ export default function MultiplayerLobby({ defaultName, onBack }: Props) {
         <section className="panel-card mp-room-card">
           <div className="mp-room-head">
             <div>
-              <p className="eyebrow"><span /> FETİH LOBİSİ</p>
+              <p className="eyebrow"><span /> KOLONİ YARIŞI LOBİSİ</p>
               <h2>{mp.room.name}</h2>
               <small>
                 Hedef: <b>{mp.room.config.targetPlanets === 0 ? 'Sonsuz Mod' : `${mp.room.config.targetPlanets} gezegen`}</b> ·
                 Bütçe: <b>{mp.room.config.startingMoney.toLocaleString('tr-TR')} ₡</b> ·
-                Zaman: <b>{mp.room.config.allowAutoWarp ? 'Akıllı Otomatik' : 'Manuel'}</b>
+                Zaman: <b>2× sabit</b>
               </small>
             </div>
             <button type="button" className="mp-code-banner" onClick={() => copyCode(mp.room!.code)} title="Kopyala">

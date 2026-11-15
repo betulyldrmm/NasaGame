@@ -589,8 +589,8 @@ export const EN: Record<string, string> = {
 
   // ── çok oyunculu ──
   'Çok Oyunculu (Gezegen Fethi)': 'Multiplayer (Planet Conquest)',
-  'GEZEGEN FETİH MODU': 'PLANET CONQUEST MODE',
-  'ÇOK OYUNCULU · BAYRAK KAPMACA': 'MULTIPLAYER · CAPTURE THE PLANETS',
+  'KOLONİ YARIŞI': 'COLONY RACE',
+  'ÇOK OYUNCULU · İLK KOLONİYİ KUR': 'MULTIPLAYER · FOUND THE FIRST COLONIES',
   '● Sunucu Açık': '● Server Online',
   '○ Bağlantı yok': '○ Disconnected',
   '← Tek Oyunculu': '← Singleplayer',
@@ -616,7 +616,8 @@ export const EN: Record<string, string> = {
   'Ev sahibi': 'Host',
   'Oyunda': 'In Match',
   'Lobide': 'In Lobby',
-  'FETİH LOBİSİ': 'CONQUEST LOBBY',
+  'KOLONİ YARIŞI LOBİSİ': 'COLONY RACE LOBBY',
+  '2× sabit': 'fixed 2×',
   'Akıllı Otomatik': 'Smart Auto',
   'Manuel': 'Manual',
   'ODA KODU': 'ROOM CODE',

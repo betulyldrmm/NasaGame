@@ -892,3 +892,47 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .side-panel { max-height: calc(100vh - 250px); }
 .cargo-line b { color: #fde68a; margin-right: 4px; }
 .hud-tl { max-width: 64vw; }
+
+/* ═════════ Final cila 2: aynı dil tüm ekranlarda (hangar, koloni, lobi, giriş, rehber) ═════════ */
+.side-panel { max-height: calc(100vh - 84px); padding: 16px 18px; }
+.side-panel > header { margin-bottom: 10px; }
+/* Görevler */
+.mission-list li { background: rgba(255,255,255,.035); border: 1px solid var(--ui-line); border-radius: 10px; padding: 9px 10px; transition: background .15s; }
+.mission-list li:hover { background: rgba(255,255,255,.07); }
+.mission-list li.done { border-color: rgba(74,222,128,.45); background: rgba(74,222,128,.08); }
+.mission-list .reward { font-weight: 700; }
+/* Koloni */
+.colony-stats, .colony-info, .colony-build, .colony-status-bar, .colony-tabs { border-radius: 12px; border: 1px solid var(--ui-line); background: rgba(255,255,255,.035); }
+.colony-scene { border-radius: 12px; border: 1px solid var(--ui-line-strong); overflow: hidden; }
+.colony-card { border-radius: 10px; border: 1px solid var(--ui-line); background: rgba(255,255,255,.04); transition: border-color .15s, background .15s, transform .1s; }
+.colony-card:hover:not(:disabled) { border-color: var(--ui-line-strong); background: rgba(255,255,255,.08); transform: translateY(-1px); }
+.colony-card.is-picked { border-color: var(--color-turquoise); box-shadow: 0 0 0 1px var(--color-turquoise) inset; }
+.colony-card.is-locked { opacity: .55; }
+.tech-modal, .grid-modal { background: linear-gradient(#15294b, #0f1e3a); border: 1px solid var(--ui-line-strong); border-radius: 16px; box-shadow: 0 24px 70px rgba(0,0,0,.55); }
+/* Hangar */
+.builder-side, .builder aside { scrollbar-gutter: stable; }
+.builder h3, .builder .section-title { letter-spacing: .14em; }
+.ship-slot { border-radius: 9px; border-color: var(--ui-line); }
+.stage-list li { background: rgba(255,255,255,.04); border: 1px solid var(--ui-line); border-radius: 8px; }
+.twr-meter i { border-radius: 6px; overflow: hidden; }
+.launch-btn { box-shadow: 0 8px 26px rgba(240,138,60,.35); font-weight: 800; }
+.launch-btn:disabled { box-shadow: none; filter: saturate(.4); }
+.grid-hint { color: #a9bcd8; }
+/* Lobi ve giriş */
+.mp-card input, .mp-card select, .mp-room-card input, .auth-card input, .mp-chat-form input { border-radius: 10px; border: 1px solid var(--ui-line); background: rgba(4,10,22,.7); transition: border-color .15s, box-shadow .15s; }
+.mp-card input:focus, .mp-card select:focus, .auth-card input:focus, .mp-chat-form input:focus { border-color: var(--color-turquoise); box-shadow: 0 0 0 3px rgba(56,217,232,.18); outline: none; }
+.mp-player-row, .mp-room-item { border-radius: 10px; border: 1px solid var(--ui-line); background: rgba(255,255,255,.04); }
+.mp-rules { background: rgba(255,255,255,.035); border: 1px solid var(--ui-line); border-radius: 12px; padding: 10px 14px 10px 28px; }
+.auth-card, .panel-card { border: 1px solid var(--ui-line-strong); border-radius: 16px; box-shadow: 0 24px 70px rgba(0,0,0,.5); }
+/* Düğmeler (menü dışı) */
+.button { transition: transform .1s, box-shadow .15s, background .15s, border-color .15s; }
+.button:active:not(:disabled) { transform: translateY(1px); }
+.button:disabled { opacity: .45; cursor: not-allowed; }
+/* Rehber ve tanıtım */
+.guide-modal { border: 1px solid var(--ui-line-strong); background: linear-gradient(#142849, #0e1c37); }
+.guide-nav button { transition: background .15s, color .15s; }
+.cutscene-card { background: linear-gradient(#15294b, #0f1e3a); }
+.cutscene-dot { transition: width .2s, background .2s; }
+/* Ayar köşesi */
+.corner-settings button { border-radius: 9px; border: 1px solid var(--ui-line); background: var(--ui-glass); backdrop-filter: blur(8px); }
+.mp-shell { background: radial-gradient(ellipse at 50% 0, #17305a 0, #0a1630 65%, #070f22 100%); min-height: 100vh; }
