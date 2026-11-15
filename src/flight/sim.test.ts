@@ -404,6 +404,7 @@ describe('auto-orbit, auto-transfer & proximity warning', () => {
     // 1. One-click orbit autopilot from Earth launchpad (1x physics dt capped at 0.05s)
     const orbitErr = setVesselAutopilot(sim, v, 'orbit')
     expect(orbitErr).toBeNull()
+    sim.warpIdx = 7 // oyuncu hızlı zaman seçer; otopilot 500 m altında 1×'e kilitler
 
     let reachedOrbit = false
     for (let i = 0; i < 16000; i += 1) {
@@ -423,6 +424,7 @@ describe('auto-orbit, auto-transfer & proximity warning', () => {
     sim.gs.targetBody = 'moon'
     const transferErr = setVesselAutopilot(sim, v, 'transfer')
     expect(transferErr).toBeNull()
+    sim.warpIdx = 7
 
     let arrived = false
     let captured = false
@@ -451,6 +453,7 @@ describe('auto-orbit, auto-transfer & proximity warning', () => {
 
     sim.gs.targetBody = 'moon'
     expect(setVesselAutopilot(sim, v, 'transfer')).toBeNull()
+    sim.warpIdx = 7
     expect(v.throttle).toBe(1)
 
     let liftedOff = false
@@ -472,7 +475,7 @@ describe('auto-orbit, auto-transfer & proximity warning', () => {
     expect(arrived).toBe(true)
     expect(sim.gs.missionsDone).toContain('earth-orbit')
     expect(sim.gs.missionsDone).toContain('moon-soi')
-    expect(sim.warpIdx).toBe(0)
+    expect(sim.warpIdx).toBe(7) // varışta oyuncunun seçtiği hız korunur
   }, 30_000)
 
   it('auto-transfers directly from Moon surface back to Earth SOI', () => {
@@ -508,6 +511,7 @@ describe('auto-orbit, auto-transfer & proximity warning', () => {
 
     let v = activeVessel(sim.gs)!
     expect(setVesselAutopilot(sim, v, 'transfer')).toBeNull()
+    sim.warpIdx = 7
     expect(v.throttle).toBe(1)
 
     let arrivedEarth = false
@@ -521,7 +525,7 @@ describe('auto-orbit, auto-transfer & proximity warning', () => {
     }
     expect(arrivedEarth).toBe(true)
     expect(v.autopilot).toBe('orbit')
-    expect(sim.warpIdx).toBe(0)
+    expect(sim.warpIdx).toBe(7)
   }, 30_000)
 })
 
@@ -638,6 +642,27 @@ describe('ISS, break-up and easter eggs', () => {
     for (let i = 0; i < 200; i += 1) if (stepWorld(sim, 0.05, ctrl).some((e) => e.type === 'achievement' && e.id === 'hamilton')) got = true
     expect(got).toBe(true)
     expect(sim.gs.achievements).toContain('hamilton')
+  })
+
+  it('otopilot 500 m altında 1×, üstünde oyuncunun seçtiği hız', () => {
+    const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
+    sim.gs.money = 100_000
+    expect(launchDesign(sim)).toBeNull()
+    let v = activeVessel(sim.gs)!
+    sim.gs.targetBody = 'moon'
+    expect(setVesselAutopilot(sim, v, 'transfer')).toBeNull()
+    sim.warpIdx = 7
+    stepWorld(sim, 0.05, ctrl)
+    expect(sim.warpIdx).toBe(0)
+    let alt = 0
+    for (let i = 0; i < 4000 && alt < 2000; i += 1) {
+      stepWorld(sim, 0.05, ctrl)
+      v = activeVessel(sim.gs)!
+      alt = Math.hypot(v.pos.x, v.pos.y) - BODIES.earth.radius
+      if (alt < 450) expect(sim.warpIdx).toBe(0)
+    }
+    expect(alt).toBeGreaterThan(2000)
+    expect(sim.warpIdx).toBe(7)
   })
 
   it('istasyonu seçmek görev tamamlamaz', async () => {

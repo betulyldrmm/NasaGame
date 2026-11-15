@@ -209,6 +209,8 @@ export function safeOrbitAlt(body: BodyDef): number {
 }
 
 /** Yakalama aşamasında şu an motor yakılmalı mı? (rehberlik ve ray/fizik seçimi ortak kullanır) */
+const CORRECTION_NOTE = 'Çarpışma rotası düzeltiliyor…'
+
 function captureWantsBurn(body: BodyDef, s: Situation, el: ReturnType<typeof elementsFromState>): boolean {
   const targetR = body.radius + safeOrbitAlt(body)
   const safePeri = body.radius + (body.atmoHeight > 0 ? body.atmoHeight + 4000 : Math.max(4000, safeOrbitAlt(body) * 0.5))
@@ -282,6 +284,19 @@ function autoOrbitGuidance(
   if (!v.landed && (el.e >= 1 || el.ra > body.soi * 0.85)) {
     // Hız çok düşükken "geri yön" belirsizdir; gemi kendi etrafında dönmesin diye mevcut yön korunur.
     const retro = s.speed > 20 ? Math.atan2(-v.vel.y, -v.vel.x) : v.angle
+    // Çarpışma rotasında ve henüz uzaktayken: hıza dik, gezegenden dışarı doğru kısa bir düzeltme
+    // yanışı enberiyi çok az yakıtla güvenli yüksekliğe çıkarır (geri yanış enberiyi daha da düşürürdü).
+    const midPeri = (safePeri + targetR) / 2
+    const correcting = v.autopilotNote === CORRECTION_NOTE
+    if (s.speed > 20 && s.r > targetR * 2 && (el.rp < safePeri || (correcting && el.rp < midPeri))) {
+      const velA = Math.atan2(v.vel.y, v.vel.x)
+      const out = Math.cos(velA + Math.PI / 2 - s.theta) > Math.cos(velA - Math.PI / 2 - s.theta) ? velA + Math.PI / 2 : velA - Math.PI / 2
+      const align = Math.cos(wrapPi(v.angle - out))
+      v.captureLatch = false
+      v.throttle = align > 0.6 ? Math.max(0.15, Math.min(1, (midPeri - el.rp) / Math.max(1, targetR * 0.25))) : 0
+      v.autopilotNote = CORRECTION_NOTE
+      return out
+    }
     const lowering = el.rp > targetR * 3
     if (!lowering && Math.abs(el.nu) < 0.7) v.captureLatch = true
     if (lowering) v.captureLatch = false

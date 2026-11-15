@@ -66,6 +66,10 @@ export interface Sim {
   clock?: number
   towerHeat?: number
   towerGone?: boolean
+  /** Rampada 50 m altında geçen süre (su kulesi easter egg'i). */
+  padLinger?: number
+  /** Otopilot 500 m altında 1×'e kilitlediğinde oyuncunun seçtiği hız. */
+  warpLockPrev?: number
   rcsPulses?: number[]
 }
 
@@ -144,6 +148,31 @@ function signedWaitSec(targetPhase: number, currentPhase: number, phaseRate: num
   return Math.abs(d / Math.max(1e-10, Math.abs(phaseRate)))
 }
 
+/** Tek oyunculu otopilot: raylarda en fazla bu oyun zamanına kadar güvenle süzülünür (bir sonraki yanış). */
+const apHold = new WeakMap<Vessel, number>()
+function isAutopilotOn(v: Vessel): boolean {
+  const ap = effectiveAutopilot(v)
+  return ap === 'orbit' || ap === 'transfer' || ap === 'land'
+}
+/** Otopilot alçakta değilse oyuncu istediği hızı seçebilir. */
+export const AP_LOCK_ALT = 500
+function apFree(gs: GameState, v: Vessel | null): boolean {
+  if (!v || gs.mp || v.id !== gs.activeId || v.landed) return false
+  const ap = effectiveAutopilot(v)
+  if (ap !== 'orbit' && ap !== 'transfer' && ap !== 'land') return false
+  return situation(v).alt >= AP_LOCK_ALT
+}
+/** Fizik alt adımı: atmosferde/yere yakınken sabit, boşlukta hızla birlikte büyür. */
+function physStep(v: Vessel, warp: number, free: boolean): number {
+  if (!free || warp <= 25) return PHYSICS_DT
+  const b = BODIES[v.bodyId]
+  const s = situation(v)
+  if (s.altSea < b.atmoHeight + 2000 || s.alt < 5000) return PHYSICS_DT
+  if (v.throttle > 0) return PHYSICS_DT
+  return Math.min(0.2, PHYSICS_DT * (warp / 25))
+}
+const PHYS_STEP_BUDGET = 260
+
 /** Bekleme süresine göre en hızlı güvenli zaman çarpanı: bekleme yaklaşık 3 gerçek saniyede geçer. */
 function chooseCoastWarpIdx(waitSec: number, maxCap = WARPS.length - 1): number {
   let idx = 0
@@ -217,13 +246,16 @@ function updateTransferAutopilot(
   const targetId = vesselTargetBody(gs, v)
   const target = BODIES[targetId]
   const body = BODIES[v.bodyId]
-  const setAutoWarp = (idx: number) => {
-    wantedWarpOut?.set(v.id, idx)
-    if (!gs.mp && v.id === gs.activeId) sim.warpIdx = idx
+  // Çok oyunculuda zaman yöneticisine öneri; tek oyunculuda zamanı oyuncu seçer, otopilot yalnızca
+  // bir sonraki yanışı kaçırmamak için süzülmeyi o ana kadar keser.
+  apHold.delete(v)
+  const hold = (sec: number) => {
+    wantedWarpOut?.set(v.id, chooseCoastWarpIdx(sec, 9))
+    if (!gs.mp) apHold.set(v, gs.time + Math.max(0, sec))
   }
   const clearHighWarp = () => {
     wantedWarpOut?.set(v.id, 0)
-    if (!gs.mp && v.id === gs.activeId && sim.warpIdx > PHYSICS_WARP_MAX_IDX) sim.warpIdx = 0
+    apHold.delete(v)
   }
 
   if (v.bodyId === targetId) {
@@ -247,6 +279,11 @@ function updateTransferAutopilot(
       (el.e < 1 && el.ra < body.radius + safeAlt * 0.78))
   if (needsParking) {
     v.autopilotNote = `${target.name} transferi öncesi park yörüngesine çıkılıyor…`
+    // Park yörüngesine çıkarken öte noktaya süzülme de bir sonraki yanışta kesilmeli.
+    if (!v.landed && v.throttle <= 0) {
+      const wait = orbitCoastWait(v, body, s)
+      if (wait !== null) hold(wait)
+    }
     return null
   }
 
@@ -264,7 +301,7 @@ function updateTransferAutopilot(
         v.throttle = 0
         const rem = Math.max(0, hitEnd - gs.time)
         if (s.altSea >= body.atmoHeight) {
-          setAutoWarp(chooseCoastWarpIdx(rem, 9))
+          hold(rem)
         }
         v.autopilotNote = `${target.name}'a süzülme — varış ${Math.max(1, Math.round(rem))} s`
         return proAngle
@@ -284,7 +321,7 @@ function updateTransferAutopilot(
     if (!burningNow && (waitSec > lead || el.ra >= rTarget * 0.94)) {
       v.throttle = 0
       if (s.altSea >= body.atmoHeight) {
-        setAutoWarp(chooseCoastWarpIdx(Math.max(0, waitSec - lead), 9))
+        hold(Math.max(0, waitSec - lead))
       }
       v.autopilotNote = `${target.name} transfer penceresi bekleniyor (${Math.round(waitSec)} s)…`
       return proAngle
@@ -307,7 +344,7 @@ function updateTransferAutopilot(
   if (body.parentId && body.parentId !== 'sun' && body.orbit && target.parentId !== v.bodyId) {
     if (el.e > 1.04) {
       v.throttle = 0
-      if (s.altSea >= body.atmoHeight) setAutoWarp(chooseCoastWarpIdx((body.soi - s.r) / Math.max(1, s.vr), 9))
+      if (s.altSea >= body.atmoHeight) hold((body.soi - s.r) / Math.max(1, s.vr))
       v.autopilotNote = `${body.name} çekiminden çıkılıyor…`
       return proAngle
     }
@@ -326,7 +363,7 @@ function updateTransferAutopilot(
     const orbitWait = signedWaitSec(burnPosAngle, shipAngle, el.dir * nShip)
     if (el.e < 0.5 && orbitWait > 14) {
       v.throttle = 0
-      if (s.altSea >= body.atmoHeight) setAutoWarp(chooseCoastWarpIdx(orbitWait - 8, 9))
+      if (s.altSea >= body.atmoHeight) hold(orbitWait - 8)
       v.autopilotNote = `${target.name} için ${body.name} çıkış açısına dönülüyor (${Math.round(orbitWait)} s)…`
       return proAngle
     }
@@ -353,14 +390,14 @@ function updateTransferAutopilot(
 
     if (el.e > 1.02 && energyNow >= energyTarget * 0.94) {
       v.throttle = 0
-      if (s.altSea >= body.atmoHeight) setAutoWarp(chooseCoastWarpIdx((body.soi - s.r) / Math.max(1, s.vr), 9))
+      if (s.altSea >= body.atmoHeight) hold((body.soi - s.r) / Math.max(1, s.vr))
       v.autopilotNote = `${planet.name}'a doğru ${body.name} çekiminden çıkılıyor…`
       return proAngle
     }
 
     if (sunWait > 3600 * 12 && el.e < 0.85) {
       v.throttle = 0
-      if (s.altSea >= body.atmoHeight) setAutoWarp(chooseCoastWarpIdx(sunWait - 3600 * 6, 9))
+      if (s.altSea >= body.atmoHeight) hold(sunWait - 3600 * 6)
       v.autopilotNote = `${planet.name} gezegen penceresi bekleniyor…`
       return proAngle
     }
@@ -375,7 +412,7 @@ function updateTransferAutopilot(
 
     if (el.e < 0.7 && orbitWait > 14) {
       v.throttle = 0
-      if (s.altSea >= body.atmoHeight) setAutoWarp(chooseCoastWarpIdx(orbitWait - 8, 9))
+      if (s.altSea >= body.atmoHeight) hold(orbitWait - 8)
       v.autopilotNote = `${planet.name} çıkış açısına dönülüyor (${Math.round(orbitWait)} s)…`
       return proAngle
     }
@@ -397,7 +434,7 @@ function updateTransferAutopilot(
       if (hitEnd !== null) {
         v.throttle = 0
         const rem = Math.max(0, hitEnd - gs.time)
-        setAutoWarp(chooseCoastWarpIdx(rem, 9))
+        hold(rem)
         v.autopilotNote = `${planet.name}'a karşılaşma kilitli — varış bekleniyor…`
         return proAngle
       }
@@ -412,14 +449,14 @@ function updateTransferAutopilot(
 
     if (reachedRadius) {
       v.throttle = 0
-      setAutoWarp(chooseCoastWarpIdx(Math.max(10_000, waitSec * 0.25), 9))
+      hold(Math.max(10_000, waitSec * 0.25))
       v.autopilotNote = `${planet.name} yörünge kesişimi bekleniyor…`
       return proAngle
     }
 
     if (waitSec > 3600 * 18) {
       v.throttle = 0
-      setAutoWarp(chooseCoastWarpIdx(waitSec - 3600 * 6, 9))
+      hold(waitSec - 3600 * 6)
       v.autopilotNote = `${planet.name} Güneş transfer penceresi bekleniyor…`
       return proAngle
     }
@@ -444,8 +481,7 @@ function triggerProximityArrival(sim: Sim, v: Vessel, bodyId: BodyId, events: Ga
   v.autopilotNote = `${b.name} yörüngesine giriliyor…`
   v.sas = 'retrograde'
   v.approachWarn = bodyId
-  if (!sim.gs.mp && v.id === sim.gs.activeId) sim.warpIdx = 0
-  else if (sim.gs.mp && sim.warpIdx > 2) sim.warpIdx = 0
+  if (sim.gs.mp && sim.warpIdx > 2) sim.warpIdx = 0
   events.push({ type: 'toast', text: `✓ ${b.name} hedefine ulaşıldı. Otopilot yörüngeye giriyor; inmek için Oto-İniş'e bas.` })
 }
 
@@ -805,14 +841,14 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
       if (wait !== null && !needsPhysics(v, null)) {
         const w = chooseCoastWarpIdx(wait, 9)
         if (autopilotWanted) autopilotWanted.set(v.id, Math.max(autopilotWanted.get(v.id) ?? 0, w))
-        else sim.warpIdx = w
+        else apHold.set(v, gs.time + wait)
       } else if (v.throttle > 0) {
         if (autopilotWanted) autopilotWanted.set(v.id, Math.min(autopilotWanted.get(v.id) ?? 2, 2))
-        else if (sim.warpIdx > 2) sim.warpIdx = 2
+        else apHold.delete(v)
       }
     }
     // Otopilot fizik adımındayken (alçak süzülme / yanış) de zamanı olabildiğince hızlı tutar.
-    if ((ap === 'orbit' || ap === 'transfer') && isOwnedActive && !v.landed && needsPhysics(v, null)) {
+    if (isMp && (ap === 'orbit' || ap === 'transfer') && isOwnedActive && !v.landed && needsPhysics(v, null)) {
       const b = BODIES[v.bodyId]
       const sit = situation(v)
       if (sit.altSea > b.atmoHeight + 500) {
@@ -845,15 +881,40 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
     )
     sim.warpIdx = dyn.warpIdx
     sim.warpRampTimer = dyn.rampTimer
+  } else if (!isMp && active && isAutopilotOn(active)) {
+    // Otopilot: 500 m altında 1×, üstünde oyuncunun seçtiği hız (seçimi hatırlanır).
+    if (!apFree(gs, active)) {
+      if (sim.warpIdx > 0) {
+        sim.warpLockPrev = sim.warpIdx
+        sim.warpIdx = 0
+      }
+    } else if (sim.warpLockPrev !== undefined) {
+      sim.warpIdx = sim.warpLockPrev
+      sim.warpLockPrev = undefined
+    }
   } else if (active && sim.warpIdx > PHYSICS_WARP_MAX_IDX && needsPhysics(active, singleCtrl)) {
     sim.warpIdx = PHYSICS_WARP_MAX_IDX
     events.push({ type: 'toast', text: 'Zaman hızlandırma 25×\'e düştü (itki / atmosfer / yüzey).' })
   }
+  if (!isMp && !(active && isAutopilotOn(active))) sim.warpLockPrev = undefined
   const warp = WARPS[sim.warpIdx]!
   let simDt = real * warp
   const t0 = gs.time
+  const activeFree = apFree(gs, active)
+  if (activeFree && active) {
+    if (needsPhysics(active, singleCtrl)) {
+      // Yüksek hızda fizik: alt adım sayısı bütçeyi aşarsa bu karede daha az zaman ilerlet.
+      const h = physStep(active, warp, true)
+      simDt = Math.min(simDt, PHYS_STEP_BUDGET * h)
+    } else {
+      const until = apHold.get(active)
+      if (until !== undefined) simDt = Math.min(simDt, Math.max(real, until - gs.time))
+    }
+  }
 
-  for (const v of [...gs.vessels]) {
+  // Aktif araç önce adımlanır: yüksek hızda kareyi erken bitirirse (simDt kısalır) diğerleri buna uyar.
+  const order = activeFree && active ? [active, ...gs.vessels.filter((o) => o !== active)] : [...gs.vessels]
+  for (const v of order) {
     const isActive = isMp ? isAnyActivePlayerVessel(gs, v) : v === active
     const c = isMp
       ? (isActive && v.ownerId ? (effCtrlMap!.get(v.ownerId) ?? null) : null)
@@ -872,12 +933,27 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
       sim.firing.delete(v.id)
       continue
     }
-    if (needP && sim.warpIdx <= PHYSICS_WARP_MAX_IDX) {
-      const n = Math.max(1, Math.ceil(simDt / PHYSICS_DT))
+    const freeV = isActive && activeFree
+    if (needP && (sim.warpIdx <= PHYSICS_WARP_MAX_IDX || freeV)) {
+      const n = Math.min(4000, Math.max(1, Math.ceil(simDt / physStep(v, warp, freeV))))
       const h = simDt / n
       const manualScale = 1 / Math.max(1, warp)
+      // Yüksek hızda transfer otopilotunun kararları kare başına değil, oyun zamanında sık sık yenilenir.
+      const refreshEvery = freeV && apBefore === 'transfer' && n > 1 ? Math.max(1, Math.round(0.1 / h)) : 0
+      let apTarget = extTarget
       for (let i = 0; i < n; i += 1) {
-        const res = stepPhysics(v, h, c, manualScale, extTarget)
+        if (refreshEvery && i > 0 && i % refreshEvery === 0) {
+          if (effectiveAutopilot(v) !== 'transfer') break
+          gs.time = t0 + i * h
+          apTarget = updateTransferAutopilot(sim, v, events)
+          autoStageIfSpent(sim, v, events)
+          if (!needsPhysics(v, c)) {
+            // Süzülmeye geçildi: bu kareyi burada bitir, kalan zaman bir sonraki karede raylarda ilerler.
+            simDt = i * h
+            break
+          }
+        }
+        const res = stepPhysics(v, h, c, manualScale, apTarget)
         sim.firing.set(v.id, res.firing)
         if (res.crash) {
           if (v.debris) explodeDebris(sim, v, events)
@@ -919,7 +995,7 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
       stepRails(v, chunk)
       remaining -= chunk
       const t = t0 + (simDt - remaining)
-      if (checkSoi(sim, v, t, events) && isActive && !isMp && sim.warpIdx > 4) sim.warpIdx = 4
+      if (checkSoi(sim, v, t, events) && isActive && !isMp && sim.warpIdx > 4 && !activeFree) sim.warpIdx = 4
       const body = BODIES[v.bodyId]
       const s = situation(v, st)
       if (s.r < body.radius || (body.landable && s.alt <= 0)) {
@@ -931,7 +1007,12 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
         break
       }
       if (!isMp && isActive && sim.warpIdx > PHYSICS_WARP_MAX_IDX && (s.altSea < body.atmoHeight || (body.landable && s.vr < 0 && s.alt < Math.max(4000, -20 * s.vr)))) {
-        // Yaklaşma koruması: kalan süreyi at, fizik adımına geç.
+        // Yaklaşma koruması: kalan süreyi at, fizik adımına geç (otopilotta seçilen hız korunur).
+        if (activeFree) {
+          simDt -= remaining
+          remaining = 0
+          break
+        }
         sim.warpIdx = PHYSICS_WARP_MAX_IDX
         simDt -= remaining
         remaining = 0
