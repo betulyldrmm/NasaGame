@@ -890,3 +890,5 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 /* Çok oyunculu lobi */
 .mp-card, .mp-room-card { background: linear-gradient(#15294b, #101f3b); border: 1px solid var(--ui-line-strong); border-radius: 16px; }
 .side-panel { max-height: calc(100vh - 250px); }
+.cargo-line b { color: #fde68a; margin-right: 4px; }
+.hud-tl { max-width: 64vw; }

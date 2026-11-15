@@ -1223,7 +1223,7 @@ export default function FlightScreen({ onBuilder }: Props) {
             <div className="gauge"><span>{hud.tea ? '🫖 Dem' : 'Kademe yakıtı'}</span><i><em style={{ width: pct(hud.stageFuel, hud.stageCap) }} /></i><small>{hud.stageFuel.toFixed(1)} t</small></div>
             <div className="gauge"><span>{hud.tea ? '♨️ Sıcak Su' : 'Toplam yakıt'}</span><i><em style={{ width: pct(hud.fuel, hud.fuelCap) }} /></i><small>{hud.fuel.toFixed(1)} t</small></div>
             <div className="gauge ec"><span>Elektrik</span><i><em style={{ width: pct(hud.ec, hud.ecCap) }} /></i><small>{hud.ec.toFixed(0)}</small></div>
-            {hud.cargo && <div className="cargo-line">Kargo: {hud.cargo}</div>}
+            {hud.cargo && <div className="cargo-line"><b>Kargo</b> {hud.cargo}</div>}
             <div className="vessel-list">
               {hud.vessels.map((o) => (
                 <div key={o.id} className="vessel-row">
@@ -1405,7 +1405,7 @@ export default function FlightScreen({ onBuilder }: Props) {
                   Aracı kurtar
                 </button>
               )}
-              {hud.landed && hud.body !== 'earth' && <button className="hud-btn recover" onClick={() => setPanel('base')}>{baseBody.name} gridi</button>}
+              {hud.landed && hud.body !== 'earth' && <button className="hud-btn recover" onClick={() => setPanel('base')}>{`🏗️ ${baseBody.name} kolonisi`}</button>}
               {hud.landed && hud.body !== 'earth' && (
                 <button className={`hud-btn recover${showCargo ? ' is-on' : ''}`} onClick={() => setShowCargo((x) => !x)}>🚚 Yükle / İndir</button>
               )}

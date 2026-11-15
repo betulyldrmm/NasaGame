@@ -570,6 +570,7 @@ export const EN: Record<string, string> = {
   'Sabit Zaman:': 'Fixed Time:',
   'Zaman herkes için 2×; uzaya çıkınca Hedefe Git ile hızlı yolculuk yap. Odada en fazla 16 oyuncu.': 'Time runs at 2× for everyone; once in space use Go to Target to fast-travel. Up to 16 players per room.',
   'Oda dolu (en fazla 16 oyuncu).': 'Room is full (max 16 players).',
+  '🏗️ Ay kolonisi': '🏗️ {b} colony',
   'Çarpışma rotası düzeltiliyor…': 'Correcting collision course…',
   'Enberiye süzülüyor (daireselleştirme beklemede)…': 'Coasting to periapsis (circularisation pending)…',
   'Ay yaklaşma yörüngesi alçaltılıyor…': 'Lowering the approach orbit at {b}…',
