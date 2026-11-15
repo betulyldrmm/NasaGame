@@ -413,7 +413,7 @@ function autoLandGuidance(v: Vessel, st: VesselStats, body: BodyDef, s: Situatio
 
   // Güvenli dikey frenleme eğrisi: yüksekte hızlı alçalır, geç ve güçlü frenleyip son anda yumuşak oturur.
   const aNet = Math.max(0.4, maxAccel * 0.9 - g)
-  const maxDesc = Math.min(400, Math.max(85, body.radius * 0.0032))
+  const maxDesc = Math.min(600, Math.max(110, body.radius * 0.0055))
   const touchSpeed = Math.min(3.6, Math.max(2.2, tol * 0.36))
   const vBrake = Math.sqrt(2 * aNet * Math.max(0, s.alt - 4)) * 0.86
   const flareLimit = touchSpeed + Math.max(0, s.alt - 3) * 0.19

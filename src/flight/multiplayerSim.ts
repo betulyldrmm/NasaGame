@@ -710,7 +710,10 @@ export function landingWarpCap(v: Vessel, st = vesselStats(v.parts, v.cargo)): {
   if (v.bodyId !== 'earth' && s.alt < 1000) return { maxIdx: 0, autoIdx: 0 }
   if (s.alt < 350 || tGround < 7.5) return { maxIdx: 2, autoIdx: 2 }
   if (s.alt < 1500 || tGround < 15) return { maxIdx: 3, autoIdx: 3 }
-  return { maxIdx: PHYSICS_WARP_MAX_IDX, autoIdx: PHYSICS_WARP_MAX_IDX }
+  if (s.alt < 5000 || tGround < 40) return { maxIdx: PHYSICS_WARP_MAX_IDX, autoIdx: PHYSICS_WARP_MAX_IDX }
+  // Yüksekten alçalış: fizik alt adımları doğruluğu korur, zaman daha hızlı akabilir.
+  if (s.alt < 20_000 || tGround < 90) return { maxIdx: PHYSICS_WARP_MAX_IDX + 1, autoIdx: PHYSICS_WARP_MAX_IDX + 1 }
+  return { maxIdx: PHYSICS_WARP_MAX_IDX + 2, autoIdx: PHYSICS_WARP_MAX_IDX + 2 }
 }
 
 /**
@@ -796,6 +799,7 @@ export function computeDynamicWarp(
     if (!v.landed) {
       if (body.landable && ap === 'land') {
         const cap = landingWarpCap(v, st)
+        cap.maxIdx = Math.min(cap.maxIdx, PHYSICS_WARP_MAX_IDX)
         tighten(
           cap.maxIdx,
           'landing',

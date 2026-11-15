@@ -266,14 +266,15 @@ describe('25x warp & auto-land', () => {
     gs.nextId = 2
     const sim: Sim = { gs, warpIdx: 7, firing: new Map() }
 
-    // Başlangıçta 2500× seçili olsa bile Oto-İniş devreye girerken tehlikeli yüksek hızdan anında 1×'e iner.
+    // Başlangıçta 2500× seçili olsa bile Oto-İniş devreye girerken iniş sınırına (12 km'de en fazla 100×) iner.
     stepWorld(sim, 0.05, ctrl)
-    expect(sim.warpIdx).toBe(0)
+    expect(WARPS[sim.warpIdx]!).toBeLessThanOrEqual(100)
 
     // Çok yüksekte (12 km) oyuncu hızı 2500×'e çıkarsa bile fizik sınırı (25×) içinde tutar, raylara kaçırmaz.
+    // 12 km yükseklikte oyuncu 2500× seçse bile iniş sınırı (100×) içinde tutulur, raylara kaçırmaz.
     sim.warpIdx = 7
     stepWorld(sim, 0.05, ctrl)
-    expect(WARPS[sim.warpIdx]!).toBeLessThanOrEqual(25)
+    expect(WARPS[sim.warpIdx]!).toBeLessThanOrEqual(100)
 
     // 1.000 m alçalmasında en fazla 10×, 250 m'de en fazla 4×, 100 m altında ise otomatik 1×'e iner.
     const lander = gs.vessels[0]!
@@ -281,7 +282,7 @@ describe('25x warp & auto-land', () => {
     lander.vel = { x: 8, y: -20 }
     sim.warpIdx = 4
     stepWorld(sim, 1 / 60, ctrl)
-    expect(WARPS[sim.warpIdx]!).toBeLessThanOrEqual(10)
+    expect(WARPS[sim.warpIdx]!).toBe(1) // Dünya dışında 1000 m ve altı 1×
 
     lander.pos = { x: 0, y: moon.radius + terrainHeight('moon', Math.PI / 2) + 250 }
     lander.vel = { x: 4, y: -15 }
@@ -561,14 +562,14 @@ describe('auto-orbit, auto-transfer & proximity warning', () => {
       v = activeVessel(sim.gs)!
       if (!v) throw new Error('vessel lost: ' + JSON.stringify(evs))
       if (evs.some((e) => e.type === 'toast' && e.text.includes('hedefine ulaşıldı'))) arrived = true
-      if (sim.gs.missionsDone.includes('moon-orbit')) {
+      if (v.bodyId === 'moon' && v.landed) {
         captured = true
         break
       }
     }
     expect(v.bodyId).toBe('moon')
     expect(arrived).toBe(true)
-    // varışta otopilot kendisi yörüngeye girer
+    // varışta otopilot yörüngeye oturmadan doğrudan yüzeye iner
     expect(captured).toBe(true)
   }, 60_000)
 
@@ -652,8 +653,7 @@ describe('auto-orbit, auto-transfer & proximity warning', () => {
       }
     }
     expect(arrivedEarth).toBe(true)
-    expect(v.autopilot).toBe('orbit')
-    expect(sim.warpIdx).toBeGreaterThanOrEqual(7) // uzun süzülmede otopilot hızı kendiliğinden yükseltebilir
+    expect(v.autopilot).toBe('land') // hedefe git: doğrudan yüzeye iniş
   }, 30_000)
 })
 
@@ -772,7 +772,7 @@ describe('ISS, break-up and easter eggs', () => {
     expect(sim.gs.achievements).toContain('hamilton')
   })
 
-  it('hedefe git 1×ten başlasa da hızı kendisi yükseltip Ay yüzeyine iner (yörüngede 5 sn 1× molası)', () => {
+  it('hedefe git yörüngeye oturmadan doğrudan Ay yüzeyine iner, 1000 m altında 1×', () => {
     const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
     sim.gs.money = 100_000
     expect(launchDesign(sim)).toBeNull()
@@ -780,15 +780,12 @@ describe('ISS, break-up and easter eggs', () => {
     sim.gs.targetBody = 'moon'
     expect(setVesselAutopilot(sim, v, 'transfer')).toBeNull()
     let frames = 0
-    let sawHold = false
+    let sawOrbitAtMoon = false
     let sawLand = false
     for (; frames < 20_000; frames += 1) {
       stepWorld(sim, 1 / 60, ctrl)
       v = activeVessel(sim.gs)!
-      if (sim.warpHoldUntil !== undefined) {
-        sawHold = true
-        expect(sim.warpIdx).toBe(0)
-      }
+      if (v.bodyId === 'moon' && v.autopilot === 'orbit') sawOrbitAtMoon = true
       if (v.autopilot === 'land') sawLand = true
       if (v.bodyId === 'moon' && v.autopilot === 'land') {
         const alt = Math.hypot(v.pos.x, v.pos.y) - BODIES.moon.radius - terrainHeight('moon', Math.atan2(v.pos.y, v.pos.x))
@@ -796,11 +793,11 @@ describe('ISS, break-up and easter eggs', () => {
       }
       if (v.landed && v.bodyId === 'moon') break
     }
-    expect(sawHold).toBe(true)
+    expect(sawOrbitAtMoon).toBe(false)
     expect(sawLand).toBe(true)
     expect(v.bodyId).toBe('moon')
     expect(v.landed).toBe(true)
-    expect(frames / 60).toBeLessThan(300) // gerçek saniye
+    expect(frames / 60).toBeLessThan(150) // gerçek saniye
   }, 90_000)
 
   it('otopilot 500 m altında 1×, üstünde oyuncunun seçtiği hız', () => {

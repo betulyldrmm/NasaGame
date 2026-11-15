@@ -167,7 +167,7 @@ export const apLockAlt = (bodyId: BodyId) => (bodyId === 'earth' ? AP_LOCK_ALT :
 function apFree(gs: GameState, v: Vessel | null): boolean {
   if (!v || gs.mp || v.id !== gs.activeId || v.landed) return false
   const ap = effectiveAutopilot(v)
-  if (ap !== 'orbit' && ap !== 'transfer') return false
+  if (ap !== 'orbit' && ap !== 'transfer' && ap !== 'land') return false
   return situation(v).alt >= apLockAlt(v.bodyId)
 }
 /** Fizik alt adımı: atmosferde/yere yakınken sabit, boşlukta hızla birlikte büyür. */
@@ -716,12 +716,17 @@ function triggerProximityArrival(sim: Sim, v: Vessel, bodyId: BodyId, events: Ga
   v.sas = 'retrograde'
   v.approachWarn = bodyId
   if (sim.gs.mp && sim.warpIdx > 2) sim.warpIdx = 0
-  // Tek oyunculu "hedefe git" yüzeye kadar götürür: önce yörüngeye oturur, sonra kendiliğinden iner.
+  // Tek oyunculu "hedefe git" yörüngeye oturmadan doğrudan yüzeye iner (1000 m altında 1×).
   const willLand = !sim.gs.mp && b.landable && hasAutoLandTech(sim.gs)
-  if (willLand) v.landAt = bodyId
+  if (willLand) {
+    v.autopilot = 'land'
+    v.autoLand = true
+    v.sas = 'off'
+    v.autopilotNote = `${b.name} yüzeyine iniliyor…`
+  }
   events.push({
     type: 'toast',
-    text: willLand ? `✓ ${b.name} hedefine ulaşıldı. Otopilot önce yörüngeye girecek, sonra yüzeye inecek.` : `✓ ${b.name} hedefine ulaşıldı. Otopilot yörüngeye giriyor; inmek için Oto-İniş'e bas.`,
+    text: willLand ? `✓ ${b.name} hedefine ulaşıldı. Otopilot doğrudan yüzeye iniyor.` : `✓ ${b.name} hedefine ulaşıldı. Otopilot yörüngeye giriyor; inmek için Oto-İniş'e bas.`,
   })
 }
 
@@ -1164,9 +1169,12 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
     if (ap === 'land') {
       sim.warpLockPrev = undefined
       const cap = landingWarpCap(active)
-      if (prevAp !== 'land' && sim.warpIdx > PHYSICS_WARP_MAX_IDX) {
-        sim.warpIdx = 0
-        events.push({ type: 'toast', text: "Oto-İniş yaklaşımı: hız 1×'e düşürüldü." })
+      if (prevAp !== 'land' && sim.warpIdx > cap.maxIdx) {
+        sim.warpIdx = cap.maxIdx
+        if (cap.maxIdx === 0) events.push({ type: 'toast', text: "Oto-İniş yaklaşımı: hız 1×'e düşürüldü." })
+      } else if (!sim.apWarpPinned && sim.warpIdx < cap.autoIdx) {
+        // Yüksekten inişte zaman kendiliğinden hızlanır; yere yaklaştıkça kademeli yavaşlar.
+        sim.warpIdx = cap.autoIdx
       } else if (sim.warpIdx > cap.maxIdx) {
         sim.warpIdx = cap.maxIdx
         events.push({
