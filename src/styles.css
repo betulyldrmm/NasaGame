@@ -814,3 +814,79 @@ kbd { background: #1b2b47; border: 1px solid #8296b355; border-bottom-width: 2px
 .cargo-window { right: 72px; top: 250px; }
 .grid-wrap { overflow: auto; place-items: start center; }
 .grid-wrap .grid-canvas { margin: 0 auto; }
+
+/* ═════════ Final cila: tek bir sade cam-panel dili (yalnızca görünüm, davranış değişmez) ═════════ */
+:root {
+  --ui-glass: rgba(10, 20, 40, 0.72);
+  --ui-glass-strong: rgba(10, 20, 40, 0.9);
+  --ui-line: rgba(140, 170, 215, 0.2);
+  --ui-line-strong: rgba(140, 170, 215, 0.38);
+  --ui-radius: 10px;
+  --ui-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+}
+::selection { background: #38d9e855; }
+* { scrollbar-width: thin; scrollbar-color: #35507c transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: #35507c; border-radius: 8px; }
+*::-webkit-scrollbar-track { background: transparent; }
+button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--color-turquoise); outline-offset: 2px; }
+
+/* HUD düğmeleri: aynı yükseklik, sakin kenarlık, yumuşak geçiş */
+.hud-btn { min-height: 34px; padding: 7px 13px; border-radius: var(--ui-radius); background: var(--ui-glass); border: 1px solid var(--ui-line); font-weight: 600; letter-spacing: .01em; backdrop-filter: blur(10px); box-shadow: none; transition: background .15s, border-color .15s, color .15s, transform .1s; }
+.hud-btn:hover:not(:disabled) { background: rgba(26, 46, 82, 0.92); border-color: var(--ui-line-strong); }
+.hud-btn:active:not(:disabled) { transform: translateY(1px); }
+.hud-btn.is-on { background: var(--color-turquoise); border-color: var(--color-turquoise); color: #06131e; }
+.hud-btn.recover { background: rgba(74, 222, 128, 0.16); color: #b9f7cf; border-color: rgba(74, 222, 128, 0.55); }
+.hud-btn.recover:hover:not(:disabled) { background: rgba(74, 222, 128, 0.28); border-color: #4ade80; }
+.hud-btn.recover.is-on { background: #4ade80; color: #052010; }
+.hud-btn.stage { border-color: rgba(255, 173, 87, 0.55); }
+
+/* Bilgi kutuları */
+.readout, .hud-bl, .next-mission, .target-bar, .autopilot-note, .warp, .mp-warp-card, .mp-scoreboard, .income-chip, .money-chip {
+  background: var(--ui-glass); border: 1px solid var(--ui-line); border-radius: var(--ui-radius); backdrop-filter: blur(10px); box-shadow: var(--ui-shadow);
+}
+.readout { padding: 10px 12px; gap: 3px 14px; }
+.readout .big { font-family: 'Manrope', sans-serif; font-size: 16px; letter-spacing: -.01em; margin-bottom: 2px; }
+.readout b { font-weight: 600; }
+.warp { padding: 4px 6px; gap: 4px; }
+.warp b { background: transparent; padding: 4px 6px; min-width: 44px; text-align: center; }
+.warp .hud-btn { background: transparent; border-color: transparent; box-shadow: none; backdrop-filter: none; min-height: 28px; padding: 4px 9px; }
+.warp .hud-btn:hover:not(:disabled) { background: rgba(26, 46, 82, 0.92); }
+.hud-bl { padding: 10px 12px; gap: 7px; text-shadow: none; }
+.gauge i { height: 7px; background: rgba(255, 255, 255, 0.1); }
+.gauge em { background: linear-gradient(90deg, #7fd6ff, #e9f6ff); }
+.gauge.ec em { background: linear-gradient(90deg, #f5c542, #ffe58a); }
+.vessel-list button { background: rgba(255, 255, 255, 0.04); border-color: var(--ui-line); border-radius: 8px; padding: 6px 9px; transition: border-color .15s, background .15s; }
+.vessel-list button:hover { background: rgba(255, 255, 255, 0.08); }
+.vessel-list button.is-on { border-color: var(--color-turquoise); background: rgba(56, 217, 232, 0.1); }
+.target-bar { padding: 5px 8px 5px 12px; margin-bottom: 8px; font-family: 'Manrope', sans-serif; font-size: 12px; }
+.target-bar select { border-radius: 8px; background: rgba(255, 255, 255, 0.06); border-color: var(--ui-line); padding: 4px 8px; }
+.mini-warp-btn { font-family: 'Manrope', sans-serif; font-size: 12px; font-weight: 600; padding: 5px 9px; border-radius: 7px; transition: background .15s, color .15s; }
+.autopilot-note { box-shadow: none; color: #cfefff; }
+.next-mission { padding: 7px 12px; }
+
+/* Bildirimler */
+.toast { background: var(--ui-glass-strong); border: 1px solid var(--ui-line); border-radius: var(--ui-radius); padding: 8px 14px; backdrop-filter: blur(10px); animation: toast-in .22s ease-out; }
+.toast.mission { border-color: rgba(74, 222, 128, 0.7); background: rgba(10, 40, 26, 0.92); font-size: 13.5px; padding: 10px 16px; }
+.toast.warn { border-color: rgba(255, 173, 87, 0.7); }
+@keyframes toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* Yan paneller, pencereler */
+.side-panel, .cargo-window { background: var(--ui-glass-strong); border: 1px solid var(--ui-line); border-radius: 14px; backdrop-filter: blur(14px); box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5); }
+.side-panel header button, .cargo-window > header button { width: 30px; height: 30px; border-radius: 8px; line-height: 1; transition: background .15s; }
+.side-panel header button:hover, .cargo-window > header button:hover { background: rgba(255, 255, 255, 0.08); }
+.dialog { background: linear-gradient(#15294b, #101f3b); border: 1px solid var(--ui-line-strong); border-radius: 14px; }
+.dialog-backdrop { backdrop-filter: blur(6px); }
+
+/* Hangar */
+.builder { background: radial-gradient(ellipse at 50% 0, #17305a 0, #0a1630 70%); }
+.builder-top { background: rgba(10, 20, 40, 0.55); border-bottom: 1px solid var(--ui-line); backdrop-filter: blur(8px); }
+.palette-item { border-color: var(--ui-line); background: rgba(255, 255, 255, 0.035); transition: border-color .15s, background .15s, transform .1s; }
+.palette-item:hover { background: rgba(255, 255, 255, 0.08); border-color: var(--ui-line-strong); transform: translateY(-1px); }
+.grid-canvas { border-radius: 12px; box-shadow: 0 0 0 1px var(--ui-line-strong), 0 20px 50px rgba(0, 0, 0, 0.45); }
+.launch-btn { border-radius: 12px; transition: transform .12s, box-shadow .15s; }
+.launch-btn:hover:not(:disabled) { transform: translateY(-1px); }
+
+/* Çok oyunculu lobi */
+.mp-card, .mp-room-card { background: linear-gradient(#15294b, #101f3b); border: 1px solid var(--ui-line-strong); border-radius: 16px; }
+.side-panel { max-height: calc(100vh - 250px); }
