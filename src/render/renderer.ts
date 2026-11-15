@@ -29,6 +29,15 @@ export interface View {
   clock: number
   /** aktif roket için yanal RCS girdisi; yalnızca görsel jetleri tetikler */
   rcsTx: number
+  /** uçuş kamerasının fareyle kaydırılması (ekran pikseli, roket ekranda kalacak şekilde sınırlı) */
+  camPan?: Vec
+}
+
+/** Kaydırma sınırı: roket ekranın kenarına kadar gidebilir ama dışına çıkamaz. */
+export function clampCamPan(view: View, pan: Vec): Vec {
+  const mx = view.w * 0.38
+  const my = view.h * 0.38
+  return { x: Math.max(-mx, Math.min(mx, pan.x)), y: Math.max(-my, Math.min(my, pan.y)) }
 }
 
 export function createView(): View {
@@ -292,25 +301,6 @@ function drawWaterTower(ctx: Ctx, flame: number) {
     ctx.closePath()
     ctx.fill()
   }
-}
-
-/** "İstikbal göklerdedir" anıtı. */
-function drawMonument(ctx: Ctx) {
-  const g = ctx.createLinearGradient(-1.4, 0, 1.4, 0)
-  g.addColorStop(0, '#8b949f')
-  g.addColorStop(0.45, '#f1f4f8')
-  g.addColorStop(1, '#6a737d')
-  ctx.fillStyle = g
-  ctx.beginPath()
-  ctx.moveTo(-1.5, 0)
-  ctx.lineTo(-0.9, -12)
-  ctx.lineTo(0, -14)
-  ctx.lineTo(0.9, -12)
-  ctx.lineTo(1.5, 0)
-  ctx.closePath()
-  ctx.fill()
-  ctx.fillStyle = '#4b525b'
-  ctx.fillRect(-3, -0.9, 6, 0.9)
 }
 
 /** Gökyüzü easter egg'leri: düşen balina + petunya saksısı, sürüklenen kırmızı spor araba. */
@@ -607,10 +597,6 @@ function drawTerrain(ctx: Ctx, cam: Cam, body: BodyDef, focusTheta: number, sim:
       })
     }
     withSurfaceFrame(ctx, cam, body, PAD_ANGLE, () => {
-      ctx.save()
-      ctx.translate(-52, 0)
-      drawMonument(ctx)
-      ctx.restore()
       const launch = (sim.fx ?? []).find((f) => f.kind === 'tower')
       const age = launch ? (sim.clock ?? 0) - launch.born : -1
       if (!sim.towerGone || (age >= 0 && age < 9)) {
@@ -806,6 +792,16 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
   const wRot = 1 - Math.min(1, Math.max(0, (altSea - body.radius * 0.02) / (body.radius * 0.1)))
   const targetRot = wrapPi(Math.PI / 2 - theta) * wRot * wRot * (3 - 2 * wRot)
   view.camRot += wrapPi(targetRot - view.camRot) * 0.12
+  if (view.camPan && (view.camPan.x || view.camPan.y)) {
+    // Ekranda (px, py) kaydırma → dünya koordinatında kamera merkezinin tersine kayması
+    const pan = clampCamPan(view, view.camPan)
+    view.camPan = pan
+    const cs = Math.cos(view.camRot)
+    const sn = Math.sin(view.camRot)
+    const ax = -pan.x / view.zoom
+    const ay = pan.y / view.zoom
+    center = { x: center.x + ax * cs + ay * sn, y: center.y - ax * sn + ay * cs }
+  }
   const cam: Cam = { cx: center.x, cy: center.y, rot: view.camRot, z: view.zoom, w: view.w, h: view.h }
   frame.cam = cam
 
@@ -834,7 +830,9 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
     const rpx = b.radius * cam.z
     if (rpx < 0.6) continue
     const margin = rpx * (1 + (b.atmoHeight / b.radius) * 1.2) + 50
-    if (p.x < -margin || p.x > view.w + margin || p.y < -margin || p.y > view.h + margin) continue
+    // Bulunduğumuz cisim her zaman çizilir: dağlar yarıçapın üstünde kaldığından küre testi yakın
+    // zoomda yüzeyi yanlışlıkla ekran dışı sayıyordu (Ay'da yüzey kayboluyordu).
+    if (b.id !== bodyId && (p.x < -margin || p.x > view.w + margin || p.y < -margin || p.y > view.h + margin)) continue
     const sunDir = b.id === 'sun' ? { x: 0, y: 0 } : (() => {
       const d = toScreen({ ...cam, cx: 0, cy: 0, w: 0, h: 0, z: 1 }, { x: -abs.x, y: -abs.y })
       const l = Math.hypot(d.x, d.y) || 1

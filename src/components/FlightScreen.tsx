@@ -54,7 +54,7 @@ import {
 } from '../flight/mpClient'
 import { CONQUERABLE_BODIES, playerPadAngle, playerPassiveIncomePerHour } from '../flight/multiplayerSim'
 import { BODIES, type BodyId, gameDate } from '../nasa/bodies'
-import { createView, type FlightFrame, type MapFrame, pickPart, pickVesselFlight, renderFlight, renderMap, resetViewCache } from '../render/renderer'
+import { clampCamPan, createView, type FlightFrame, type MapFrame, pickPart, pickVesselFlight, renderFlight, renderMap, resetViewCache } from '../render/renderer'
 import PlanetGridPanel from './ColonyPanel'
 
 const DESTINATIONS: BodyId[] = ['moon', 'earth', 'mercury', 'venus', 'mars', 'ceres', 'ganymede', 'titan']
@@ -550,6 +550,7 @@ export default function FlightScreen({ onBuilder }: Props) {
   }, [handle, toast])
 
   const switchTo = useCallback((id: number) => {
+    viewRef.current.camPan = undefined
     const curSim = getActiveSim()
     if (curSim.gs.mp) {
       const target = curSim.gs.vessels.find((o) => o.id === id)
@@ -672,7 +673,10 @@ export default function FlightScreen({ onBuilder }: Props) {
         else sim.warpIdx = Math.min(WARPS.length - 1, sim.warpIdx + 1)
       } else if (k === ',') {
         if (isMp) stepMpWarpReq(-1)
-        else sim.warpIdx = Math.max(0, sim.warpIdx - 1)
+        else {
+          sim.warpIdx = Math.max(0, sim.warpIdx - 1)
+          sim.apWarpPinned = true
+        }
       } else if (!v) return
       else if (k === ' ') {
         if (!spaceThrottle.current) {
@@ -856,12 +860,17 @@ export default function FlightScreen({ onBuilder }: Props) {
   const onMove = (e: React.MouseEvent) => {
     const d = drag.current
     const view = viewRef.current
-    if (!d || !view.map) return
+    if (!d) return
     const dx = e.clientX - d.x
     const dy = e.clientY - d.y
     if (Math.abs(dx) + Math.abs(dy) > 3) d.moved = true
     if (d.moved) {
-      view.mapPan = { x: view.mapPan.x - dx / view.mapZoom, y: view.mapPan.y + dy / view.mapZoom }
+      if (view.map) view.mapPan = { x: view.mapPan.x - dx / view.mapZoom, y: view.mapPan.y + dy / view.mapZoom }
+      else {
+        // Uçuş kamerası: sürükleyerek kaydır (roket ekranda kalır)
+        const cur = view.camPan ?? { x: 0, y: 0 }
+        view.camPan = clampCamPan(view, { x: cur.x + dx, y: cur.y + dy })
+      }
       d.x = e.clientX
       d.y = e.clientY
     }
@@ -984,7 +993,17 @@ export default function FlightScreen({ onBuilder }: Props) {
     <main className="flight">
       {alarm && !hud.landed && <div className="alarm-1202" role="alert">ERR 1202: EXEC OVERFLOW<small>İrtifa göstergesi devre dışı — göz kararı in!</small></div>}
       {hud.tea && <div className="tea-glass" title="Çayı dökme!">🍵</div>}
-      <canvas ref={canvasRef} className="flight-canvas" onWheel={onWheel} onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={() => (drag.current = null)} />
+      <canvas
+        ref={canvasRef}
+        className="flight-canvas"
+        title="Sürükle: kamerayı kaydır · Çift tık: rokete ortala"
+        onWheel={onWheel}
+        onMouseDown={onDown}
+        onMouseMove={onMove}
+        onMouseUp={onUp}
+        onDoubleClick={() => (viewRef.current.camPan = undefined)}
+        onMouseLeave={() => (drag.current = null)}
+      />
 
       <div className="hud hud-tl">
         <button className="hud-btn" onClick={onBuilder}>☰ Montaj</button>
@@ -1102,6 +1121,7 @@ export default function FlightScreen({ onBuilder }: Props) {
                 key={w.label}
                 className={`mini-warp-btn${hud.warpIdx === w.idx ? ' is-on' : ''}`}
                 onClick={() => {
+                  if (w.idx < sim.warpIdx) sim.apWarpPinned = true
                   sim.warpIdx = w.idx
                   setHud(snapshot())
                 }}
@@ -1109,7 +1129,7 @@ export default function FlightScreen({ onBuilder }: Props) {
                 {w.label}
               </button>
             ))}
-            <button className="hud-btn" onClick={() => { sim.warpIdx = Math.max(0, sim.warpIdx - 1); setHud(snapshot()) }} aria-label="Yavaşlat">◀◀</button>
+            <button className="hud-btn" onClick={() => { sim.warpIdx = Math.max(0, sim.warpIdx - 1); sim.apWarpPinned = true; setHud(snapshot()) }} aria-label="Yavaşlat">◀◀</button>
             <b>{hud.warp.toLocaleString('tr-TR')}×</b>
             <button className="hud-btn" onClick={() => { sim.warpIdx = Math.min(WARPS.length - 1, sim.warpIdx + 1); setHud(snapshot()) }} aria-label="Hızlandır">▶▶</button>
           </div>

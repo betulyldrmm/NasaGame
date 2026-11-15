@@ -653,7 +653,7 @@ describe('auto-orbit, auto-transfer & proximity warning', () => {
     }
     expect(arrivedEarth).toBe(true)
     expect(v.autopilot).toBe('orbit')
-    expect(sim.warpIdx).toBe(7)
+    expect(sim.warpIdx).toBeGreaterThanOrEqual(7) // uzun süzülmede otopilot hızı kendiliğinden yükseltebilir
   }, 30_000)
 })
 
@@ -771,6 +771,24 @@ describe('ISS, break-up and easter eggs', () => {
     expect(got).toBe(true)
     expect(sim.gs.achievements).toContain('hamilton')
   })
+
+  it('hedefe git 1×ten başlasa da hızı kendisi yükseltip Ay yörüngesine makul sürede varır', () => {
+    const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
+    sim.gs.money = 100_000
+    expect(launchDesign(sim)).toBeNull()
+    let v = activeVessel(sim.gs)!
+    sim.gs.targetBody = 'moon'
+    expect(setVesselAutopilot(sim, v, 'transfer')).toBeNull()
+    let frames = 0
+    for (; frames < 12_000; frames += 1) {
+      stepWorld(sim, 1 / 60, ctrl)
+      v = activeVessel(sim.gs)!
+      if (v.bodyId === 'moon' && v.autopilot === 'off') break
+    }
+    expect(v.bodyId).toBe('moon')
+    expect(v.autopilot).toBe('off')
+    expect(frames / 60).toBeLessThan(180) // gerçek saniye
+  }, 60_000)
 
   it('otopilot 500 m altında 1×, üstünde oyuncunun seçtiği hız', () => {
     const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }

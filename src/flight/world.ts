@@ -71,6 +71,8 @@ export interface Sim {
   padLinger?: number
   /** Otopilot 500 m altında 1×'e kilitlediğinde oyuncunun seçtiği hız. */
   warpLockPrev?: number
+  /** Otopilot sırasında oyuncu hızı kendisi düşürdüyse otomatik hızlandırma yapılmaz (otopilot bitince sıfırlanır). */
+  apWarpPinned?: boolean
   rcsPulses?: number[]
 }
 
@@ -956,20 +958,9 @@ export function rendezvousStation(sim: Sim, v: Vessel): string | null {
 
 const padDistance = (v: Vessel) => Math.abs(wrapPi(Math.atan2(v.pos.y, v.pos.x) - PAD_ANGLE)) * BODIES.earth.radius
 
-/** RCS üç kez yakılırsa (anıtın yanında, yerde) geçici yakıt verimi bonusu. */
-export function noteRcsPulse(sim: Sim, v: Vessel): GameEvent[] {
-  const events: GameEvent[] = []
-  if (v.bodyId !== 'earth' || !v.landed || padDistance(v) > 150) return events
-  const now = Date.now()
-  const pulses = (sim.rcsPulses = [...(sim.rcsPulses ?? []).filter((t) => now - t < 4000), now])
-  if (pulses.length >= 3) {
-    sim.rcsPulses = []
-    sim.gs.buffUntil = now + 180_000
-    if (!grant(sim.gs, 'istikbal', 'İstikbal Göklerdedir', 'Anıtı selamladın: 3 dakika boyunca %15 yakıt verimi.', events)) {
-      events.push({ type: 'toast', text: 'Anıt selamlandı: 3 dakika boyunca %15 yakıt verimi.' })
-    }
-  }
-  return events
+/** Eski anıt selamı easter egg'i (anıt rampadan kaldırıldı): artık bir şey yapmaz. */
+export function noteRcsPulse(_sim: Sim, _v: Vessel): GameEvent[] {
+  return []
 }
 
 function onTouchdown(sim: Sim, v: Vessel, speed: number, events: GameEvent[]) {
@@ -1144,6 +1135,7 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
     const ap = effectiveAutopilot(active)
     const prevAp = apLastMode.get(active)
     if (ap === 'off') {
+      sim.apWarpPinned = undefined
       if (prevAp !== undefined) apLastMode.delete(active)
     } else if (prevAp !== ap) {
       apLastMode.set(active, ap)
@@ -1162,6 +1154,16 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
         })
       }
     } else if (ap === 'orbit' || ap === 'transfer') {
+      // Uzun süzülmelerde (transfer penceresi, Ay'a yolculuk) otopilot hızı kendiliğinden yükseltir;
+      // oyuncu daha yüksek seçebilir, düşürürse seçimi korunur.
+      const until = apHold.get(active)
+      if (!sim.apWarpPinned && until !== undefined && apFree(gs, active) && !needsPhysics(active, singleCtrl)) {
+        const want = chooseCoastWarpIdx(until - gs.time, 9)
+        if (want > sim.warpIdx) sim.warpIdx = want
+      } else if (!sim.apWarpPinned && apFree(gs, active) && sim.warpIdx < 3) {
+        // Motorlu tırmanış/yanış evrelerinde de en az 10× (fizik alt adımları doğruluğu korur).
+        sim.warpIdx = 3
+      }
       // Otopilot: 500 m altında 1×, üstünde oyuncunun seçtiği hız (seçimi hatırlanır).
       if (!apFree(gs, active)) {
         if (sim.warpIdx > 0) {
@@ -1557,7 +1559,7 @@ export function deployModules(sim: Sim, v: Vessel): string | null {
   if (sim.gs.mp) {
     const cap = sim.gs.mp.captures[v.bodyId]
     if (cap?.ownerId && cap.ownerId !== v.ownerId) return 'Bu gezegen başka bir oyuncunun kolonisi.'
-    if (!cap?.ownerId && cap?.phase === 'contested') return 'İki oyuncu yüzeyde çatışıyor: önce rakibi uzaklaştır.'
+    if (!cap?.ownerId && cap?.phase === 'contested') return 'Yüzeyde başka bir oyuncu da var: ilk çalışan Uzay İstasyonunu kuran koloniyi alır.'
   }
   const total = Object.values(v.cargo.modules).reduce((s, n) => s + n, 0)
   if (!total) return 'Kargoda indirilecek yapı yok.'
@@ -1604,7 +1606,7 @@ function canEditPlanetBase(gs: GameState, bodyId: BodyId, actorId = gs.ownerId ?
     const cap = gs.mp.captures[bodyId]
     if (cap?.ownerId === actorId) return null
     if (cap?.ownerId && cap.ownerId !== actorId) return 'Bu gezegen başka bir oyuncunun kolonisi.'
-    if (cap?.phase === 'contested') return 'İki oyuncu yüzeyde çatışıyor: önce rakibi uzaklaştır.'
+    if (cap?.phase === 'contested') return 'Yüzeyde başka bir oyuncu da var: ilk çalışan Uzay İstasyonunu kuran koloniyi alır.'
     const landed = gs.vessels.find((v) => v.landed && v.bodyId === bodyId && v.ownerId === actorId)
     if (!landed) return 'Önce bu gezegene inip yüzey kontrolünü almalısın.'
     return null
@@ -1653,7 +1655,7 @@ export function removePlanetModule(sim: Sim, bodyId: BodyId, slot: number, owner
     const cap = gs.mp.captures[bodyId]
     if (cap?.ownerId && cap.ownerId !== ownerId) return { error: 'Bu gezegen başka bir oyuncunun kolonisi.' }
     if (!cap?.ownerId) {
-      if (cap?.phase === 'contested') return { error: 'İki oyuncu yüzeyde çatışıyor.' }
+      if (cap?.phase === 'contested') return { error: 'Yüzeyde başka bir oyuncu da var.' }
       const landed = gs.vessels.find((v) => v.landed && v.bodyId === bodyId && v.ownerId === ownerId)
       if (!landed) return { error: 'Sökmek için yüzeye inmelisin.' }
     }

@@ -537,6 +537,7 @@ export const EN: Record<string, string> = {
   'Dikkat:': 'Careful:',
   'Roketler birbirine çarparsa iki taraf da hasar görür.': 'If rockets collide, both get damaged.',
   'yüzeyinde birden fazla oyuncu var — ilk çalışan Uzay İstasyonunu kuran koloniyi alır.': 'has more than one player on its surface — the first working Space Station takes the colony.',
+  'Sürükle: kamerayı kaydır · Çift tık: rokete ortala': 'Drag: pan the camera · Double-click: re-center on the rocket',
   'Çarpışma rotası düzeltiliyor…': 'Correcting collision course…',
   'Enberiye süzülüyor (daireselleştirme beklemede)…': 'Coasting to periapsis (circularisation pending)…',
   'Ay yaklaşma yörüngesi alçaltılıyor…': 'Lowering the approach orbit at {b}…',
@@ -648,8 +649,8 @@ export const EN: Record<string, string> = {
   // ── uzay istasyonu & kargo kolonizasyonu ──
   'Uzay İstasyonu': 'Space Station',
   'Yüksek elektrik ister (-7 ⚡); çalışırken gezegeni kolonileştirir ve gelir getirir.': 'Needs heavy power (-{n} ⚡); while powered it colonizes the planet and earns income.',
-  'İki oyuncu yüzeyde çatışıyor: önce rakibi uzaklaştır.': 'Two players are contesting the surface: clear the rival first.',
-  'İki oyuncu yüzeyde çatışıyor.': 'Two players are contesting the surface.',
+  'Yüzeyde başka bir oyuncu da var: ilk çalışan Uzay İstasyonunu kuran koloniyi alır.': 'Another player is on the surface too: the first working Space Station takes the colony.',
+  'Yüzeyde başka bir oyuncu da var.': 'Another player is on the surface too.',
   'Sökmek için yüzeye inmelisin.': 'Land on the surface to dismantle buildings.',
   'Önce bu gezegene inip yüzey kontrolünü almalısın.': 'Land on this planet and take surface control first.',
   'Yerinde üretim için önce kargoyla Uzay İstasyonu ve güç getirip kurmalısın (veya kargoyla taşı).': 'To build on-site, carry and install a Space Station and power first (or haul modules in cargo).',
