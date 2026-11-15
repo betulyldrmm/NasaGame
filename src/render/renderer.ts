@@ -6,6 +6,7 @@ import { vesselStats } from '../game/vessel'
 import { bodyAbsState, len, stateAtAnomaly, type Vec, wrapPi } from '../flight/orbit'
 import { airDensity, PAD_ANGLE, situation, terrainHeight } from '../flight/physics'
 import type { Patch } from '../flight/predict'
+import { padAngleForSlot, playerPadAngle } from '../flight/multiplayerSim'
 import { activeVessel, type Sim } from '../flight/world'
 import { BODIES, BODY_LIST, type BodyDef, type BodyId } from '../nasa/bodies'
 import { drawVesselParts } from './partArt'
@@ -532,7 +533,8 @@ function drawTerrain(ctx: Ctx, cam: Cam, body: BodyDef, focusTheta: number, sim:
     for (let k = k0; k <= k1; k += 1) {
       const r1 = hash(k * 1.37 + body.radius)
       const theta = (k + hash(k) * 0.6) * dTheta
-      if (body.id === 'earth' && Math.abs(wrapPi(theta - PAD_ANGLE)) * body.radius < 90) continue
+      const padMargin = sim.gs.mp ? 700 : 90
+      if (body.id === 'earth' && Math.abs(wrapPi(theta - PAD_ANGLE)) * body.radius < padMargin) continue
       if (r1 > 0.62) continue
       withSurfaceFrame(ctx, cam, body, theta, () => {
         const s = 0.6 + hash(k * 3.1) * 1.4
@@ -584,8 +586,26 @@ function drawTerrain(ctx: Ctx, cam: Cam, body: BodyDef, focusTheta: number, sim:
     }
   }
   if (body.id === 'earth' && cam.z > 0.12) {
+    if (sim.gs.mp) {
+      for (const p of Object.values(sim.gs.mp.players)) {
+        const thetaPad = padAngleForSlot(p.slot)
+        withSurfaceFrame(ctx, cam, body, thetaPad, () => {
+          drawPad(ctx)
+          ctx.fillStyle = p.color
+          ctx.fillRect(-10, -2, 20, 2)
+          if (cam.z > 0.45) {
+            ctx.font = 'bold 9px "DM Mono", monospace'
+            ctx.textAlign = 'center'
+            ctx.fillText(p.username, 0, -18)
+          }
+        })
+      }
+    } else {
+      withSurfaceFrame(ctx, cam, body, PAD_ANGLE, () => {
+        drawPad(ctx)
+      })
+    }
     withSurfaceFrame(ctx, cam, body, PAD_ANGLE, () => {
-      drawPad(ctx)
       ctx.save()
       ctx.translate(-52, 0)
       drawMonument(ctx)
@@ -600,9 +620,42 @@ function drawTerrain(ctx: Ctx, cam: Cam, body: BodyDef, focusTheta: number, sim:
       }
     })
   }
-  const base = sim.gs.bases[body.id]
-  if (base && cam.z > 0.2) withSurfaceFrame(ctx, cam, body, base.siteAngle, () => drawBaseSites(ctx, base.sites ?? []))
-  void clock
+  const earthBase = sim.gs.mp ? sim.gs.mp.players[sim.gs.ownerId ?? '']?.earthBase : sim.gs.bases[body.id]
+  const base = body.id === 'earth' ? earthBase : sim.gs.bases[body.id]
+  const baseAngle = body.id === 'earth' && sim.gs.mp ? playerPadAngle(sim.gs, sim.gs.ownerId) : base?.siteAngle ?? PAD_ANGLE
+  if (base && cam.z > 0.2) withSurfaceFrame(ctx, cam, body, baseAngle, () => drawBaseSites(ctx, base.sites ?? []))
+
+  // Çok oyunculu bayrak direği: ele geçirilmiş veya fethedilmekte olan gezegen yüzeyinde dalgalanır
+  const cap = sim.gs.mp?.captures[body.id]
+  if (sim.gs.mp && cap && cam.z > 0.16 && (cap.ownerId || (cap.capturerId && cap.progress > 0))) {
+    const owner = cap.ownerId ? sim.gs.mp.players[cap.ownerId] : null
+    const capturer = cap.capturerId ? sim.gs.mp.players[cap.capturerId] : null
+    const flagCol = owner?.color ?? capturer?.color ?? '#38d9e8'
+    const hoist = Math.max(0.15, Math.min(1, cap.progress))
+    withSurfaceFrame(ctx, cam, body, cap.flagAngle, () => {
+      ctx.strokeStyle = '#d9e3f0'
+      ctx.lineWidth = 1.4
+      ctx.beginPath()
+      ctx.moveTo(0, 0)
+      ctx.lineTo(0, -16)
+      ctx.stroke()
+      const fy = -3 - hoist * 12
+      const wave = Math.sin(clock * 5) * 1.4
+      ctx.fillStyle = flagCol
+      ctx.beginPath()
+      ctx.moveTo(0, fy)
+      ctx.quadraticCurveTo(6, fy + wave, 11, fy + 1.5 - wave * 0.5)
+      ctx.lineTo(0, fy + 5.5)
+      ctx.closePath()
+      ctx.fill()
+      if (cam.z > 0.45 && (owner || capturer)) {
+        ctx.fillStyle = flagCol
+        ctx.font = 'bold 8px "DM Mono", monospace'
+        ctx.textAlign = 'center'
+        ctx.fillText(`🚩 ${owner?.username ?? capturer?.username ?? ''}`, 5, fy - 4)
+      }
+    })
+  }
 }
 
 function vesselCell(st: ReturnType<typeof vesselStats>, z: number, minPx: number) {
@@ -618,6 +671,10 @@ function drawVesselAt(ctx: Ctx, sim: Sim, v: Vessel, p: Vec, rot: number, cell: 
 }
 
 let lastView: { bodyId: BodyId; pos: Vec; until: number } | null = null
+
+export function resetViewCache() {
+  lastView = null
+}
 
 export interface FlightFrame {
   cam: Cam | null
@@ -637,7 +694,8 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
   // Araç kaybedilince kamera son konumda kalır: enkazın savrulup patlaması izlenebilsin.
   if (v) lastView = { bodyId: v.bodyId, pos: { ...v.pos }, until: view.clock + 8 }
   const hold = !v && lastView && view.clock < lastView.until ? lastView : null
-  let center = v ? v.pos : hold ? hold.pos : { x: Math.cos(PAD_ANGLE) * padR, y: Math.sin(PAD_ANGLE) * padR }
+  const defPad = gs.mp ? playerPadAngle(gs, gs.ownerId) : PAD_ANGLE
+  let center = v ? v.pos : hold ? hold.pos : { x: Math.cos(defPad) * padR, y: Math.sin(defPad) * padR }
   const r = len(center)
   const theta = Math.atan2(center.y, center.x)
   if (v && body.landable) {
@@ -761,10 +819,61 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
       ctx.restore()
     }
     if (!isActive && !o.debris) {
-      ctx.fillStyle = 'rgba(255,255,255,.75)'
-      ctx.font = '11px "DM Mono", monospace'
+      const ownerCol = gs.mp && o.ownerId ? gs.mp.players[o.ownerId]?.color : undefined
+      ctx.fillStyle = ownerCol ?? 'rgba(255,255,255,.75)'
+      ctx.font = ownerCol ? 'bold 11px "DM Mono", monospace' : '11px "DM Mono", monospace'
       ctx.textAlign = 'center'
       ctx.fillText(o.name, p.x, p.y - (st.comY - st.minY) * cell - 8)
+    }
+  }
+  if (gs.mp) {
+    for (const o of gs.vessels) {
+      if (o.bodyId !== bodyId || o === v || o.debris || o.station) continue
+      if (!o.ownerId || o.ownerId === gs.ownerId) continue
+      const owner = gs.mp.players[o.ownerId]
+      if (!owner) continue
+      const dist = Math.hypot(o.pos.x - center.x, o.pos.y - center.y)
+      if (dist > 80_000) continue
+      const p = toScreen(cam, o.pos)
+      const distLabel = dist >= 1000 ? `${(dist / 1000).toFixed(1)} km` : `${Math.round(dist)} m`
+      const inView = p.x >= 28 && p.x <= view.w - 28 && p.y >= 28 && p.y <= view.h - 28
+      ctx.save()
+      ctx.strokeStyle = owner.color
+      ctx.fillStyle = owner.color
+      ctx.lineWidth = 1.6
+      if (inView) {
+        ctx.beginPath()
+        ctx.moveTo(p.x, p.y - 20)
+        ctx.lineTo(p.x + 20, p.y)
+        ctx.lineTo(p.x, p.y + 20)
+        ctx.lineTo(p.x - 20, p.y)
+        ctx.closePath()
+        ctx.stroke()
+        ctx.font = 'bold 10px "DM Mono", monospace'
+        ctx.textAlign = 'center'
+        ctx.fillText(`⚔ ${distLabel}`, p.x, p.y + 32)
+      } else {
+        const cx = view.w / 2
+        const cy = view.h / 2
+        const ang = Math.atan2(p.y - cy, p.x - cx)
+        const margin = 44
+        const bx = Math.max(margin, Math.min(view.w - margin, cx + Math.cos(ang) * (view.w * 0.44)))
+        const by = Math.max(margin, Math.min(view.h - margin, cy + Math.sin(ang) * (view.h * 0.44)))
+        ctx.save()
+        ctx.translate(bx, by)
+        ctx.rotate(ang)
+        ctx.beginPath()
+        ctx.moveTo(9, 0)
+        ctx.lineTo(-5, -6)
+        ctx.lineTo(-5, 6)
+        ctx.closePath()
+        ctx.fill()
+        ctx.restore()
+        ctx.font = 'bold 10px "DM Mono", monospace'
+        ctx.textAlign = 'center'
+        ctx.fillText(`⚔ ${owner.username} · ${distLabel}`, bx, by + 16)
+      }
+      ctx.restore()
     }
   }
   drawBooms(ctx, sim, cam, bodyId)
@@ -804,6 +913,7 @@ export function pickVesselFlight(frame: FlightFrame, sim: Sim, sx: number, sy: n
     if (h.id === sim.gs.activeId) continue
     const v = sim.gs.vessels.find((o) => o.id === h.id)
     if (!v) continue
+    if (sim.gs.mp && v.ownerId && v.ownerId !== sim.gs.ownerId) continue
     const st = vesselStats(v.parts)
     const rad = Math.max(22, ((st.maxY - st.minY) * h.cell) / 2 + 8)
     const d = Math.hypot(sx - h.x, sy - h.y)
@@ -909,8 +1019,47 @@ export function renderMap(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): Map
       return { x: -a.x / l, y: a.y / l }
     })()
     drawSphere(ctx, b, p.x, p.y, rpx, sd, 0, b.radius * z > 9)
-    ctx.fillStyle = 'rgba(255,255,255,.6)'
-    ctx.fillText(b.name, p.x, p.y + rpx + 16)
+    const cap = gs.mp?.captures[b.id]
+    if (gs.mp && cap) {
+      const owner = cap.ownerId ? gs.mp.players[cap.ownerId] : null
+      const capturer = cap.capturerId ? gs.mp.players[cap.capturerId] : null
+      const haloR = rpx + 5
+      if (owner || capturer) {
+        ctx.save()
+        ctx.strokeStyle = owner?.color ?? capturer?.color ?? '#38d9e8'
+        ctx.lineWidth = cap.phase === 'captured' ? 2.2 : 1.6
+        if (cap.phase === 'contested') ctx.setLineDash([4, 3])
+        ctx.beginPath()
+        if (cap.phase === 'claiming' || cap.phase === 'neutralizing') {
+          ctx.arc(p.x, p.y, haloR, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.max(0.05, cap.progress))
+        } else {
+          ctx.arc(p.x, p.y, haloR, 0, Math.PI * 2)
+        }
+        ctx.stroke()
+        ctx.restore()
+      }
+      ctx.fillStyle = owner?.color ?? 'rgba(255,255,255,.65)'
+      ctx.fillText(b.name, p.x, p.y + rpx + 16)
+      if (cap.phase === 'contested') {
+        ctx.fillStyle = '#fb7185'
+        ctx.font = 'bold 10px "DM Mono", monospace'
+        ctx.fillText('⚔', p.x, p.y + rpx + 29)
+        ctx.font = '12px "DM Mono", monospace'
+      } else if (owner) {
+        ctx.fillStyle = owner.color
+        ctx.font = 'bold 10px "DM Mono", monospace'
+        ctx.fillText(`🚩 ${owner.username}`, p.x, p.y + rpx + 29)
+        ctx.font = '12px "DM Mono", monospace'
+      } else if (capturer && cap.progress > 0) {
+        ctx.fillStyle = capturer.color
+        ctx.font = 'bold 10px "DM Mono", monospace'
+        ctx.fillText(`${Math.round(cap.progress * 100)}%`, p.x, p.y + rpx + 29)
+        ctx.font = '12px "DM Mono", monospace'
+      }
+    } else {
+      ctx.fillStyle = 'rgba(255,255,255,.6)'
+      ctx.fillText(b.name, p.x, p.y + rpx + 16)
+    }
   }
 
   // tahmini yörünge yamaları
@@ -987,21 +1136,27 @@ export function renderMap(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): Map
     const p = S({ x: o.x + v.pos.x, y: o.y + v.pos.y })
     frame.vessels.push({ id: v.id, x: p.x, y: p.y })
     const active = v.id === gs.activeId
+    const mpCol = gs.mp && v.ownerId ? gs.mp.players[v.ownerId]?.color : undefined
     ctx.save()
     ctx.translate(p.x, p.y)
     ctx.rotate(Math.PI / 2 - v.angle)
-    const s = active ? 9 : 6
+    const s = active ? 9 : 7
     ctx.beginPath()
     ctx.moveTo(0, -s * 1.5)
     ctx.lineTo(s, s)
     ctx.lineTo(0, s * 0.45)
     ctx.lineTo(-s, s)
     ctx.closePath()
-    ctx.fillStyle = active ? '#ffffff' : 'rgba(190,200,215,.75)'
+    ctx.fillStyle = mpCol ?? (active ? '#ffffff' : 'rgba(190,200,215,.75)')
     ctx.fill()
+    if (active) {
+      ctx.strokeStyle = '#ffffff'
+      ctx.lineWidth = 1.6
+      ctx.stroke()
+    }
     ctx.restore()
     if (!active) {
-      ctx.fillStyle = 'rgba(190,200,215,.7)'
+      ctx.fillStyle = mpCol ?? 'rgba(190,200,215,.7)'
       ctx.fillText(v.name, p.x, p.y + 20)
     }
   }

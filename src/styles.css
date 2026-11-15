@@ -656,5 +656,91 @@ kbd { background: #1b2b47; border: 1px solid #8296b355; border-bottom-width: 2px
 .app-shell .actions .button:hover { box-shadow: inset 0 0 0 2px #8fa3b8; transform: none; }
 .app-shell .actions .button-primary { background: #3a2a1c; color: #ffd9a0; box-shadow: inset 0 0 0 2px #f08a3c, 0 0 18px #f08a3c88; border-color: #7a4a22; }
 .app-shell .actions .button-primary:hover { box-shadow: inset 0 0 0 2px #ffb46b, 0 0 24px #f08a3caa; }
+.app-shell .actions .mp-entry-btn { background: #19313d; color: #b7f5ff; box-shadow: inset 0 0 0 2px #38d9e8, 0 0 16px #38d9e844; border-color: #21576c; }
+.app-shell .actions .mp-entry-btn:hover { box-shadow: inset 0 0 0 2px #7feaff, 0 0 22px #38d9e888; }
 .app-shell .offline-banner { margin: 0; border-radius: 0; }
 @media (max-width: 820px) { .app-shell > .hero { grid-template-columns: 1fr; } .app-shell > .hero::before { min-height: 220px; } .app-shell .hero-copy { grid-column: 1; grid-row: 2; } }
+
+/* ───────── Çok oyunculu lobi & Gezegen Fetih HUD ───────── */
+.mp-shell { min-height: 100vh; padding: 14px 20px 28px; background: #070c16; position: relative; color: var(--color-text); display: flex; flex-direction: column; gap: 16px; }
+.mp-shell .topbar { max-width: 1120px; margin: 0 auto; width: 100%; background: #0d1626d8; border: 1px solid #38d9e844; border-radius: 12px; padding: 10px 16px; }
+.mp-sub-badge { font: 600 10px 'DM Mono', monospace; padding: 3px 8px; border-radius: 99px; background: #38d9e822; color: #7feaff; border: 1px solid #38d9e855; margin-left: 8px; letter-spacing: .08em; }
+.mp-conn-pill { font: 600 11px 'DM Mono', monospace; padding: 5px 10px; border-radius: 8px; background: #1c2432; color: #fbbf24; border: 1px solid #8296b344; }
+.mp-conn-pill.is-ok { color: #4ade80; border-color: #4ade8055; }
+.mp-error-bar { max-width: 1120px; width: 100%; margin: 0 auto; padding: 10px 14px; background: #45121d; border: 1px solid #fb7185; border-radius: 10px; display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
+.mp-lobby-grid { max-width: 1120px; width: 100%; margin: 0 auto; display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 18px; position: relative; z-index: 1; }
+.mp-card, .mp-room-card { background: #0d1626e8; border: 1px solid #8296b344; border-radius: 14px; padding: 20px; box-shadow: 0 18px 40px #0008; }
+.mp-room-card { max-width: 1120px; width: 100%; margin: 0 auto; position: relative; z-index: 1; display: flex; flex-direction: column; gap: 16px; }
+.mp-card h2, .mp-room-head h2 { margin: 4px 0 8px; font-size: 24px; }
+.mp-card-head, .mp-room-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.mp-form { display: flex; flex-direction: column; gap: 12px; margin-top: 10px; }
+.mp-form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.mp-field { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: #b5c2d6; }
+.mp-field input, .mp-field select, .mp-join-row input, .mp-chat-form input { background: #070d19; border: 1px solid #8296b355; color: #f1f5f9; border-radius: 8px; padding: 9px 11px; font: 500 13px 'Manrope', sans-serif; }
+.mp-check { display: flex; align-items: flex-start; gap: 8px; font-size: 12.5px; color: #cbd5e1; cursor: pointer; }
+.mp-join-row { display: grid; grid-template-columns: 1fr 94px auto; gap: 8px; margin-top: 12px; }
+.mp-code-input { text-transform: uppercase; letter-spacing: .16em; text-align: center; font-weight: 700 !important; }
+.mp-rooms-list { margin-top: 14px; display: flex; flex-direction: column; gap: 8px; max-height: 290px; overflow-y: auto; }
+.mp-empty { padding: 24px 12px; text-align: center; color: #94a3b8; background: #070d19; border: 1px dashed #8296b333; border-radius: 10px; font-size: 13px; }
+.mp-room-item { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 10px 12px; background: #08101f; border: 1px solid #8296b333; border-radius: 10px; }
+.mp-room-title { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.mp-room-item small { color: #94a3b8; font-size: 11.5px; }
+.mp-code-chip { font: 700 11px 'DM Mono', monospace; background: #1e293b; color: #38d9e8; padding: 2px 7px; border-radius: 6px; letter-spacing: .1em; }
+.mp-code-banner { display: flex; flex-direction: column; align-items: center; padding: 8px 18px; border-radius: 10px; background: #081224; border: 2px solid #38d9e866; color: #e2e8f0; cursor: pointer; }
+.mp-code-banner small { font: 600 9px 'DM Mono', monospace; color: #94a3b8; letter-spacing: .16em; }
+.mp-code-banner strong { font: 700 24px 'DM Mono', monospace; letter-spacing: .18em; color: #38d9e8; }
+.mp-code-banner span { font-size: 10px; color: #7feaff; }
+.mp-room-body { display: grid; grid-template-columns: 1.15fr 1fr; gap: 16px; }
+@media (max-width: 780px) { .mp-room-body { grid-template-columns: 1fr; } }
+.mp-players-col h3, .mp-chat-col h3 { margin: 0 0 8px; font: 600 12px 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .12em; color: #94a3b8; }
+.mp-player-list { list-style: none; padding: 0; margin: 0 0 12px; display: flex; flex-direction: column; gap: 6px; }
+.mp-player-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: #08101f; border: 1px solid #8296b329; border-radius: 8px; font-size: 13px; }
+.mp-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; display: inline-block; }
+.mp-pname { font-weight: 600; flex: 1; }
+.mp-pad-tag { font: 500 11px 'DM Mono', monospace; color: #94a3b8; }
+.mp-host-tag { font: 600 11px 'DM Mono', monospace; color: #fbbf24; }
+.mp-rules { margin: 0; padding: 10px 12px 10px 26px; background: #08101f; border-radius: 10px; font-size: 12px; color: #cbd5e1; display: flex; flex-direction: column; gap: 5px; line-height: 1.4; }
+.mp-chat-col { display: flex; flex-direction: column; min-height: 220px; }
+.mp-chat-log { flex: 1; background: #070d19; border: 1px solid #8296b333; border-radius: 10px; padding: 10px; overflow-y: auto; max-height: 220px; display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; }
+.mp-chat-empty { color: #64748b; font-style: italic; }
+.mp-chat-line { line-height: 1.35; word-break: break-word; }
+.mp-chat-form { display: flex; gap: 6px; margin-top: 8px; }
+.mp-chat-form input { flex: 1; }
+.mp-room-foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding-top: 6px; border-top: 1px solid #8296b322; }
+.mp-wait-note { font: 500 13px 'Manrope', sans-serif; color: #7feaff; }
+
+/* Flight ekranı MP HUD bileşenleri */
+.mp-warp-chip { font: 700 12px 'DM Mono', monospace; color: #38d9e8; background: #0b1628; border: 1px solid #38d9e855; border-radius: 7px; padding: 4px 8px; }
+.mp-top-strip { position: absolute; top: 48px; left: 50%; transform: translateX(-50%); z-index: 4; display: flex; flex-direction: column; align-items: center; gap: 6px; max-width: calc(100vw - 360px); pointer-events: auto; }
+.mp-conquest-bar { display: flex; flex-wrap: wrap; justify-content: center; gap: 5px; background: #070e1ccc; backdrop-filter: blur(8px); padding: 5px 8px; border-radius: 10px; border: 1px solid #8296b333; }
+.mp-planet-pill { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 99px; border: 1px solid #8296b344; background: #0c172bd9; color: #e2e8f0; font: 600 11px 'DM Mono', monospace; cursor: pointer; }
+.mp-planet-pill:hover { border-color: #7feaff; }
+.mp-planet-pill.is-target { box-shadow: 0 0 0 1px #ffffff88 inset; }
+.mp-planet-pill.is-contested { animation: alarmBlink .8s steps(2) infinite; }
+.mp-capture-banner { display: flex; flex-direction: column; align-items: center; gap: 4px; background: #081224e6; border: 1px solid #38d9e877; padding: 6px 14px; border-radius: 10px; font-size: 12px; }
+.mp-cap-bar { width: 180px; height: 6px; border-radius: 99px; background: #1e293b; overflow: hidden; }
+.mp-cap-bar em { display: block; height: 100%; transition: width .12s linear; }
+.mp-rival-alert { background: #1e0b16e0; border: 1px solid #fb7185; border-radius: 8px; padding: 4px 10px; font: 600 11.5px 'DM Mono', monospace; color: #ffd4dc; }
+.mp-warp-card { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; }
+.mp-warp-meta { display: flex; align-items: center; gap: 5px; justify-content: flex-end; }
+.mp-ping-pill { font: 600 10.5px 'DM Mono', monospace; padding: 3px 7px; border-radius: 6px; background: #070e1cd8; border: 1px solid #8296b344; color: #cbd5e1; white-space: nowrap; }
+.mp-ping-pill.is-good { color: #86efac; border-color: #22c55e77; }
+.mp-ping-pill.is-mid { color: #fde68a; border-color: #f59e0b88; }
+.mp-ping-pill.is-bad { color: #fda4af; border-color: #fb7185aa; }
+.mp-warp-reason { font: 500 10.5px 'DM Mono', monospace; padding: 3px 7px; border-radius: 6px; background: #070e1cd8; border: 1px solid #8296b333; color: #b9c7da; max-width: 240px; text-align: right; }
+.mp-warp-reason.mode-combat { color: #fda4af; border-color: #fb7185aa; background: #2d0c16d8; }
+.mp-warp-reason.mode-burn, .mp-warp-reason.mode-landing { color: #fde68a; border-color: #f59e0b88; }
+.mp-warp-reason.mode-auto { color: #7feaff; border-color: #38d9e855; }
+.mp-warp-reason.mode-anchor { color: #c4b5fd; border-color: #a78bfa88; }
+.mp-scoreboard { margin-top: 6px; background: #070e1cd6; border: 1px solid #8296b333; border-radius: 10px; padding: 7px 9px; width: 224px; display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; }
+.mp-score-head { font: 600 10px 'DM Mono', monospace; color: #94a3b8; text-transform: uppercase; letter-spacing: .08em; }
+.mp-score-row { display: flex; align-items: center; gap: 6px; padding: 3px 5px; border-radius: 6px; background: #0c162888; }
+.mp-score-row.is-me { border: 1px solid #38d9e866; }
+.mp-s-name { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mp-s-flags, .mp-s-kills { font: 600 11px 'DM Mono', monospace; }
+.mp-feed { margin-top: 4px; padding-top: 4px; border-top: 1px solid #8296b322; display: flex; flex-direction: column; gap: 3px; }
+.mp-feed-line { font-size: 10.5px; color: #cbd5e1; border-left: 2px solid #38d9e8; padding-left: 6px; line-height: 1.3; }
+.flight-chat-log { max-height: 300px; min-height: 180px; }
+.mp-victory-dialog { max-width: 440px; width: 92vw; }
+.mp-final-table { display: flex; flex-direction: column; gap: 6px; margin: 12px 0 16px; }
+.mp-final-table .mp-score-row { padding: 7px 10px; font-size: 13px; background: #070e1c; }

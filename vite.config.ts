@@ -5,4 +5,16 @@ import react from '@vitejs/plugin-react'
 const runtime = globalThis as typeof globalThis & { process?: { env?: Record<string, string | undefined> } }
 const apiPort = runtime.process?.env?.NASA_API_PORT ?? '8787'
 
-export default defineConfig({ plugins: [react()], server: { proxy: { '/api': `http://127.0.0.1:${apiPort}` } } })
+export default defineConfig({
+  plugins: [react()],
+  server: {
+    host: true,
+    allowedHosts: true,
+    proxy: {
+      '/api': {
+        target: `http://127.0.0.1:${apiPort}`,
+        ws: true,
+      },
+    },
+  },
+})

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { baseReport, COLONY_SLOTS, colonyTier, EARTH_MODULES, ensureSites, MODULE_BY_ID, MODULES, TIER_HINT } from '../game/base'
-import { runCommand, useGame } from '../game/store'
+import { runCommand, useActiveGame } from '../game/store'
 import { BODIES, type BodyId, solarFlux } from '../nasa/bodies'
 import { bodyAbsState, len } from '../flight/orbit'
 import { modulePrice } from '../flight/world'
@@ -16,7 +16,8 @@ interface Props {
 
 /** Yüzey kolonisi: yapıları alttaki çubuktan sürükleyip yüzeydeki yuvalara bırak. */
 export default function ColonyPanel({ initialBody = 'earth', onNotify }: Props) {
-  const gs = useGame()
+  const gs = useActiveGame()
+  const myId = gs.ownerId ?? 'local'
   const [bodyId, setBodyId] = useState<BodyId>(BODIES[initialBody]?.landable ? initialBody : 'earth')
   const [picked, setPicked] = useState<string | null>(null)
   const [selSlot, setSelSlot] = useState<number | null>(null)
@@ -30,14 +31,27 @@ export default function ColonyPanel({ initialBody = 'earth', onNotify }: Props) 
   const tabs = useMemo(() => {
     const ids = new Set<BodyId>(['earth', 'moon', 'mars'])
     for (const id of Object.keys(gs.bases) as BodyId[]) if (BODIES[id]?.landable) ids.add(id)
-    for (const v of gs.vessels) if (v.landed && BODIES[v.bodyId]?.landable) ids.add(v.bodyId)
+    if (gs.mp) {
+      for (const cap of Object.values(gs.mp.captures)) {
+        if (cap?.ownerId === myId && BODIES[cap.bodyId]?.landable) ids.add(cap.bodyId)
+      }
+    }
+    for (const v of gs.vessels) {
+      if (v.landed && BODIES[v.bodyId]?.landable && (!gs.mp || v.ownerId === myId)) ids.add(v.bodyId)
+    }
     return [...ids]
-  }, [gs.bases, gs.vessels])
+  }, [gs.bases, gs.vessels, gs.mp, myId])
 
   const body = BODIES[bodyId]
-  const base = gs.bases[bodyId]
-  const landedHere = gs.vessels.some((v) => v.landed && v.bodyId === bodyId)
-  const canBuild = bodyId === 'earth' || landedHere || !!base
+  const base = gs.mp && bodyId === 'earth' ? gs.mp.players[myId]?.earthBase : gs.bases[bodyId]
+  const landedHere = gs.vessels.some((v) => v.landed && v.bodyId === bodyId && (!gs.mp || v.ownerId === myId))
+  const mpCapOwner = gs.mp && bodyId !== 'earth' ? gs.mp.captures[bodyId]?.ownerId : undefined
+  const canBuild =
+    bodyId === 'earth'
+      ? true
+      : gs.mp
+        ? mpCapOwner === myId || (!mpCapOwner && landedHere)
+        : landedHere || !!base
   const flux = solarFlux(len(bodyAbsState(bodyId, gs.time).r))
   const sites = base ? ensureSites(base) : Array.from({ length: COLONY_SLOTS }, () => null)
   const report = base ? baseReport(base, flux) : null
@@ -143,7 +157,13 @@ export default function ColonyPanel({ initialBody = 'earth', onNotify }: Props) 
             )
           })}
         </div>
-        {!canBuild && <div className="colony-locked">Buraya koloni kurmak için önce {body.name} yüzeyine bir araç indir.</div>}
+        {!canBuild && (
+          <div className="colony-locked">
+            {gs.mp && mpCapOwner && mpCapOwner !== myId
+              ? `${body.name} şu an başka bir oyuncunun kontrolünde — önce bayrağı ele geçir.`
+              : `Buraya koloni kurmak için önce ${body.name} yüzeyine bir araç indir.`}
+          </div>
+        )}
       </div>
 
       <div className={`colony-info${feedback?.kind === 'warn' ? ' warn' : ''}`}>

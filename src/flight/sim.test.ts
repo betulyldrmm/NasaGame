@@ -7,6 +7,12 @@ import { elementsFromState, hohmann, len, propagate, wrapPi } from './orbit'
 import { PAD_ANGLE, situation, terrainHeight } from './physics'
 import { predictTrajectory } from './predict'
 import {
+  computeDynamicWarp,
+  newMultiplayerGame,
+  padAngleForSlot,
+  stepPlanetCaptures,
+} from './multiplayerSim'
+import {
   activeVessel,
   canControlVessel,
   dispatchCommand,
@@ -642,5 +648,253 @@ describe('ISS, break-up and easter eggs', () => {
     sim.gs.activeId = iss.id
     stepWorld(sim, 0.1, ctrl)
     expect(sim.gs.missionsDone.length).toBe(0)
+  })
+})
+
+describe('multiplayer conquest mode', () => {
+  const twoPlayerSim = (targetPlanets = 3): Sim => {
+    const gs = newMultiplayerGame(
+      'TEST',
+      'p1',
+      [
+        { id: 'p1', username: 'Ada', color: '#38d9e8', slot: 0 },
+        { id: 'p2', username: 'Ali', color: '#fb7185', slot: 1 },
+      ],
+      { targetPlanets, startingMoney: 100_000 },
+    )
+    gs.mp!.started = true
+    return { gs, warpIdx: 0, firing: new Map() }
+  }
+
+  it('gives each player an isolated Earth launchpad, wallet and vessel control', () => {
+    const sim = twoPlayerSim()
+    const p1Before = sim.gs.mp!.players.p1.money
+    const p2Before = sim.gs.mp!.players.p2.money
+
+    expect(dispatchCommand(sim, { type: 'launch', design: DEFAULT_DESIGN }, 'p1').error).toBeUndefined()
+    expect(dispatchCommand(sim, { type: 'launch', design: DEFAULT_DESIGN }, 'p2').error).toBeUndefined()
+
+    const v1 = sim.gs.vessels.find((v) => v.ownerId === 'p1')!
+    const v2 = sim.gs.vessels.find((v) => v.ownerId === 'p2')!
+    expect(v1).toBeTruthy()
+    expect(v2).toBeTruthy()
+    expect(len({ x: v1.pos.x - v2.pos.x, y: v1.pos.y - v2.pos.y })).toBeGreaterThan(100)
+    expect(Math.abs(Math.atan2(v1.pos.y, v1.pos.x) - padAngleForSlot(0))).toBeLessThan(1e-5)
+    expect(Math.abs(Math.atan2(v2.pos.y, v2.pos.x) - padAngleForSlot(1))).toBeLessThan(1e-5)
+
+    // Bütçeler ayrıdır: ikisinin de harcaması yalnızca kendi kasasından düşer
+    expect(sim.gs.mp!.players.p1.money).toBeLessThan(p1Before)
+    expect(sim.gs.mp!.players.p2.money).toBeLessThan(p2Before)
+
+    // Oyuncular birbirinin roketini kontrol edemez veya kademe ayıramaz
+    const v1Parts = v1.parts.length
+    expect(canControlVessel(v1, 'p1')).toBe(true)
+    expect(canControlVessel(v1, 'p2')).toBe(false)
+    dispatchCommand(sim, { type: 'setActive', vesselId: v1.id }, 'p2')
+    expect(sim.gs.mp!.players.p2.activeVesselId).toBe(v2.id)
+    expect(dispatchCommand(sim, { type: 'stage', vesselId: v1.id }, 'p2').error).toBe('Bu araç başka bir oyuncuya ait.')
+    expect(dispatchCommand(sim, { type: 'stage', vesselId: v2.id }, 'p2').error).toBeUndefined()
+    expect(v1.parts.length).toBe(v1Parts)
+  })
+
+  it('dynamically speeds up time while coasting and slams down on close approach or manual thrust', () => {
+    const sim = twoPlayerSim()
+    expect(dispatchCommand(sim, { type: 'launch', design: DEFAULT_DESIGN }, 'p1').error).toBeUndefined()
+    expect(dispatchCommand(sim, { type: 'launch', design: DEFAULT_DESIGN }, 'p2').error).toBeUndefined()
+
+    const v1 = sim.gs.vessels.find((v) => v.ownerId === 'p1')!
+    const v2 = sim.gs.vessels.find((v) => v.ownerId === 'p2')!
+    const r = BODIES.earth.radius + 90_000
+    const vCirc = Math.sqrt(BODIES.earth.mu / r)
+    v1.landed = false
+    v1.pos = { x: r, y: 0 }
+    v1.vel = { x: 0, y: vCirc }
+    v2.landed = false
+    v2.pos = { x: -r, y: 0 }
+    v2.vel = { x: 0, y: -vCirc }
+
+    // Güvenli yörüngede süzülüp hızlandırma talep edildiğinde (kalkış sonrası 2.2 sn koruma bitince) zaman yükselir
+    expect(dispatchCommand(sim, { type: 'setWarpPref', warpIdx: 6 }, 'p1').error).toBeUndefined()
+    const emptyCtrls = new Map<string, typeof ctrl>()
+    for (let i = 0; i < 80; i += 1) stepWorld(sim, 0.05, emptyCtrls)
+    expect(sim.warpIdx).toBeGreaterThan(2)
+    expect(WARPS[sim.warpIdx]).toBeGreaterThanOrEqual(10)
+
+    // Elle itki uygulandığında zaman fizik hızlandırma sınırının üstüne çıkamaz / anında düşer
+    const burnCtrls = new Map<string, typeof ctrl>([['p1', { rotate: 0, tx: 0, ty: 1 }]])
+    stepWorld(sim, 0.05, burnCtrls)
+    expect(sim.warpIdx).toBeLessThanOrEqual(PHYSICS_WARP_MAX_IDX)
+
+    // Hızlı konumda iki oyuncu roketi < 3 km mesafeye girince anında 1x'e düşer
+    let ramped = computeDynamicWarp(sim.gs, 5, 10, 0.05, 10, emptyCtrls, new Map())
+    expect(ramped.warpIdx).toBeGreaterThanOrEqual(4)
+    v2.pos = { x: v1.pos.x, y: v1.pos.y + 2_000 }
+    v2.vel = { x: v1.vel.x, y: v1.vel.y }
+    ramped = computeDynamicWarp(sim.gs, ramped.warpIdx, ramped.rampTimer, 0.05, 10.1, emptyCtrls, new Map())
+    expect(ramped.warpIdx).toBe(0)
+    expect(WARPS[ramped.warpIdx]).toBe(1)
+  })
+
+  it('shatters rival rockets on high-speed ramming and leaves gentle bumps intact', () => {
+    const sim = twoPlayerSim()
+    expect(dispatchCommand(sim, { type: 'launch', design: DEFAULT_DESIGN }, 'p1').error).toBeUndefined()
+    expect(
+      dispatchCommand(
+        sim,
+        {
+          type: 'launch',
+          design: [
+            { def: 'probe', x: 6, y: 2 },
+            { def: 'tank-s', x: 6, y: 3 },
+            { def: 'kolibri', x: 6, y: 4 },
+          ],
+        },
+        'p2',
+      ).error,
+    ).toBeUndefined()
+
+    const v1 = sim.gs.vessels.find((v) => v.ownerId === 'p1')!
+    const v2 = sim.gs.vessels.find((v) => v.ownerId === 'p2')!
+    const r = BODIES.earth.radius + 50_000
+    v1.noCollideUntil = 0
+    v2.noCollideUntil = 0
+
+    // Yumuşak dokunuş (< 3.5 m/s): iki gemi de parçalanmaz
+    v1.landed = false
+    v2.landed = false
+    v1.pos = { x: r, y: 0 }
+    v1.vel = { x: 0, y: 1.0 }
+    v2.pos = { x: r, y: 1.5 }
+    v2.vel = { x: 0, y: -1.0 }
+    const mildEvents = stepWorld(sim, 0.05, new Map())
+    expect(mildEvents.some((e) => e.type === 'kill')).toBe(false)
+    expect(sim.gs.vessels.find((v) => v.id === v2.id)?.parts.length).toBe(3)
+
+    // Yüksek hızda çarpışma (~140 m/s): hafif rakip gemi uzayda parçalanır ve avcı ödül kazanır
+    const p1MoneyBefore = sim.gs.mp!.players.p1.money
+    v1.noCollideUntil = 0
+    v2.noCollideUntil = 0
+    v1.pos = { x: r, y: -3 }
+    v1.vel = { x: 0, y: 70 }
+    v2.pos = { x: r, y: 3 }
+    v2.vel = { x: 0, y: -70 }
+    const ramEvents = stepWorld(sim, 0.05, new Map())
+    expect(ramEvents.some((e) => e.type === 'kill' && e.attackerId === 'p1' && e.victimId === 'p2')).toBe(true)
+    expect(sim.gs.vessels.some((v) => v.id === v2.id)).toBe(false)
+    expect(sim.gs.mp!.players.p1.kills).toBeGreaterThanOrEqual(1)
+    expect(sim.gs.mp!.players.p1.money).toBeGreaterThanOrEqual(p1MoneyBefore + 3000)
+  })
+
+  it('captures neutral planets, contests defended flags, steals them and declares victory', () => {
+    const sim = twoPlayerSim(2)
+    expect(dispatchCommand(sim, { type: 'launch', design: DEFAULT_DESIGN }, 'p1').error).toBeUndefined()
+    expect(dispatchCommand(sim, { type: 'launch', design: DEFAULT_DESIGN }, 'p2').error).toBeUndefined()
+    const v1 = sim.gs.vessels.find((v) => v.ownerId === 'p1')!
+    const v2 = sim.gs.vessels.find((v) => v.ownerId === 'p2')!
+
+    const placeLanded = (v: typeof v1, bodyId: 'moon' | 'mars', angle: number) => {
+      const b = BODIES[bodyId]
+      const h = terrainHeight(bodyId, angle)
+      const rr = b.radius + h + 2
+      v.bodyId = bodyId
+      v.landed = true
+      v.pos = { x: Math.sin(angle) * rr, y: Math.cos(angle) * rr }
+      v.vel = { x: 0, y: 0 }
+    }
+
+    // 1) Ada Ay'a iner ve 5 saniyede bayrağı diker
+    placeLanded(v1, 'moon', 0)
+    const ev1: ReturnType<typeof stepWorld> = []
+    for (let i = 0; i < 6; i += 1) stepPlanetCaptures(sim.gs, 1, ev1)
+    expect(sim.gs.mp!.captures.moon!.ownerId).toBe('p1')
+    expect(sim.gs.mp!.captures.moon!.phase).toBe('captured')
+    expect(sim.gs.mp!.players.p1.planetsHeld).toBe(1)
+    expect(sim.gs.mp!.players.p1.captures).toBe(1)
+    expect(ev1.some((e) => e.type === 'capture' && e.bodyId === 'moon' && e.ownerId === 'p1')).toBe(true)
+
+    // 2) Ali aynı anda Ay'a indiğinde savunma varken bayrak çatışmaya (contested) düşer
+    placeLanded(v2, 'moon', 0.05)
+    stepPlanetCaptures(sim.gs, 1, ev1)
+    expect(sim.gs.mp!.captures.moon!.phase).toBe('contested')
+    expect(sim.gs.mp!.captures.moon!.ownerId).toBe('p1')
+
+    // 3) Ada'nın iniş aracı yok edildiğinde Ali bayrağı 5sn'de nötrleyip 5sn'de ele geçirir
+    sim.gs.vessels = sim.gs.vessels.filter((v) => v.id !== v1.id)
+    for (let i = 0; i < 12; i += 1) stepPlanetCaptures(sim.gs, 1, ev1)
+    expect(sim.gs.mp!.captures.moon!.ownerId).toBe('p2')
+    expect(sim.gs.mp!.captures.moon!.phase).toBe('captured')
+    expect(sim.gs.mp!.players.p2.planetsHeld).toBe(1)
+    expect(sim.gs.mp!.players.p2.captures).toBe(1)
+    expect(sim.gs.mp!.players.p1.planetsHeld).toBe(0)
+
+    // 4) Ali Mars'ı da alınca hedef (2 gezegen) tamamlanır ve zafer ilan edilir
+    placeLanded(v2, 'mars', 0)
+    for (let i = 0; i < 6; i += 1) stepPlanetCaptures(sim.gs, 1, ev1)
+    expect(sim.gs.mp!.players.p2.planetsHeld).toBe(2)
+    expect(sim.gs.mp!.players.p2.captures).toBe(2)
+    expect(sim.gs.mp!.winnerId).toBe('p2')
+    expect(ev1.some((e) => e.type === 'victory' && e.winnerId === 'p2')).toBe(true)
+  })
+
+  it('kompakt ağ anlık görüntüsü statik alanları sıyırıp geri yükler ve MP modunda ISS oluşturmaz', async () => {
+    const { newMultiplayerGame } = await import('./multiplayerSim')
+    const { buildCompactSnapshot, hydrateCompactSnapshot } = await import('./mpClient')
+    const { ensureStation } = await import('./world')
+
+    const gs = newMultiplayerGame('ROOM', 'p1', [
+      { id: 'p1', username: 'Ada', color: '#38d9e8', slot: 0 },
+      { id: 'p2', username: 'Ali', color: '#f97316', slot: 1 },
+    ])
+    gs.mp!.players.p2.money = 42_500
+    gs.mp!.players.p2.targetBody = 'mars'
+
+    ensureStation(gs)
+    expect(gs.vessels.some((v) => v.station)).toBe(false)
+
+    const hostSim: Sim = {
+      gs,
+      warpIdx: 1,
+      warpRampTimer: 0,
+      firing: new Map([[99, new Map([[0, 0.8]])]]),
+      fx: [
+        { kind: 'boom', bodyId: 'earth', x: 0, y: 0, size: 1, born: 0 },
+        { kind: 'boom', bodyId: 'earth', x: 1, y: 1, size: 2, born: 8 },
+      ],
+      clock: 10,
+    }
+
+    const fullSnap = buildCompactSnapshot(hostSim, true)
+    expect(fullSnap._omitStatic).toBeUndefined()
+    expect(fullSnap._fx?.length).toBe(1)
+    expect(fullSnap.mp?.players.p1.earthBase).toBeDefined()
+
+    const clientFull = hydrateCompactSnapshot(
+      JSON.parse(JSON.stringify(fullSnap)),
+      null,
+      'p2',
+      [],
+      {},
+    )
+    expect(clientFull.gs.money).toBe(42_500)
+    expect(clientFull.gs.targetBody).toBe('mars')
+    expect(clientFull.gs.mp?.players.p1.earthBase).toBeDefined()
+
+    const slimSnap = buildCompactSnapshot(hostSim, false)
+    expect(slimSnap._omitStatic).toBe(true)
+    expect(slimSnap.mp?.players.p1.earthBase).toBeUndefined()
+    expect(JSON.stringify(slimSnap).length).toBeLessThan(JSON.stringify(fullSnap).length)
+
+    const clientSlim = hydrateCompactSnapshot(
+      JSON.parse(JSON.stringify(slimSnap)),
+      clientFull.gs,
+      'p2',
+      [],
+      {},
+    )
+    expect(clientSlim.gs.bases).toEqual(clientFull.gs.bases)
+    expect(clientSlim.gs.mp?.players.p1.earthBase).toBeDefined()
+    expect(clientSlim.gs.mp?.players.p2.earthBase).toBeDefined()
+    expect(clientSlim.warpIdx).toBe(1)
+    expect(clientSlim.firing.get(99)?.get(0)).toBe(0.8)
   })
 })

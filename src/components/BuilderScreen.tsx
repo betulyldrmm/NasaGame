@@ -2,10 +2,14 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { audio } from '../audio'
 import { MODULES, ISS_SUPPLY } from '../game/base'
 import { GRID_H, GRID_W, partDef, PARTS, SHIP_PRESETS, SHIP_SLOT_COUNT } from '../game/data'
-import { bump, saveGame, setIdleWarp, sim, useAuthState, useGame } from '../game/store'
+import { bump, saveGame, setIdleWarp, sim, useActiveGame, useAuthState } from '../game/store'
 import { isModuleUnlocked, isPartUnlocked, requiredTechForModule, requiredTechForPart } from '../game/tech'
 import type { PartCategory, PartInst } from '../game/types'
 import { canPlace, cargoMass, estimateDeltaV, partAt, vesselStats } from '../game/vessel'
+import { wrapPi } from '../flight/orbit'
+import { BODIES } from '../nasa/bodies'
+import { getLocalMpDesign, sendMpCommand, setLocalMpDesign, useMultiplayer } from '../flight/mpClient'
+import { playerPadAngle, playerPassiveIncomePerHour } from '../flight/multiplayerSim'
 import { designCost, launchDesign, totalPassiveIncomePerHour, validateDesign } from '../flight/world'
 import { drawPart } from '../render/partArt'
 import PartIcon from './PartIcon'
@@ -21,8 +25,10 @@ interface Props {
 }
 
 export default function BuilderScreen({ onBack, onFly }: Props) {
-  const gs = useGame()
+  const gs = useActiveGame()
   const auth = useAuthState()
+  const mp = useMultiplayer()
+  const inMp = mp.active && mp.inMatch
   const [selected, setSelected] = useState<string | null>(null)
   const [mirror, setMirror] = useState(true)
   const [hover, setHover] = useState<{ x: number; y: number } | null>(null)
@@ -36,10 +42,16 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [cell, setCell] = useState(24)
 
-  const design = gs.design
+  const localMp = inMp ? getLocalMpDesign() : null
+  const design = localMp ? localMp.design : gs.design
+  const designCargo = localMp ? localMp.cargo : gs.designCargo
   const setDesign = (next: PartInst[]) => {
-    sim.gs.design = next
     setError(null)
+    if (inMp) {
+      setLocalMpDesign(next, designCargo)
+      return
+    }
+    sim.gs.design = next
     void saveGame()
     bump()
   }
@@ -55,13 +67,13 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
   }, [])
 
   const stats = useMemo(() => vesselStats(design), [design])
-  const cargoT = cargoMass({ modules: gs.designCargo, ore: 0, oreFrom: null })
+  const cargoT = cargoMass({ modules: designCargo, ore: 0, oreFrom: null })
   const stages = useMemo(() => estimateDeltaV(design, cargoT), [design, cargoT])
   const totalDv = stages.reduce((s, x) => s + x.dv, 0)
-  const cost = designCost(design, gs.designCargo)
-  const problem = validateDesign(design, gs.designCargo, gs)
+  const cost = designCost(design, designCargo)
+  const problem = validateDesign(design, designCargo, gs)
   const twr = stages[0]?.twr ?? 0
-  const passivePerHr = totalPassiveIncomePerHour(gs)
+  const passivePerHr = inMp && gs.ownerId ? playerPassiveIncomePerHour(gs, gs.ownerId) : totalPassiveIncomePerHour(gs)
 
   const mirrorX = (x: number, w: number) => GRID_W - x - w
 
@@ -193,17 +205,42 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
       setError(`"${id}" modülü için teknoloji gerekli: ${req?.name ?? 'Teknoloji Ağacı'}.`)
       return
     }
-    const cur = sim.gs.designCargo[id] ?? 0
+    const cur = designCargo[id] ?? 0
     const n = Math.max(0, cur + delta)
-    const next = { ...sim.gs.designCargo, [id]: n }
+    const next = { ...designCargo, [id]: n }
     if (!n) delete next[id]
-    sim.gs.designCargo = next
     setError(null)
+    if (inMp) {
+      setLocalMpDesign(design, next)
+      return
+    }
+    sim.gs.designCargo = next
     void saveGame()
     bump()
   }
 
   const launch = () => {
+    if (inMp) {
+      if (cost > gs.money) {
+        setError(`Bütçe yetersiz: ${fmt(cost)} ₡ gerekli.`)
+        return
+      }
+      const padTheta = playerPadAngle(gs, gs.ownerId)
+      const onPad = gs.vessels.find(
+        (v) => v.bodyId === 'earth' && v.landed && Math.abs(wrapPi(Math.atan2(v.pos.y, v.pos.x) - padTheta)) * BODIES.earth.radius < 25,
+      )
+      if (onPad) {
+        setError('Rampa dolu: önce rampadaki aracı kurtar veya sil.')
+        return
+      }
+      const res = sendMpCommand({ type: 'launch', design, designCargo })
+      if (res.error) {
+        setError(res.error)
+        return
+      }
+      onFly()
+      return
+    }
     const err = launchDesign(sim)
     if (err) {
       setError(err)
@@ -214,44 +251,60 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
     onFly()
   }
 
-  const slots = Array.from({ length: SHIP_SLOT_COUNT }, (_, i) => gs.shipSlots?.[i] ?? null)
+  const slots = Array.from({ length: SHIP_SLOT_COUNT }, (_, i) => sim.gs.shipSlots?.[i] ?? null)
   const writeSlots = (next: typeof slots) => {
     sim.gs.shipSlots = next
     void saveGame(true)
     bump()
   }
   const loadShip = (d: PartInst[], cargo: Record<string, number>) => {
-    sim.gs.designCargo = { ...cargo }
     setSelected(null)
-    setDesign(d.map((p) => ({ def: p.def, x: p.x, y: p.y })))
+    const cloned = d.map((p) => ({ def: p.def, x: p.x, y: p.y }))
+    if (inMp) {
+      setLocalMpDesign(cloned, { ...cargo })
+      return
+    }
+    sim.gs.designCargo = { ...cargo }
+    setDesign(cloned)
   }
   const saveSlot = (i: number) => {
     const name = window.prompt('Gemi adı:', slots[i]?.name ?? `Gemim ${i + 1}`)?.trim()
     if (!name) return
-    writeSlots(slots.map((s, j) => (j === i ? { name: name.slice(0, 18), design: design.map((p) => ({ def: p.def, x: p.x, y: p.y })), cargo: { ...gs.designCargo } } : s)))
+    writeSlots(slots.map((s, j) => (j === i ? { name: name.slice(0, 18), design: design.map((p) => ({ def: p.def, x: p.x, y: p.y })), cargo: { ...designCargo } } : s)))
   }
   const clearSlot = (i: number) => {
     if (window.confirm('Bu slot boşaltılsın mı?')) writeSlots(slots.map((s, j) => (j === i ? null : s)))
   }
   const sel = selected ? partDef(selected) : null
+  const myVesselCount = inMp ? gs.vessels.filter((v) => v.ownerId === gs.ownerId && !v.debris && !v.station).length : gs.vessels.length
 
   return (
     <main className="builder">
       <header className="builder-top">
-        <button className="hud-btn" onClick={onBack}>← Ana menü</button>
+        {!inMp ? (
+          <button className="hud-btn" onClick={onBack}>← Ana menü</button>
+        ) : (
+          <button className="hud-btn" onClick={onFly}>← Uçuşa dön</button>
+        )}
         <h1>Roket Montaj Binası</h1>
-        <div className="idle-warp-group" title="Oyun hızı (pasif gelir en fazla 5× artar)">
-          {IDLE_WARPS.map((w) => (
-            <button
-              key={w}
-              type="button"
-              className={`mini-warp-btn${auth.idleWarp === w ? ' is-on' : ''}`}
-              onClick={() => setIdleWarp(w)}
-            >
-              {w}×
-            </button>
-          ))}
-        </div>
+        {!inMp ? (
+          <div className="idle-warp-group" title="Oyun hızı (pasif gelir en fazla 5× artar)">
+            {IDLE_WARPS.map((w) => (
+              <button
+                key={w}
+                type="button"
+                className={`mini-warp-btn${auth.idleWarp === w ? ' is-on' : ''}`}
+                onClick={() => setIdleWarp(w)}
+              >
+                {w}×
+              </button>
+            ))}
+          </div>
+        ) : (
+          <span className="mp-warp-chip" title={gs.mp?.warpInfo?.reason ?? ''}>
+            ⏱ {(gs.mp?.warpInfo?.warp ?? 1).toLocaleString('tr-TR')}×
+          </span>
+        )}
         <button className="hud-btn" onClick={() => setShowGrid(true)}>
           🏗️ Koloni
         </button>
@@ -259,7 +312,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
           Bütçe <b>{fmt(gs.money)} ₡</b> <small className="income-sub">+{fmt(passivePerHr)} ₡/sa</small>
         </div>
         <button className="hud-btn" onClick={onFly}>
-          {gs.vessels.length > 0 ? `Uçuşa dön (${gs.vessels.length} araç) →` : 'Uzay & Üs Ekranı →'}
+          {myVesselCount > 0 ? `Uçuşa dön (${myVesselCount} araç) →` : 'Uzay & Üs Ekranı →'}
         </button>
       </header>
 
@@ -376,8 +429,8 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
                         <small>{unlocked ? `${m.mass} t · ${fmt(m.cost)} ₡` : `🔒 ${req?.name ?? 'Teknoloji'}`}</small>
                       </span>
                       <span className="stepper">
-                        <button onClick={() => changeCargo(m.id, -1)} disabled={!gs.designCargo[m.id]}>−</button>
-                        <b>{gs.designCargo[m.id] ?? 0}</b>
+                        <button onClick={() => changeCargo(m.id, -1)} disabled={!designCargo[m.id]}>−</button>
+                        <b>{designCargo[m.id] ?? 0}</b>
                         <button onClick={() => changeCargo(m.id, 1)} disabled={!unlocked || cargoT + m.mass > stats.cargoCap + 1e-9}>＋</button>
                       </span>
                     </li>

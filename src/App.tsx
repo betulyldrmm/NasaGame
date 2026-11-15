@@ -1,8 +1,11 @@
-import { lazy, Suspense, useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { effectiveIncomeDt, tickBasesOnly, totalPassiveIncomePerHour } from './flight/world'
+import { enterMpMode, exitMpMode, useMultiplayer } from './flight/mpClient'
+import { resetViewCache } from './render/renderer'
 import AuthScreen from './components/AuthScreen'
 import BuilderScreen from './components/BuilderScreen'
 import IntroCutscene from './components/IntroCutscene'
+import MultiplayerLobby from './components/MultiplayerLobby'
 import PlanetGridPanel from './components/ColonyPanel'
 import { bump, clearOfflineGain, initAuth, logoutAccount, resetGame, saveGame, setIdleWarp, sim, useAuthState, useGame } from './game/store'
 import { audio } from './audio'
@@ -17,25 +20,39 @@ const fmt = (n: number) => Math.round(n).toLocaleString('tr-TR')
 function App() {
   const gs = useGame()
   const auth = useAuthState()
+  const mp = useMultiplayer()
   const [dialog, setDialog] = useState<Dialog>(null)
   const setShowTech = (_open: boolean) => undefined
   const [showGrid, setShowGrid] = useState(false)
   const [showCutscene, setShowCutscene] = useState(false)
   const [screen, setScreen] = useState<'home' | 'assembly' | 'flight'>('home')
+  const prevInMatch = useRef(false)
 
   useEffect(() => {
     void initAuth()
   }, [])
 
   useEffect(() => {
-    if (screen === 'home') audio.music('menu')
-  }, [screen])
+    if (mp.inMatch && !prevInMatch.current) {
+      resetViewCache()
+      setScreen('flight')
+    } else if (!mp.inMatch && prevInMatch.current) {
+      resetViewCache()
+      setScreen('home')
+    }
+    prevInMatch.current = mp.inMatch
+  }, [mp.inMatch])
+
+  useEffect(() => {
+    if (screen === 'home' && !mp.active) audio.music('menu')
+  }, [screen, mp.active])
 
   // Yeni girişte tamamen yeni hesapsa intro sinematiğini aç
   useEffect(() => {
     if (auth.user && gs.vessels.length === 0 && gs.missionsDone.length === 0 && gs.time < 1) {
       setShowCutscene(true)
     } else if (!auth.user) {
+      exitMpMode()
       setShowCutscene(false)
       setScreen('home')
     }
@@ -43,14 +60,14 @@ function App() {
 
   // Ana menü ve montaj ekranında da pasif gelir işlesin (takvim 1×–25×, gelir en fazla 5×)
   useEffect(() => {
-    if (!auth.user || screen === 'flight') return
+    if (!auth.user || screen === 'flight' || mp.active) return
     const timer = window.setInterval(() => {
       tickBasesOnly(sim.gs, effectiveIncomeDt(0.25, auth.idleWarp), 0.25 * auth.idleWarp)
       void saveGame()
       bump()
     }, 250)
     return () => clearInterval(timer)
-  }, [auth.user, auth.idleWarp, screen])
+  }, [auth.user, auth.idleWarp, screen, mp.active])
 
   if (!auth.checked) {
     return <main className="flight-loading">Hesap kontrol ediliyor…</main>
@@ -60,11 +77,23 @@ function App() {
     return <AuthScreen />
   }
 
+  if (mp.active && !mp.inMatch) {
+    return (
+      <MultiplayerLobby
+        defaultName={auth.user.username}
+        onBack={() => {
+          exitMpMode()
+          setScreen('home')
+        }}
+      />
+    )
+  }
+
   if (screen === 'assembly') {
     return <BuilderScreen onBack={() => setScreen('home')} onFly={() => setScreen('flight')} />
   }
 
-  if (screen === 'flight') {
+  if (screen === 'flight' || mp.inMatch) {
     return (
       <Suspense fallback={<main className="flight-loading">{messages.sceneLoading}</main>}>
         <FlightScreen onBuilder={() => setScreen('assembly')} />
@@ -134,6 +163,9 @@ function App() {
           <div className="actions">
             <button className="button button-primary" onClick={() => setScreen('assembly')}>
               <span aria-hidden="true">＋</span> {messages.newMission}
+            </button>
+            <button className="button mp-entry-btn" onClick={() => enterMpMode()}>
+              <span aria-hidden="true">⚔</span> Çok Oyunculu (Gezegen Fethi)
             </button>
             {sim.gs.vessels.length > 0 && (
               <button className="button button-secondary" onClick={() => setScreen('flight')}>
