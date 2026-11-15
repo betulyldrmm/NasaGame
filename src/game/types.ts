@@ -118,6 +118,17 @@ export interface Vessel {
   noCollideUntil?: number
   /** son çarpışmada hasar veren oyuncu */
   lastAttackerId?: string
+  /** Çok oyunculu arcade hızlı yolculuk: başlangıç ve varış (atmosfer sınırı) arasında kısa süreli geçiş */
+  cruise?: {
+    from: BodyId
+    fromRel: { x: number; y: number }
+    to: BodyId
+    toRel: { x: number; y: number }
+    toVel: { x: number; y: number }
+    /** gerçek saat (sim.clock) */
+    start: number
+    dur: number
+  }
 }
 
 export type TileKind = 'fog' | 'clear' | 'crater' | 'vein' | 'built'

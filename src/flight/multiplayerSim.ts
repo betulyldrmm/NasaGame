@@ -458,6 +458,7 @@ export function resolveVesselCollisions(
       if (!gs.vessels.includes(b)) continue
       if (a.bodyId !== b.bodyId) continue
       if (a.debris && b.debris) continue
+      if (a.cruise || b.cruise) continue
       if (a.landed && b.landed) continue
       if (a.ownerId && a.ownerId === b.ownerId && (a.noCollideUntil ?? 0) > gs.time && (b.noCollideUntil ?? 0) > gs.time) {
         continue

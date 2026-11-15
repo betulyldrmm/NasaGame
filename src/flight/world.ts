@@ -7,7 +7,7 @@ import { DEFAULT_DESIGN, INITIAL_MONEY, ISS_ALTITUDE_M, ISS_DESIGN, partDef } fr
 import { MISSION_BY_ID, MISSIONS } from '../game/missions'
 import { baseIncomeMultiplier, hasAutoLandTech, INITIAL_TECH, isModuleUnlocked, isPartUnlocked, orePriceMultiplier, requiredTechForModule, requiredTechForPart } from '../game/tech'
 import type { AutopilotMode, Base, GameCommand, GameEvent, GameState, PartInst, Vessel } from '../game/types'
-import { activeEngines, cargoMass, components, freshParts, fuelGroups, isConnected, nextStage, setIspBoost, splitParts, vesselStats } from '../game/vessel'
+import { activeEngines, cargoMass, components, estimateDeltaV, freshParts, fuelGroups, isConnected, nextStage, setIspBoost, splitParts, vesselStats } from '../game/vessel'
 import { BODIES, childrenOf, solarFlux, type BodyId } from '../nasa/bodies'
 import { bodyAbsState, bodyRelState, elementsFromState, hohmann, len, wrapPi } from './orbit'
 import {
@@ -172,6 +172,222 @@ function physStep(v: Vessel, warp: number, free: boolean): number {
   return Math.min(0.2, PHYSICS_DT * (warp / 25))
 }
 const PHYS_STEP_BUDGET = 260
+
+// ───────── Çok oyunculu arcade hızlı yolculuk ─────────
+const vcirc = (mu: number, r: number) => Math.sqrt(mu / r)
+const visViva = (mu: number, r: number, a: number) => Math.sqrt(Math.max(0, mu * (2 / r - 1 / a)))
+
+function ancestry(id: BodyId): BodyId[] {
+  const out: BodyId[] = []
+  let cur: BodyId | null = id
+  while (cur) {
+    out.push(cur)
+    cur = BODIES[cur].parentId as BodyId | null
+  }
+  return out
+}
+
+/** Varış yüksekliği: atmosfer sınırının hemen üstü (atmosfersizse güvenli alçak yörünge). */
+export function arcadeArrivalRadius(id: BodyId): number {
+  const b = BODIES[id]
+  return b.radius + (b.atmoHeight > 0 ? b.atmoHeight + 3000 : Math.max(8000, safeOrbitAlt(b) * 0.6))
+}
+
+/** v∞ ile `top` seviyesinden çıkmak için `from` cisminin çevresinde gereken ek hız (yamalı konikler). */
+function chainExcess(from: BodyId, top: BodyId, vinfTop: number): number {
+  // top'tan aşağı from'a: her seviyede alt cismin yörünge yarıçapında gereken hızdan v∞ türet.
+  const path = ancestry(from)
+  const idx = path.indexOf(top)
+  let vinf = vinfTop
+  for (let k = idx; k > 0; k -= 1) {
+    const X = BODIES[path[k]!]
+    const Xc = BODIES[path[k - 1]!]
+    const ra = Xc.orbit!.a
+    const need = Math.sqrt(vinf * vinf + (2 * X.mu) / ra)
+    vinf = Math.abs(need - vcirc(X.mu, ra))
+  }
+  return vinf
+}
+
+/** Hedefin atmosfer sınırındaki dairesel yörüngeye varmak için gereken Δv (yaklaşık, yamalı konikler). */
+export function arcadeDeltaV(v: Vessel, targetId: BodyId): number {
+  const A = v.bodyId
+  if (A === targetId) return 0
+  const r0 = Math.max(1, len(v.pos))
+  const s0 = len(v.vel)
+  const rA = arcadeArrivalRadius(targetId)
+  const B = BODIES[targetId]
+  const upA = ancestry(A)
+  const upB = ancestry(targetId)
+  const C = upA.find((id) => upB.includes(id))!
+  const muC = BODIES[C].mu
+  const childOnPath = (path: BodyId[]) => path[path.indexOf(C) - 1]!
+  if (C === A) {
+    // Hedef bu cismin uydusu (Dünya → Ay)
+    const b = BODIES[childOnPath(upB)]
+    const ab = b.orbit!.a
+    const at = (r0 + ab) / 2
+    const dv1 = Math.abs(visViva(muC, r0, at) - s0)
+    const vinfB = Math.abs(vcirc(muC, ab) - visViva(muC, ab, at))
+    const vinf = chainExcess(targetId, b.id, vinfB)
+    return dv1 + Math.max(0, Math.sqrt(vinf * vinf + (2 * B.mu) / rA) - vcirc(B.mu, rA))
+  }
+  if (C === targetId) {
+    // Ebeveyne dönüş (Ay → Dünya): enberisi atmosfer sınırında olan elips
+    const a = BODIES[childOnPath(upA)]
+    const aa = a.orbit!.a
+    const at = (aa + rA) / 2
+    const vinfA = Math.abs(vcirc(muC, aa) - visViva(muC, aa, at))
+    const vinf = chainExcess(A, a.id, vinfA)
+    const esc = Math.max(0, Math.sqrt(vinf * vinf + (2 * BODIES[A].mu) / r0) - s0)
+    return esc + Math.max(0, visViva(muC, rA, at) - vcirc(muC, rA))
+  }
+  // Kardeş seviyeler (Dünya → Mars, Ay → Mars…): ortak ebeveyn çevresinde Hohmann
+  const a = BODIES[childOnPath(upA)]
+  const b = BODIES[childOnPath(upB)]
+  const ra = a.orbit!.a
+  const rb = b.orbit!.a
+  const at = (ra + rb) / 2
+  const vinfA = chainExcess(A, a.id, Math.abs(visViva(muC, ra, at) - vcirc(muC, ra)))
+  const vinfB = chainExcess(targetId, b.id, Math.abs(vcirc(muC, rb) - visViva(muC, rb, at)))
+  const esc = A === 'sun' ? 0 : Math.max(0, Math.sqrt(vinfA * vinfA + (2 * BODIES[A].mu) / r0) - s0)
+  return esc + Math.max(0, Math.sqrt(vinfB * vinfB + (2 * B.mu) / rA) - vcirc(B.mu, rA))
+}
+
+/** Gereken Δv kadar yakıtı kademe kademe harcar; biten kademeler düşer. Yetmezse false (araç değişmez). */
+export function arcadeBurn(v: Vessel, dv: number): boolean {
+  const total = estimateDeltaV(v.parts, cargoMass(v.cargo), 9.8).reduce((s, st) => s + st.dv, 0)
+  if (total + 1e-6 < dv) return false
+  let rem = dv
+  for (let guard = 0; guard < 12 && rem > 1e-6; guard += 1) {
+    const engines = activeEngines(v.parts)
+    if (engines.length) {
+      const groups = fuelGroups(v.parts)
+      const gset = new Set(engines.map((i) => groups[i]))
+      const tanks = v.parts.filter((p, j) => gset.has(groups[j]) && partDef(p.def).kind === 'tank' && (p.fuel ?? 0) > 0)
+      const fuel = tanks.reduce((s, t) => s + (t.fuel ?? 0), 0)
+      const thrust = engines.reduce((s, i) => s + partDef(v.parts[i]!.def).thrust!, 0)
+      const flow = engines.reduce((s, i) => s + partDef(v.parts[i]!.def).thrust! / (partDef(v.parts[i]!.def).ispVac! * 9.80665), 0)
+      const m0 = vesselStats(v.parts, v.cargo).mass
+      if (fuel > 0 && flow > 0) {
+        const ve = thrust / flow
+        const stageDv = ve * Math.log(m0 / (m0 - fuel))
+        if (rem <= stageDv) {
+          const burn = m0 * (1 - Math.exp(-rem / ve))
+          for (const t of tanks) t.fuel = Math.max(0, (t.fuel ?? 0) - burn * ((t.fuel ?? 0) / fuel))
+          v.dvUsed += dv
+          return true
+        }
+        for (const t of tanks) t.fuel = 0
+        rem -= stageDv
+      }
+    }
+    const stage = nextStage(v.parts)
+    if (!stage.length) break
+    const kept = splitParts(v.parts, stage)[0]
+    if (!kept?.length) break
+    v.parts = kept
+  }
+  v.dvUsed += dv - rem
+  return rem <= 1e-6
+}
+
+/** Arcade yolculuğu başlatır: yakıt düşülür, araç birkaç saniyede hedefin atmosfer sınırına geçer. */
+function tryStartCruise(sim: Sim, v: Vessel, events: GameEvent[]): boolean {
+  const gs = sim.gs
+  const targetId = vesselTargetBody(gs, v)
+  if (targetId === v.bodyId || v.landed || v.debris) return false
+  const body = BODIES[v.bodyId]
+  const s = situation(v)
+  // Önce uzaya çık: atmosferin üstü (atmosfersizse yüzeyden en az 3 km).
+  const spaceAlt = body.atmoHeight > 0 ? body.atmoHeight + 2000 : 3000
+  if (v.bodyId !== 'sun' && s.altSea < spaceAlt) return false
+  const dv = arcadeDeltaV(v, targetId) * 1.05
+  const target = BODIES[targetId]
+  if (!arcadeBurn(v, dv)) {
+    const have = estimateDeltaV(v.parts, cargoMass(v.cargo), 9.8).reduce((a, st) => a + st.dv, 0)
+    v.autopilot = 'off'
+    v.autopilotNote = undefined
+    events.push({ type: 'toast', ownerId: v.ownerId, text: `Hızlı yolculuk → ${target.name}: ≈ ${Math.round(dv)} m/s gerekli, gemide ${Math.round(have)} m/s var.` })
+    return true
+  }
+  const t = gs.time
+  const fromAbs = bodyAbsState(v.bodyId, t).r
+  const toAbs = bodyAbsState(targetId, t).r
+  const startAbs = { x: fromAbs.x + v.pos.x, y: fromAbs.y + v.pos.y }
+  let dir = { x: startAbs.x - toAbs.x, y: startAbs.y - toAbs.y }
+  const dl = Math.max(1, len(dir))
+  dir = { x: dir.x / dl, y: dir.y / dl }
+  const rA = arcadeArrivalRadius(targetId)
+  const vc = vcirc(target.mu, rA)
+  const dist = len({ x: toAbs.x - startAbs.x, y: toAbs.y - startAbs.y })
+  v.cruise = {
+    from: v.bodyId,
+    fromRel: { ...v.pos },
+    to: targetId,
+    toRel: { x: dir.x * rA, y: dir.y * rA },
+    toVel: { x: -dir.y * vc, y: dir.x * vc },
+    start: sim.clock ?? 0,
+    dur: Math.max(3, Math.min(8, 3 + 2 * Math.log10(Math.max(1, dist / 1e6)))),
+  }
+  v.throttle = 0
+  v.autopilot = 'off'
+  v.autopilotNote = `Hızlı yolculuk → ${target.name}…`
+  v.vel = { x: 0, y: 0 }
+  sim.firing.delete(v.id)
+  events.push({ type: 'toast', ownerId: v.ownerId, text: `Hızlı yolculuk → ${target.name}: ${Math.round(dv)} m/s'lik yakıt harcandı.` })
+  return true
+}
+
+/** Hızlı yolculuktaki aracı ilerletir (ev sahibi ve istemci aynı hesabı yapar). Vardıysa 'arrived'. */
+export function stepCruise(gs: GameState, clock: number, v: Vessel): 'cruising' | 'arrived' | null {
+  const c = v.cruise
+  if (!c) return null
+  const u = Math.max(0, Math.min(1, (clock - c.start) / c.dur))
+  if (u >= 1) {
+    v.bodyId = c.to
+    v.pos = { ...c.toRel }
+    v.vel = { ...c.toVel }
+    v.angle = Math.atan2(c.toVel.y, c.toVel.x)
+    v.angVel = 0
+    v.cruise = undefined
+    v.autopilotNote = undefined
+    if (!v.visited.includes(c.to)) v.visited.push(c.to)
+    return 'arrived'
+  }
+  const e = u * u * (3 - 2 * u)
+  const fromAbs = bodyAbsState(c.from, gs.time).r
+  const toAbs = bodyAbsState(c.to, gs.time).r
+  const p0 = { x: fromAbs.x + c.fromRel.x, y: fromAbs.y + c.fromRel.y }
+  const p3 = { x: toAbs.x + c.toRel.x, y: toAbs.y + c.toRel.y }
+  // Kübik Bézier: kalkışta gezegenden dışarı, varışta hedefe dışarıdan yaklaşır; yol hiçbir
+  // gezegenin içinden geçmez.
+  const dist = Math.max(1, len({ x: p3.x - p0.x, y: p3.y - p0.y }))
+  const n0 = Math.max(1, len(c.fromRel))
+  const n3 = Math.max(1, len(c.toRel))
+  const k0 = Math.max(dist * 0.45, BODIES[c.from].radius * 2)
+  const k3 = Math.max(dist * 0.3, BODIES[c.to].radius * 2)
+  const p1 = { x: p0.x + (c.fromRel.x / n0) * k0, y: p0.y + (c.fromRel.y / n0) * k0 }
+  const p2 = { x: p3.x + (c.toRel.x / n3) * k3, y: p3.y + (c.toRel.y / n3) * k3 }
+  const bez = (t: number) => {
+    const m = 1 - t
+    const w0 = m * m * m
+    const w1 = 3 * m * m * t
+    const w2 = 3 * m * t * t
+    const w3 = t * t * t
+    return { x: w0 * p0.x + w1 * p1.x + w2 * p2.x + w3 * p3.x, y: w0 * p0.y + w1 * p1.y + w2 * p2.y + w3 * p3.y }
+  }
+  const p = bez(e)
+  const ahead = bez(Math.min(1, e + 0.01))
+  const ref = u < 0.5 ? c.from : c.to
+  const refAbs = ref === c.from ? fromAbs : toAbs
+  v.bodyId = ref
+  v.pos = { x: p.x - refAbs.x, y: p.y - refAbs.y }
+  v.vel = { x: 0, y: 0 }
+  if (len({ x: ahead.x - p.x, y: ahead.y - p.y }) > 1) v.angle = Math.atan2(ahead.y - p.y, ahead.x - p.x)
+  v.angVel = 0
+  return 'cruising'
+}
 
 /** Bekleme süresine göre en hızlı güvenli zaman çarpanı: bekleme yaklaşık 3 gerçek saniyede geçer. */
 function chooseCoastWarpIdx(waitSec: number, maxCap = WARPS.length - 1): number {
@@ -834,10 +1050,27 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
     }
   }
 
+  // Çok oyunculu: istemcinin kendi aracında anında döndürdüğü burun yönü ev sahibine gelir ve bir kez
+  // uygulanır; böylece yüksek pingte bile gemi dönüşü gecikmeden hissedilir (konum ev sahibinde kalır).
+  if (gs.mp && effCtrlMap) {
+    for (const [pid, pc] of effCtrlMap) {
+      if (pc.vid === undefined || pc.angle === undefined || pc.applied) continue
+      pc.applied = true
+      const v = gs.vessels.find((o) => o.id === pc.vid && o.ownerId === pid)
+      if (v && !v.landed && effectiveAutopilot(v) === 'off' && Number.isFinite(pc.angle)) {
+        v.angle = pc.angle
+        v.angVel = Number.isFinite(pc.angVel) ? Math.max(-3, Math.min(3, pc.angVel!)) : 0
+      }
+    }
+  }
+
   // Transfer otopilotu ve yakıt bitmiş kademe kontrolü (fizik/ray seçimi öncesi)
   for (const v of [...gs.vessels]) {
     const ap = effectiveAutopilot(v)
     const isOwnedActive = isMp ? isAnyActivePlayerVessel(gs, v) : v === active
+    if (v.cruise) continue
+    // Çok oyunculu arcade: uzaya çıkınca "hedefe git" hızlı yolculuğa dönüşür.
+    if (isMp && ap === 'transfer' && tryStartCruise(sim, v, events)) continue
     if (ap === 'transfer') {
       const targetAngle = updateTransferAutopilot(sim, v, events, autopilotWanted)
       if (!transferTargets) transferTargets = new Map()
@@ -933,6 +1166,13 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
     const c = isMp
       ? (isActive && v.ownerId ? (effCtrlMap!.get(v.ownerId) ?? null) : null)
       : (isActive ? singleCtrl : null)
+    if (v.cruise) {
+      if (stepCruise(gs, sim.clock ?? 0, v) === 'arrived') {
+        events.push({ type: 'toast', ownerId: v.ownerId, text: `Hedefe varıldı: ${BODIES[v.bodyId].name} — normal hıza dönüldü, inişi sen yap!` })
+      }
+      sim.firing.delete(v.id)
+      continue
+    }
     const apBefore = effectiveAutopilot(v)
     const extTarget = transferTargets?.get(v.id) ?? null
     if (v.debris) {

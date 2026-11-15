@@ -101,15 +101,20 @@ export function listPublicRooms() {
   return out.sort((a, b) => Number(a.started) - Number(b.started))
 }
 
-const SNAPSHOT_BACKPRESSURE_BYTES = 96 * 1024
+// Yavaş bağlantıda anlık görüntüler kuyrukta birikip saniyelerce gecikmesin: tampon dolunca
+// yalnızca EN SON görüntü saklanır ve soket boşalınca gönderilir (eski kareler atılır).
+const SNAPSHOT_BACKPRESSURE_BYTES = 16 * 1024
 
 function broadcastRoom(room, obj, exceptClient = null, dropIfBacklogged = false) {
   let frame = null
   for (const m of room.members) {
     if (m === exceptClient) continue
     if (!m || m.closed || m.socket.destroyed || !m.socket.writable) continue
-    if (dropIfBacklogged && m.socket.writableLength > SNAPSHOT_BACKPRESSURE_BYTES) continue
     if (!frame) frame = encodeFrame(0x1, Buffer.from(JSON.stringify(obj), 'utf8'))
+    if (dropIfBacklogged && m.socket.writableLength > SNAPSHOT_BACKPRESSURE_BYTES) {
+      m.pendingSnap = frame
+      continue
+    }
     try {
       m.socket.write(frame)
     } catch {
@@ -323,6 +328,16 @@ export function attachMultiplayerWs(server) {
         `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
     )
     socket.setNoDelay?.(true)
+    socket.on('drain', () => {
+      const f = client.pendingSnap
+      if (!f || client.closed || socket.destroyed || !socket.writable) return
+      client.pendingSnap = null
+      try {
+        socket.write(f)
+      } catch {
+        /* yoksay */
+      }
+    })
 
     const client = {
       socket,

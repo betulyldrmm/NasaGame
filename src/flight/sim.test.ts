@@ -4,7 +4,7 @@ import { DEFAULT_DESIGN } from '../game/data'
 import { estimateDeltaV, freshParts, isConnected, vesselStats } from '../game/vessel'
 import { BODIES, solarFlux } from '../nasa/bodies'
 import { elementsFromState, hohmann, len, propagate, wrapPi } from './orbit'
-import { PAD_ANGLE, situation, terrainHeight } from './physics'
+import { type Controls, PAD_ANGLE, situation, terrainHeight } from './physics'
 import { predictTrajectory } from './predict'
 import {
   computeDynamicWarp,
@@ -748,6 +748,81 @@ describe('multiplayer conquest mode', () => {
     expect(dispatchCommand(sim, { type: 'stage', vesselId: v1.id }, 'p2').error).toBe('Bu araç başka bir oyuncuya ait.')
     expect(dispatchCommand(sim, { type: 'stage', vesselId: v2.id }, 'p2').error).toBeUndefined()
     expect(v1.parts.length).toBe(v1Parts)
+  })
+
+  it('arcade: uzayda "hedefe git" yakıtı düşüp hedefin atmosfer sınırına hızla götürür', async () => {
+    const { arcadeArrivalRadius, arcadeDeltaV } = await import('./world')
+    const sim = twoPlayerSim()
+    expect(dispatchCommand(sim, { type: 'launch', design: DEFAULT_DESIGN }, 'p1').error).toBeUndefined()
+    const v = sim.gs.vessels.find((o) => o.ownerId === 'p1')!
+    // Yerdeyken hızlı yolculuk başlamaz (önce uzaya çıkılmalı)
+    sim.gs.mp!.players.p1.targetBody = 'moon'
+    v.targetBody = 'moon'
+    expect(dispatchCommand(sim, { type: 'setAutopilot', vesselId: v.id, mode: 'transfer' }, 'p1').error).toBeUndefined()
+    stepWorld(sim, 0.05, new Map())
+    expect(v.cruise).toBeUndefined()
+    // Dünya yörüngesine koy
+    const r = BODIES.earth.radius + BODIES.earth.atmoHeight + 30_000
+    v.landed = false
+    v.pos = { x: r, y: 0 }
+    v.vel = { x: 0, y: Math.sqrt(BODIES.earth.mu / r) }
+    v.autopilot = 'transfer'
+    const dvNeed = arcadeDeltaV(v, 'moon')
+    expect(dvNeed).toBeGreaterThan(300)
+    expect(dvNeed).toBeLessThan(3000)
+    const fuelBefore = v.parts.reduce((a, p) => a + (p.fuel ?? 0), 0)
+    const evs = stepWorld(sim, 0.05, new Map())
+    expect(v.cruise).toBeTruthy()
+    expect(evs.some((e) => e.type === 'toast' && e.ownerId === 'p1')).toBe(true)
+    expect(v.parts.reduce((a, p) => a + (p.fuel ?? 0), 0)).toBeLessThan(fuelBefore)
+    let arrived = false
+    for (let i = 0; i < 400 && !arrived; i += 1) {
+      const e = stepWorld(sim, 0.05, new Map())
+      if (e.some((x) => x.type === 'toast' && x.text.includes('Hedefe varıldı'))) arrived = true
+    }
+    expect(arrived).toBe(true)
+    expect(v.bodyId).toBe('moon')
+    expect(v.cruise).toBeUndefined()
+    expect(len(v.pos)).toBeCloseTo(arcadeArrivalRadius('moon'), -2)
+    expect(v.autopilot).toBe('off')
+    // Varışta normal hızda sabit bir yörüngededir
+    const el = elementsFromState(v.pos, v.vel, BODIES.moon.mu)
+    expect(el.e).toBeLessThan(0.05)
+  })
+
+  it('arcade: yakıt yetmezse yolculuk başlamaz ve oyuncuya söylenir', () => {
+    const sim = twoPlayerSim()
+    expect(dispatchCommand(sim, { type: 'launch', design: DEFAULT_DESIGN }, 'p1').error).toBeUndefined()
+    const v = sim.gs.vessels.find((o) => o.ownerId === 'p1')!
+    sim.gs.mp!.players.p1.targetBody = 'mars'
+    v.targetBody = 'mars'
+    for (const p of v.parts) if (p.fuel !== undefined) p.fuel = 0.05
+    const r = BODIES.earth.radius + BODIES.earth.atmoHeight + 30_000
+    v.landed = false
+    v.pos = { x: r, y: 0 }
+    v.vel = { x: 0, y: Math.sqrt(BODIES.earth.mu / r) }
+    v.autopilot = 'transfer'
+    const evs = stepWorld(sim, 0.05, new Map())
+    expect(v.cruise).toBeUndefined()
+    expect(v.autopilot).toBe('off')
+    expect(evs.some((e) => e.type === 'toast' && e.text.includes('gerekli'))).toBe(true)
+  })
+
+  it('istemcinin burun yönü ev sahibinde bir kez uygulanır', () => {
+    const sim = twoPlayerSim()
+    expect(dispatchCommand(sim, { type: 'launch', design: DEFAULT_DESIGN }, 'p2').error).toBeUndefined()
+    const v = sim.gs.vessels.find((o) => o.ownerId === 'p2')!
+    const r = BODIES.earth.radius + 200_000
+    v.landed = false
+    v.pos = { x: r, y: 0 }
+    v.vel = { x: 0, y: Math.sqrt(BODIES.earth.mu / r) }
+    const ctrlMap = new Map<string, Controls>([['p2', { rotate: 0, tx: 0, ty: 0, vid: v.id, angle: 1.234, angVel: 0 }]])
+    stepWorld(sim, 0.02, ctrlMap)
+    expect(v.angle).toBeCloseTo(1.234, 2)
+    expect(ctrlMap.get('p2')!.applied).toBe(true)
+    v.angle = 0
+    stepWorld(sim, 0.02, ctrlMap)
+    expect(v.angle).toBeCloseTo(0, 2)
   })
 
   it('dynamically speeds up time while coasting and slams down on close approach or manual thrust', () => {

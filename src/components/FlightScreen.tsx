@@ -531,7 +531,7 @@ export default function FlightScreen({ onBuilder }: Props) {
         const labels: Record<AutopilotMode, string> = {
           off: 'Otopilot kapatıldı.',
           orbit: '🛰️ Yörüngeye Yerleş otopilotu başlatıldı.',
-          transfer: `🎯 ${BODIES[myTgt].name} oto-transferi başlatıldı.`,
+          transfer: `🎯 Hızlı yolculuk → ${BODIES[myTgt].name}: uzaya çıkınca başlar, yakıtı yol kadar düşülür.`,
           land: '🛬 Otomatik İniş Asistanı devrede.',
         }
         toast(labels[next])
@@ -761,7 +761,7 @@ export default function FlightScreen({ onBuilder }: Props) {
         audio.rocket(av && (curSim.firing.get(av.id)?.size ?? 0) > 0 ? av.throttle : 0)
       }
       const cur = activeVessel(curSim.gs)
-      if (n % 3 === 0) patchesRef.current = cur && !cur.landed ? predictTrajectory(cur.bodyId, cur.pos, cur.vel, curSim.gs.time) : []
+      if (n % 3 === 0) patchesRef.current = cur && !cur.landed && !cur.cruise ? predictTrajectory(cur.bodyId, cur.pos, cur.vel, curSim.gs.time) : []
       if (view.map) mapFrame.current = renderMap(ctx, curSim, view, patchesRef.current)
       else flightFrame.current = renderFlight(ctx, curSim, view, patchesRef.current)
       if (n % 6 === 0) setHud(snapshot())

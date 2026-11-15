@@ -13,9 +13,10 @@ import type {
   GameState,
   MultiplayerConfig,
   PartInst,
+  Vessel,
 } from '../game/types'
 import { INITIAL_TECH } from '../game/tech'
-import { stepRails, type Controls } from './physics'
+import { effectiveAutopilot, stepPhysics, stepRails, type Controls } from './physics'
 import {
   addMultiplayerPlayer,
   newMultiplayerGame,
@@ -23,7 +24,7 @@ import {
   removeMultiplayerPlayer,
   WARPS,
 } from './multiplayerSim'
-import { dispatchCommand, type Fx, type Sim, stepWorld } from './world'
+import { dispatchCommand, type Fx, type Sim, stepCruise, stepWorld } from './world'
 
 export interface PublicRoomInfo {
   code: string
@@ -90,6 +91,45 @@ export interface SnapshotWire extends GameState {
   _fx?: Fx[]
   _clock?: number
   _omitStatic?: boolean
+  /** Ev sahibinin sunucuya gidiş-dönüş süresi (ms): istemci gecikme tahmini için */
+  _hostPing?: number
+}
+
+/** Ağ üzerindeki araç: yapı (parçalar) yalnızca değişince/periyodik gelir, yakıt her karede kısa listedir. */
+type WireVessel = Omit<Vessel, 'parts'> & { parts?: PartInst[]; _pf?: [number, number][] }
+
+const r2 = (x: number) => Math.round(x * 100) / 100
+const r4 = (x: number) => Math.round(x * 10000) / 10000
+
+/** Parçaların yapısal imzası: sayısı, açılma ve motor durumları. Değişince tam yapı gönderilir. */
+function partsKey(parts: PartInst[]): string {
+  let k = `${parts.length}:`
+  for (const p of parts) k += (p.deployed ? 'd' : '') + (p.on === false ? 'o' : '') + p.def.length
+  return k
+}
+const sentPartsKey = new WeakMap<Sim, Map<number, { key: string; until: number }>>()
+
+function compactVessel(v: Vessel, withParts: boolean): WireVessel {
+  const { parts, ...rest } = v
+  const out: WireVessel = {
+    ...rest,
+    pos: { x: r2(v.pos.x), y: r2(v.pos.y) },
+    vel: { x: r4(v.vel.x), y: r4(v.vel.y) },
+    angle: r4(v.angle),
+    angVel: r4(v.angVel),
+    throttle: r4(v.throttle),
+    ec: r2(v.ec),
+    dvUsed: Math.round(v.dvUsed),
+  }
+  if (withParts) out.parts = parts
+  else {
+    const pf: [number, number][] = []
+    parts.forEach((p, i) => {
+      if (p.fuel !== undefined) pf.push([i, Math.round(p.fuel * 1000) / 1000])
+    })
+    out._pf = pf
+  }
+  return out
 }
 
 type ServerMessage =
@@ -142,6 +182,10 @@ let lastClientSnapAt = 0
 let urgentSnapshot = false
 let lastSentCtrl: Controls = { rotate: 0, tx: 0, ty: 0 }
 let lastSentCtrlAt = 0
+/** İstemci tahmini: yerel tuşlar, son gönderilen burun yönü ve ev sahibinin pingi */
+let localCtrl: Controls = { rotate: 0, tx: 0, ty: 0 }
+let lastSentAngle = 0
+let lastHostPing = 0
 let lastLoopAt = 0
 let rafId = 0
 let bgIntervalId = 0
@@ -389,7 +433,16 @@ export function buildCompactSnapshot(sim: Sim, includeStatic: boolean): Snapshot
     ownerId: gs.ownerId,
     mp: mpOut,
     money: gs.money,
-    vessels: gs.vessels,
+    vessels: gs.vessels.map((v) => {
+      let tracked = sentPartsKey.get(sim)
+      if (!tracked) sentPartsKey.set(sim, (tracked = new Map()))
+      const key = partsKey(v.parts)
+      const prev = tracked.get(v.id)
+      // Yapı değiştiyse ya da araç yeniyse 1,5 sn boyunca her karede tam yapı gider (atılan kareler için).
+      if (!prev || prev.key !== key) tracked.set(v.id, { key, until: clock + 1.5 })
+      const withParts = includeStatic || clock < (tracked.get(v.id)!.until)
+      return compactVessel(v, withParts)
+    }) as unknown as Vessel[],
     activeId: gs.activeId,
     nextId: gs.nextId,
     bases: includeStatic ? gs.bases : {},
@@ -404,6 +457,7 @@ export function buildCompactSnapshot(sim: Sim, includeStatic: boolean): Snapshot
     _fx: fxList,
     _clock: clock,
     _omitStatic: includeStatic ? undefined : true,
+    _hostPing: pingMs ?? undefined,
   }
 }
 
@@ -426,7 +480,21 @@ export function hydrateCompactSnapshot(
   const clock = raw._clock ?? 0
   const omitStatic = !!raw._omitStatic
 
-  const { _warpIdx: _w, _firing: _fi, _fx: _fx, _clock: _cl, _omitStatic: _os, ...cleanGs } = raw
+  const { _warpIdx: _w, _firing: _fi, _fx: _fx, _clock: _cl, _omitStatic: _os, _hostPing: _hp, ...cleanGs } = raw
+
+  // Yapısı gelmeyen araçlar önceki görüntüden tamamlanır; hiç görülmemişse tam yapı gelene kadar beklenir.
+  const prevById = new Map((prevGs?.vessels ?? []).map((v) => [v.id, v]))
+  cleanGs.vessels = (cleanGs.vessels as unknown as WireVessel[]).flatMap((wv) => {
+    const { _pf, parts, ...rest } = wv
+    let full = parts
+    if (!full) {
+      const pv = prevById.get(wv.id)
+      if (!pv) return []
+      full = pv.parts.map((p) => ({ ...p }))
+    }
+    if (_pf) for (const [i, f] of _pf) if (full[i]) full[i].fuel = f
+    return [{ ...rest, parts: full } as Vessel]
+  })
 
   if (omitStatic && prevGs) {
     cleanGs.bases = prevGs.bases
@@ -464,7 +532,7 @@ export function hydrateCompactSnapshot(
 function sendHostSnapshot(now: number) {
   if (!isHost || !hostSim) return
   if (!forceImmediateSnapshot && now - lastSnapshotSentAt < 22) return
-  if (!forceImmediateSnapshot && ws && ws.bufferedAmount > 96 * 1024) {
+  if (!forceImmediateSnapshot && ws && ws.bufferedAmount > 24 * 1024) {
     urgentSnapshot = false
     return
   }
@@ -492,9 +560,41 @@ function sendHostSnapshot(now: number) {
   sendRaw({ type: 'hostSnapshot', state: payload, events: evs })
 }
 
+function ownActive(gs: GameState | null | undefined): Vessel | null {
+  if (!gs || !you) return null
+  const v = gs.vessels.find((o) => o.id === gs.activeId && o.ownerId === you!.id)
+  return v ?? null
+}
+
+/** İyimser yerel değişikliklerin, ev sahibinin onayı gelene kadar korunacağı süre (ms): pinge göre büyür. */
+function pendWindow(): number {
+  return Math.max(300, (pingMs ?? 80) * 2 + lastHostPing + 200)
+}
+
+/** İstemci ile ev sahibi arasındaki tek yön gecikme tahmini (s). */
+function latencySec(): number {
+  return Math.max(0, Math.min(0.4, ((pingMs ?? 80) + lastHostPing) / 2 / 1000))
+}
+
+/** Kendi aracını yerel tuşlarla fizik adımında ilerletir (itki, dönüş, yerçekimi, iniş). */
+function predictOwn(v: Vessel, simDt: number, warp: number) {
+  if (simDt <= 0) return
+  const n = Math.min(400, Math.max(1, Math.ceil(simDt / 0.02)))
+  const h = simDt / n
+  for (let i = 0; i < n; i += 1) {
+    const res = stepPhysics(v, h, localCtrl, 1 / Math.max(1, warp), null)
+    if (res.crash || res.touchdown) break
+  }
+}
+
 function applyClientSnapshot(raw: SnapshotWire, events?: GameEvent[]) {
   if (!you) return
   const prevGs = clientSim?.gs ?? null
+  if (typeof raw._hostPing === 'number') lastHostPing = raw._hostPing
+  const predV = ownActive(prevGs)
+  const pred = predV
+    ? { id: predV.id, bodyId: predV.bodyId, pos: { ...predV.pos }, vel: { ...predV.vel }, angle: predV.angle, angVel: predV.angVel, landed: predV.landed }
+    : null
   const hydrated = hydrateCompactSnapshot(raw, prevGs, you.id, localDesign, localDesignCargo)
   const gs = hydrated.gs
   const now = Date.now()
@@ -535,6 +635,28 @@ function applyClientSnapshot(raw: SnapshotWire, events?: GameEvent[]) {
     }
   }
 
+  // Kendi aracında uzlaştırma: ev sahibinin (gecikmeli) durumu gecikme kadar ileri sarılır ve
+  // yerel tahmine yumuşakça karıştırılır; burun yönü istemcide kalır. Böylece kontrol anında hissedilir.
+  const nv = pred ? ownActive(gs) : null
+  if (pred && nv && !nv.cruise && nv.id === pred.id && nv.bodyId === pred.bodyId && effectiveAutopilot(nv) === 'off') {
+    const warpNow = WARPS[hydrated.warpIdx] ?? 1
+    nv.angle = pred.angle
+    nv.angVel = pred.angVel
+    if (nv.landed && !pred.landed && nv.throttle > 0) {
+      // Kalkışı ev sahibi henüz işlemedi: yerel kalkışı koru.
+      nv.landed = false
+      nv.pos = pred.pos
+      nv.vel = pred.vel
+    } else if (!nv.landed && !pred.landed) {
+      if (hydrated.warpIdx <= PHYSICS_WARP_MAX_IDX) predictOwn(nv, latencySec() * warpNow, warpNow)
+      const d = Math.hypot(nv.pos.x - pred.pos.x, nv.pos.y - pred.pos.y)
+      if (d < 400 * Math.max(1, warpNow) && !nv.landed) {
+        nv.pos = { x: pred.pos.x + (nv.pos.x - pred.pos.x) * 0.3, y: pred.pos.y + (nv.pos.y - pred.pos.y) * 0.3 }
+        nv.vel = { x: pred.vel.x + (nv.vel.x - pred.vel.x) * 0.5, y: pred.vel.y + (nv.vel.y - pred.vel.y) * 0.5 }
+      }
+    }
+  }
+
   if (!clientSim) {
     clientSim = createEmptySim(gs)
   } else {
@@ -555,14 +677,26 @@ function applyClientSnapshot(raw: SnapshotWire, events?: GameEvent[]) {
 function stepClientExtrapolation(dtReal: number) {
   if (!clientSim) return
   const sinceSnap = (performance.now() - lastClientSnapAt) / 1000
-  if (sinceSnap > 0.3) return
+  if (sinceSnap > 1) return
   const real = Math.min(0.05, Math.max(0, dtReal))
   const warpIdx = clientSim.warpIdx ?? 0
   const warp = WARPS[warpIdx] ?? 1
   const simDt = real * warp
   clientSim.clock = (clientSim.clock ?? 0) + real
   clientSim.gs.time += simDt
+  const own = ownActive(clientSim.gs)
   for (const v of clientSim.gs.vessels) {
+    // Hızlı yolculuk ev sahibiyle aynı formülle yerelde de akar.
+    if (v.cruise) {
+      stepCruise(clientSim.gs, clientSim.clock ?? 0, v)
+      continue
+    }
+    // Kendi aracın: yerel tuşlarla tam fizik tahmini (anında tepki).
+    if (v === own && warpIdx <= PHYSICS_WARP_MAX_IDX && effectiveAutopilot(v) === 'off') {
+      predictOwn(v, simDt, warp)
+      continue
+    }
+    if (sinceSnap > 0.3) continue
     if (v.landed) continue
     if (warpIdx <= PHYSICS_WARP_MAX_IDX) {
       const body = BODIES[v.bodyId]
@@ -846,13 +980,21 @@ export function sendMpControls(ctrl: Controls) {
     return
   }
   const now = performance.now()
+  localCtrl = { rotate: ctrl.rotate, tx: ctrl.tx, ty: ctrl.ty }
+  const own = ownActive(clientSim?.gs)
+  const withAngle = own && !own.landed && effectiveAutopilot(own) === 'off'
   const changed =
     ctrl.rotate !== lastSentCtrl.rotate || ctrl.tx !== lastSentCtrl.tx || ctrl.ty !== lastSentCtrl.ty
   const activeCtrl = ctrl.rotate !== 0 || ctrl.tx !== 0 || ctrl.ty !== 0
-  if (changed || (activeCtrl && now - lastSentCtrlAt >= 33)) {
-    lastSentCtrl = { ...ctrl }
+  const turned = withAngle && Math.abs(wrapPi(own!.angle - lastSentAngle)) > 0.01 && now - lastSentCtrlAt >= 40
+  if (changed || turned || (activeCtrl && now - lastSentCtrlAt >= 33)) {
+    lastSentCtrl = { ...localCtrl }
     lastSentCtrlAt = now
-    sendRaw({ type: 'clientCtrl', ctrl })
+    const payload: Controls = withAngle
+      ? { ...localCtrl, vid: own!.id, angle: Math.round(own!.angle * 10000) / 10000, angVel: Math.round(own!.angVel * 10000) / 10000 }
+      : localCtrl
+    if (withAngle) lastSentAngle = own!.angle
+    sendRaw({ type: 'clientCtrl', ctrl: payload })
   }
 }
 
@@ -880,11 +1022,11 @@ export function sendMpCommand(cmd: GameCommand): { ok: boolean; error?: string; 
     emitUi(true)
   } else if (cmd.type === 'setThrottle') {
     const clamped = Math.max(0, Math.min(1, cmd.throttle))
-    pendingThrottle = { vesselId: cmd.vesselId, value: clamped, until: now + 280 }
+    pendingThrottle = { vesselId: cmd.vesselId, value: clamped, until: now + pendWindow() }
     const v = clientSim?.gs.vessels.find((o) => o.id === cmd.vesselId && o.ownerId === you!.id)
     if (v) v.throttle = clamped
   } else if (cmd.type === 'emergencyStop') {
-    pendingThrottle = { vesselId: cmd.vesselId, value: 0, until: now + 300 }
+    pendingThrottle = { vesselId: cmd.vesselId, value: 0, until: now + pendWindow() }
     const v = clientSim?.gs.vessels.find((o) => o.id === cmd.vesselId && o.ownerId === you!.id)
     if (v) {
       v.throttle = 0
@@ -892,10 +1034,10 @@ export function sendMpCommand(cmd: GameCommand): { ok: boolean; error?: string; 
       v.autoLand = false
     }
   } else if (cmd.type === 'setActive') {
-    pendingActive = { vesselId: cmd.vesselId, until: now + 300 }
+    pendingActive = { vesselId: cmd.vesselId, until: now + pendWindow() }
     if (clientSim) clientSim.gs.activeId = cmd.vesselId
   } else if (cmd.type === 'setAutopilot') {
-    pendingAutopilot = { vesselId: cmd.vesselId, mode: cmd.mode, until: now + 300 }
+    pendingAutopilot = { vesselId: cmd.vesselId, mode: cmd.mode, until: now + pendWindow() }
     const v = clientSim?.gs.vessels.find((o) => o.id === cmd.vesselId && o.ownerId === you!.id)
     if (v) v.autopilot = cmd.mode
   }
@@ -953,3 +1095,6 @@ export function useMultiplayer(): MpViewState {
     () => cachedView ?? rebuildView(),
   )
 }
+
+// Hata ayıklama/otomatik test için: konsoldan çok oyunculu simülasyona erişim.
+if (typeof window !== 'undefined') (window as unknown as { __mpSim?: () => Sim | null }).__mpSim = () => (isHost ? hostSim : clientSim)

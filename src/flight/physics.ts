@@ -17,6 +17,12 @@ export interface Controls {
   /** RCS öteleme, gemi ekseninde: tx sağ, ty ileri */
   tx: number
   ty: number
+  /** Çok oyunculu: istemcinin kendi aracında yerelde hesapladığı burun yönü (anında tepki için) */
+  vid?: number
+  angle?: number
+  angVel?: number
+  /** ev sahibi bu yön bilgisini bir kez uyguladı mı */
+  applied?: boolean
 }
 
 export interface StepResult {

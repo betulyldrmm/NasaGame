@@ -772,10 +772,10 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
     const cell = o.debris ? Math.max(cam.z, 2.2) : vesselCell(st, cam.z, isActive ? 40 : 18)
     if (o.bodyId === bodyId && cam.z > 0.8) {
       const s = situation(o, st)
-      if (s.alt < 90 && body.landable) {
+      if (s.alt < 90 && s.alt > -20 && body.landable && !o.cruise) {
         withSurfaceFrame(ctx, cam, body, s.theta, () => {
           const a = 0.38 * (1 - Math.max(0, s.alt) / 90)
-          const wd = (st.maxX - st.minX) * (0.7 + s.alt / 60)
+          const wd = Math.max(0.1, (st.maxX - st.minX) * (0.7 + s.alt / 60))
           ctx.fillStyle = `rgba(0,0,0,${a.toFixed(3)})`
           ctx.beginPath()
           ctx.ellipse(0, 0.2, wd, wd * 0.18, 0, 0, 6.283)
