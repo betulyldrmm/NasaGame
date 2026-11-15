@@ -28,7 +28,6 @@ import {
 import { predictTrajectory } from './predict'
 import {
   addPlayerMoney,
-  computeDynamicWarp,
   getActiveVesselForPlayer,
   getPlayerMoney,
   isAnyActivePlayerVessel,
@@ -152,6 +151,9 @@ function signedWaitSec(targetPhase: number, currentPhase: number, phaseRate: num
   if (s < 0 && d > 0) d -= 2 * Math.PI
   return Math.abs(d / Math.max(1e-10, Math.abs(phaseRate)))
 }
+
+/** Çok oyunculu sabit zaman çarpanı (WARPS[1] = 2×). */
+export const MP_FIXED_WARP_IDX = 1
 
 /** Tek oyunculu otopilot: raylarda en fazla bu oyun zamanına kadar güvenle süzülünür (bir sonraki yanış). */
 const apHold = new WeakMap<Vessel, number>()
@@ -1135,17 +1137,10 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
   }
 
   if (gs.mp && effCtrlMap && autopilotWanted) {
-    const dyn = computeDynamicWarp(
-      gs,
-      sim.warpIdx,
-      sim.warpRampTimer ?? 0,
-      real,
-      sim.clock,
-      effCtrlMap,
-      autopilotWanted,
-    )
-    sim.warpIdx = dyn.warpIdx
-    sim.warpRampTimer = dyn.rampTimer
+    // Çok oyunculu: zaman herkes için sabit 2× (uzun yolculuklar "Hedefe Git" hızlı yolculuğuyla).
+    sim.warpIdx = MP_FIXED_WARP_IDX
+    sim.warpRampTimer = 0
+    gs.mp.warpInfo = { warpIdx: MP_FIXED_WARP_IDX, warp: WARPS[MP_FIXED_WARP_IDX]!, mode: 'anchor', reason: 'Sabit 2× zaman', nearestInterceptM: null }
   } else if (!isMp && active) {
     // "Hedefe git" hedefte yörüngeye oturdu: kısa bir 1× molası ve ardından otomatik iniş.
     if (active.landAt && effectiveAutopilot(active) === 'off' && !active.landed) {

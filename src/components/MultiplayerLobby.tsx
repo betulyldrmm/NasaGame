@@ -271,7 +271,7 @@ export default function MultiplayerLobby({ defaultName, onBack }: Props) {
                 <li>🚩 <b>7 Kolonileştirilebilir Dünya:</b> Ay, Merkür, Venüs, Mars, Ceres, Ganimed, Titan.</li>
                 <li>🛰️ <b>Koloni:</b> Kargoda Uzay İstasyonu ve güneş paneli götür, yüzeye in ve kur; çalışan istasyon gezegeni senin yapar.</li>
                 <li>⚠️ <b>Dikkat:</b> Roketler birbirine çarparsa iki taraf da hasar görür.</li>
-                <li>⏱️ <b>Dinamik Zaman:</b> Uzayda süzülürken hızlanır, 3 km yakın temasta ve manuel yanışta anında 1×&apos;e düşer.</li>
+                <li>⏱️ <b>Sabit Zaman:</b> Zaman herkes için 2×; uzaya çıkınca Hedefe Git ile hızlı yolculuk yap. Odada en fazla 16 oyuncu.</li>
               </ul>
             </div>
 

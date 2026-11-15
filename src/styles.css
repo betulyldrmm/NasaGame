@@ -812,3 +812,5 @@ kbd { background: #1b2b47; border: 1px solid #8296b355; border-bottom-width: 2px
 .cargo-all { margin-top: 2px; }
 @media (max-width: 900px) { .cargo-cols { grid-template-columns: 1fr; } .cargo-window { width: 92vw; right: 4vw; } }
 .cargo-window { right: 72px; top: 250px; }
+.grid-wrap { overflow: auto; place-items: start center; }
+.grid-wrap .grid-canvas { margin: 0 auto; }

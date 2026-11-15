@@ -304,3 +304,24 @@ export function freshParts(design: PartInst[]): PartInst[] {
     return { def: p.def, x: p.x, y: p.y, fuel: d.fuel, on: d.kind === 'engine' ? true : undefined, deployed: false }
   })
 }
+
+/** Tasarımı hangar ızgarasında yatayda ortalar ve altını alttan 1 kare yukarıya hizalar (büyük ızgara için). */
+export function centerDesign(parts: PartInst[]): PartInst[] {
+  if (!parts.length) return parts
+  let x0 = Infinity
+  let x1 = -Infinity
+  let y1 = -Infinity
+  let y0 = Infinity
+  for (const p of parts) {
+    const d = partDef(p.def)
+    x0 = Math.min(x0, p.x)
+    x1 = Math.max(x1, p.x + d.w)
+    y0 = Math.min(y0, p.y)
+    y1 = Math.max(y1, p.y + d.h)
+  }
+  const dx = Math.round((GRID_W - (x1 - x0)) / 2 - x0)
+  let dy = GRID_H - 1 - y1
+  if (y0 + dy < 0) dy = -y0
+  if (!dx && !dy) return parts
+  return parts.map((p) => ({ ...p, x: p.x + dx, y: p.y + dy }))
+}

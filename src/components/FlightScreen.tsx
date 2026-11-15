@@ -673,10 +673,10 @@ export default function FlightScreen({ onBuilder }: Props) {
       }
       if (k === 'm') toggleMap()
       else if (k === '.') {
-        if (isMp) stepMpWarpReq(1)
+        if (isMp) return
         else sim.warpIdx = Math.min(WARPS.length - 1, sim.warpIdx + 1)
       } else if (k === ',') {
-        if (isMp) stepMpWarpReq(-1)
+        if (isMp) return
         else {
           sim.warpIdx = Math.max(0, sim.warpIdx - 1)
           sim.apWarpPinned = true
@@ -1138,35 +1138,14 @@ export default function FlightScreen({ onBuilder }: Props) {
           </div>
         ) : (
           <div className="mp-warp-card">
-            <div className="warp">
-              <button
-                className={`mini-warp-btn${hud.mpWantWarpIdx < 0 && !hud.mpWarpAnchor ? ' is-on' : ''}`}
-                title="Akıllı Otomatik Zaman: tehlike yokken otopilotla hızlanır, yakın temasta anında 1×'e iner"
-                onClick={() => hudCmd({ type: 'setWarpPref', warpIdx: -1, anchor: false })}
-              >
-                🤖 Oto
-              </button>
-              <button
-                className={`mini-warp-btn${hud.mpWarpAnchor ? ' is-on' : ''}`}
-                title="Herkes için hızı 1×'te tut"
-                onClick={() => hudCmd({ type: 'setWarpPref', warpIdx: 0, anchor: !hud.mpWarpAnchor })}
-              >
-                ⚓ 1×
-              </button>
-              <button className="hud-btn" onClick={() => stepMpWarpReq(-1)} aria-label="Yavaşlat">◀◀</button>
-              <b>{hud.warp.toLocaleString('tr-TR')}×</b>
-              <button className="hud-btn" onClick={() => stepMpWarpReq(1)} aria-label="Hızlandır">▶▶</button>
+            <div className="warp" title="Çok oyunculuda zaman herkes için sabit 2×; uzun yolculuklar için Hedefe Git (hızlı yolculuk)">
+              <b>⏱ 2× sabit</b>
             </div>
             <div className="mp-warp-meta">
               {mp.pingMs !== null && (
                 <span className={`mp-ping-pill ${mp.pingMs < 60 ? 'is-good' : mp.pingMs < 140 ? 'is-mid' : 'is-bad'}`}>
                   📶 {mp.pingMs} ms
                 </span>
-              )}
-              {hud.mpWarpInfo && (
-                <div className={`mp-warp-reason mode-${hud.mpWarpInfo.mode}`}>
-                  {hud.mpWarpInfo.reason}
-                </div>
               )}
             </div>
           </div>

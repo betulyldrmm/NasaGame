@@ -36,7 +36,7 @@ export const WARPS = [1, 2, 4, 10, 25, 100, 500, 2500, 10000, 50000, 100000]
 export const PHYSICS_WARP_MAX_IDX = 4
 
 export const CONQUERABLE_BODIES: BodyId[] = ['moon', 'mercury', 'venus', 'mars', 'ceres', 'ganymede', 'titan']
-export const PLAYER_COLORS = ['#38d9e8', '#fb7185', '#4ade80', '#fbbf24', '#c084fc', '#fb923c', '#60a5fa', '#f472b6']
+export const PLAYER_COLORS = ['#38d9e8', '#fb7185', '#4ade80', '#fbbf24', '#c084fc', '#fb923c', '#60a5fa', '#f472b6', '#a3e635', '#f87171', '#2dd4bf', '#e879f9', '#facc15', '#818cf8', '#fda4af', '#94a3b8']
 
 const CAPTURE_NEUTRALIZE_SEC = 5
 

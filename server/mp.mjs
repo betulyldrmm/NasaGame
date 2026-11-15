@@ -9,7 +9,7 @@ const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 const MAX_FRAME_BYTES = 4 * 1024 * 1024
 
-export const PLAYER_COLORS = ['#38d9e8', '#fb7185', '#4ade80', '#fbbf24', '#c084fc', '#fb923c', '#60a5fa', '#f472b6']
+export const PLAYER_COLORS = ['#38d9e8', '#fb7185', '#4ade80', '#fbbf24', '#c084fc', '#fb923c', '#60a5fa', '#f472b6', '#a3e635', '#f87171', '#2dd4bf', '#e879f9', '#facc15', '#818cf8', '#fda4af', '#94a3b8']
 
 const rooms = new Map()
 
@@ -94,7 +94,7 @@ export function listPublicRooms() {
       hostName: room.hostName,
       started: room.started,
       playerCount: room.members.length,
-      maxPlayers: 8,
+      maxPlayers: 16,
       config: room.config,
     })
   }
@@ -216,8 +216,8 @@ function handleMessage(client, msg) {
         sendWs(client, { type: 'error', message: `Oda bulunamadı: ${code || '?'}` })
         return
       }
-      if (room.members.length >= 8) {
-        sendWs(client, { type: 'error', message: 'Oda dolu (en fazla 8 oyuncu).' })
+      if (room.members.length >= 16) {
+        sendWs(client, { type: 'error', message: 'Oda dolu (en fazla 16 oyuncu).' })
         return
       }
       const username = uniqueUsername(room, typeof msg.username === 'string' ? msg.username : 'Pilot')

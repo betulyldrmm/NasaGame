@@ -5,7 +5,7 @@ import { GRID_H, GRID_W, partDef, PARTS, SHIP_PRESETS, SHIP_SLOT_COUNT } from '.
 import { bump, saveGame, setIdleWarp, sim, useActiveGame, useAuthState } from '../game/store'
 import { isModuleUnlocked, isPartUnlocked, requiredTechForModule, requiredTechForPart } from '../game/tech'
 import type { PartCategory, PartInst } from '../game/types'
-import { canPlace, cargoMass, estimateDeltaV, partAt, vesselStats } from '../game/vessel'
+import { canPlace, cargoMass, estimateDeltaV, partAt, vesselStats, centerDesign } from '../game/vessel'
 import { wrapPi } from '../flight/orbit'
 import { BODIES } from '../nasa/bodies'
 import { getLocalMpDesign, sendMpCommand, setLocalMpDesign, useMultiplayer } from '../flight/mpClient'
@@ -59,12 +59,30 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
   useEffect(() => {
     const el = wrapRef.current
     if (!el) return
-    const fit = () => setCell(Math.max(12, Math.floor(Math.min(el.clientHeight / GRID_H, el.clientWidth / GRID_W))))
+    // Hücre boyu eski 30 satırlık ızgaraya göre kalır (parçalar küçülmez); büyüyen alan kaydırılarak gezilir.
+    const fit = () => setCell(Math.max(14, Math.floor(Math.min(el.clientHeight / 30, (el.clientWidth - 16) / GRID_W))))
     fit()
     const ro = new ResizeObserver(fit)
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
+
+  // Izgara büyüdü: eski/hazır tasarımlar ortalanır (simetri ekseni ızgaranın ortasıdır).
+  useEffect(() => {
+    const c = centerDesign(design)
+    if (c !== design) setDesign(c)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Hangar açılınca ızgaranın altına (roketin durduğu yere) kaydır.
+  useEffect(() => {
+    const el = wrapRef.current
+    if (!el) return
+    const t = window.setTimeout(() => {
+      el.scrollTop = el.scrollHeight
+    }, 60)
+    return () => window.clearTimeout(t)
+  }, [cell])
 
   const stats = useMemo(() => vesselStats(design), [design])
   const cargoT = cargoMass({ modules: designCargo, ore: 0, oreFrom: null })
@@ -183,20 +201,70 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
     return p
   }
 
-  const onClick = (e: React.MouseEvent) => {
-    const c = cellFromEvent(e)
-    if (!selected) {
-      const p = removeAt(c.x, c.y)
-      if (p) setSelected(p.def)
-      return
-    }
-    const d = partDef(selected)
-    let next = design
+  /** Seçili parçayı (simetriyle birlikte) verilen hücreye yerleştirir; yerleşti mi? */
+  const placeAt = (base: PartInst[], def: string, c: { x: number; y: number }): PartInst[] | null => {
+    const d = partDef(def)
+    let next = base
     const spots = [{ x: c.x, y: c.y }]
     const mx = mirrorX(c.x, d.w)
     if (mirror && mx !== c.x) spots.push({ x: mx, y: c.y })
-    for (const s of spots) if (canPlace(next, d, s.x, s.y)) next = [...next, { def: selected, x: s.x, y: s.y }]
-    if (next !== design) setDesign(next)
+    for (const sp of spots) if (canPlace(next, d, sp.x, sp.y)) next = [...next, { def, x: sp.x, y: sp.y }]
+    return next !== base ? next : null
+  }
+
+  // Yerleşik parçayı tutup sürükleme: basılı tutup kaydırınca parça kalkar ve imleçle gelir.
+  const press = useRef<{ x: number; y: number; cell: { x: number; y: number } } | null>(null)
+  const carry = useRef<{ def: string; original: PartInst[] } | null>(null)
+
+  const onMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0) return
+    press.current = { x: e.clientX, y: e.clientY, cell: cellFromEvent(e) }
+  }
+  const onMouseMove = (e: React.MouseEvent) => {
+    const pr = press.current
+    if (pr && !carry.current && !selected && Math.hypot(e.clientX - pr.x, e.clientY - pr.y) > 5) {
+      const i = partAt(design, pr.cell.x, pr.cell.y)
+      if (i >= 0) {
+        const p = design[i]!
+        let rest = design.filter((_, j) => j !== i)
+        if (mirror) {
+          const mx = mirrorX(p.x, partDef(p.def).w)
+          rest = rest.filter((q) => !(q.def === p.def && q.x === mx && q.y === p.y))
+        }
+        carry.current = { def: p.def, original: design }
+        setDesign(rest)
+        setSelected(p.def)
+      }
+    }
+    setHover(cellFromEvent(e))
+  }
+  const onMouseUp = (e: React.MouseEvent) => {
+    const pr = press.current
+    press.current = null
+    if (e.button !== 0) return
+    const c = cellFromEvent(e)
+    if (carry.current) {
+      const { def, original } = carry.current
+      carry.current = null
+      const next = placeAt(design, def, c)
+      setDesign(next ?? original)
+      setSelected(null)
+      return
+    }
+    if (selected && pr) {
+      // Paletten seçilen parça bir kez yerleşir; Shift basılıysa seçili kalır (art arda koymak için).
+      const next = placeAt(design, selected, c)
+      if (next) setDesign(next)
+      if (!e.shiftKey) setSelected(null)
+    }
+  }
+  const cancelCarry = () => {
+    press.current = null
+    if (carry.current) {
+      setDesign(carry.current.original)
+      carry.current = null
+      setSelected(null)
+    }
   }
 
   const changeCargo = (id: string, delta: number) => {
@@ -270,7 +338,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
   }
   const loadShip = (d: PartInst[], cargo: Record<string, number>) => {
     setSelected(null)
-    const cloned = d.map((p) => ({ def: p.def, x: p.x, y: p.y }))
+    const cloned = centerDesign(d.map((p) => ({ def: p.def, x: p.x, y: p.y })))
     if (inMp) {
       setLocalMpDesign(cloned, { ...cargo })
       return
@@ -339,6 +407,13 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
                   return (
                     <button
                       key={p.id}
+                      draggable={unlocked}
+                      onDragStart={(e) => {
+                        e.dataTransfer.setData('text/plain', p.id)
+                        e.dataTransfer.effectAllowed = 'copy'
+                        setSelected(p.id)
+                      }}
+                      onDragEnd={() => setSelected(null)}
                       className={`palette-item${selected === p.id ? ' is-selected' : ''}${unlocked ? '' : ' is-locked'}`}
                       onClick={() => {
                         if (!unlocked) {
@@ -363,7 +438,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
         <section className="grid-area">
           <div className="grid-tools">
             <button className={`hud-btn${mirror ? ' is-on' : ''}`} onClick={() => setMirror(!mirror)}>⇄ Simetri {mirror ? 'açık' : 'kapalı'}</button>
-            <button className="hud-btn" onClick={() => setSelected(null)} disabled={!selected}>✋ Taşı / sil modu</button>
+            <button className="hud-btn" onClick={() => setSelected(null)} disabled={!selected}>✋ Seçimi bırak</button>
             <button className="hud-btn" onClick={() => setDesign([])}>Temizle</button>
           </div>
           <div className="ship-bar">
@@ -386,9 +461,26 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
             <canvas
               ref={canvasRef}
               className="grid-canvas"
-              onMouseMove={(e) => setHover(cellFromEvent(e))}
-              onMouseLeave={() => setHover(null)}
-              onClick={onClick}
+              onMouseDown={onMouseDown}
+              onMouseMove={onMouseMove}
+              onMouseUp={onMouseUp}
+              onMouseLeave={() => {
+                setHover(null)
+                cancelCarry()
+              }}
+              onDragOver={(e) => {
+                e.preventDefault()
+                e.dataTransfer.dropEffect = 'copy'
+                setHover(cellFromEvent(e))
+              }}
+              onDrop={(e) => {
+                e.preventDefault()
+                const id = e.dataTransfer.getData('text/plain') || selected
+                if (!id || !PARTS.some((q) => q.id === id)) return
+                const next = placeAt(design, id, cellFromEvent(e))
+                if (next) setDesign(next)
+                setSelected(null)
+              }}
               onContextMenu={(e) => {
                 e.preventDefault()
                 if (selected) setSelected(null)
@@ -400,7 +492,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
             />
           </div>
           <p className="grid-hint">
-            {sel ? <><b>{sel.name}</b> — {sel.desc} Yerleştirmek için kareye tıkla, bırakmak için sağ tık.</> : 'Paletten parça seç ve kare grid\'e yerleştir.'}
+            {sel ? <><b>{sel.name}</b> — {sel.desc} Yerleştirmek için kareye tıkla (Shift: art arda koy), vazgeçmek için sağ tık.</> : 'Parçayı paletten sürükleyip ızgaraya bırak ya da seçip kareye tıkla. Yerleşik parçayı tutup sürükleyerek taşı, sağ tıkla sil.'}
           </p>
         </section>
 
