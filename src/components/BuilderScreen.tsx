@@ -478,7 +478,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
               </ul>
             </>
           ) : (
-            <p className="dv-guide">Dünya dışına modül götürmek için <b>Kargo Gövdesi</b> ekle ve yükle — yerinde inşaat yalnızca çalışan bir <b>Uzay İstasyonu</b> ile açılır.</p>
+            <p className="dv-guide">Dünya dışına modül götürmek için <b>Kargo Gövdesi</b> ekle ve yükle — uzay kolonilerinde yalnızca getirdiğin yapılar kurulur.</p>
           )}
           {(error ?? problem) && <p className="builder-error">{error ?? problem}</p>}
           <button className="launch-btn" onClick={launch} disabled={!!problem}>Rampaya çıkar — {fmt(cost)} ₡</button>

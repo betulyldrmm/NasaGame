@@ -54,6 +54,7 @@ import {
 } from '../flight/mpClient'
 import { CONQUERABLE_BODIES, playerPadAngle, playerPassiveIncomePerHour } from '../flight/multiplayerSim'
 import { BODIES, type BodyId, gameDate } from '../nasa/bodies'
+import HowToPlay from './HowToPlay'
 import { clampCamPan, createView, type FlightFrame, type MapFrame, pickPart, pickVesselFlight, renderFlight, renderMap, resetViewCache } from '../render/renderer'
 import PlanetGridPanel from './ColonyPanel'
 
@@ -454,6 +455,7 @@ export default function FlightScreen({ onBuilder }: Props) {
   const [toasts, setToasts] = useState<{ id: number; text: string; kind: string }[]>([])
   const [lost, setLost] = useState<string | null>(null)
   const [wreck, setWreck] = useState(false)
+  const [showGuide, setShowGuide] = useState(false)
   const [alarm, setAlarm] = useState(false)
   const spam = useRef<number[]>([])
   const typed = useRef('')
@@ -1528,12 +1530,13 @@ export default function FlightScreen({ onBuilder }: Props) {
       {panel === 'help' && (
         <aside className="side-panel">
           <header><h2>Kontroller</h2><button onClick={() => setPanel(null)}>×</button></header>
+          <button className="button button-primary guide-open" onClick={() => setShowGuide(true)}>📘 Tam rehberi aç (Nasıl Oynanır?)</button>
           <ul className="help-list">
             <li><kbd>W</kbd>/<kbd>S</kbd> itki ±, <kbd>Z</kbd> tam itki, <kbd>X</kbd> motoru kes</li>
             <li><kbd>A</kbd>/<kbd>D</kbd> döndür · <kbd>T</kbd> yön kilidi (ileri / geri / radyal)</li>
             <li><kbd>L</kbd> Otomatik İniş Bilgisayarı</li>
             <li><kbd>Boşluk</kbd> basılı tut: motor itkisi · kademeyi ayırmak için adaptöre tıkla</li>
-            <li><kbd>M</kbd> uzay haritası · tekerlek: yakınlaş/uzaklaş · sürükle: kaydır</li>
+            <li><kbd>M</kbd> uzay haritası · tekerlek: yakınlaş/uzaklaş · sürükle: kamerayı kaydır · çift tık: rokete ortala</li>
             <li><kbd>,</kbd>/<kbd>.</kbd> zamanı yavaşlat / hızlandır (fizikte 25×, yörüngede 100.000×)</li>
             <li><kbd>P</kbd> paraşüt · <kbd>G</kbd> iniş ayakları · <kbd>O</kbd> güneş panelleri</li>
             <li><kbd>R</kbd> RCS&apos;yi aç · <kbd>I</kbd>/<kbd>K</kbd> ileri/geri · <kbd>J</kbd>/<kbd>L</kbd> sola/sağa</li>
@@ -1542,6 +1545,8 @@ export default function FlightScreen({ onBuilder }: Props) {
           <p className="base-note">Gezegen ipucu: Haritada hedef seç (Venüs, Merkür, Mars, Ceres, Ganimed, Titan), transfer penceresinde yak ve iniş öncesi Oto-İniş veya paraşüt/ayakları aç!</p>
         </aside>
       )}
+
+      {showGuide && <HowToPlay onClose={() => setShowGuide(false)} />}
 
       {confirmDel && (
         <div className="dialog-backdrop" role="presentation" onClick={() => setConfirmDel(null)}>

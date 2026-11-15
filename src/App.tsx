@@ -6,6 +6,7 @@ import { resetViewCache } from './render/renderer'
 import AuthScreen from './components/AuthScreen'
 import BuilderScreen from './components/BuilderScreen'
 import IntroCutscene from './components/IntroCutscene'
+import HowToPlay from './components/HowToPlay'
 import MultiplayerLobby from './components/MultiplayerLobby'
 import PlanetGridPanel from './components/ColonyPanel'
 import { bump, clearOfflineGain, initAuth, logoutAccount, resetGame, saveGame, setIdleWarp, sim, useAuthState, useGame } from './game/store'
@@ -266,29 +267,7 @@ function App() {
         </div>
       )}
 
-      {dialog && (
-        <div className="dialog-backdrop" role="presentation" onClick={() => setDialog(null)}>
-          <section
-            className="dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="dialog-title"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <button className="dialog-close" aria-label={messages.close} onClick={() => setDialog(null)}>
-              ×
-            </button>
-            <p className="eyebrow">
-              <span /> {messages.dialogEyebrow}
-            </p>
-            <h2 id="dialog-title">{messages.howToPlay}</h2>
-            <p>{messages.instructions}</p>
-            <button className="button button-primary dialog-button" onClick={() => setDialog(null)}>
-              {messages.gotIt}
-            </button>
-          </section>
-        </div>
-      )}
+      {dialog === 'how-to-play' && <HowToPlay onClose={() => setDialog(null)} />}
     </main>
   )
 }

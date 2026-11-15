@@ -35,8 +35,8 @@ export interface View {
 
 /** Kaydırma sınırı: roket ekranın kenarına kadar gidebilir ama dışına çıkamaz. */
 export function clampCamPan(view: View, pan: Vec): Vec {
-  const mx = view.w * 0.38
-  const my = view.h * 0.38
+  const mx = view.w * 0.32
+  const my = view.h * 0.3
   return { x: Math.max(-mx, Math.min(mx, pan.x)), y: Math.max(-my, Math.min(my, pan.y)) }
 }
 
@@ -82,7 +82,7 @@ function sphereFill(ctx: Ctx, body: BodyDef, cx: number, cy: number, rpx: number
   return g
 }
 
-function drawSphere(ctx: Ctx, body: BodyDef, cx: number, cy: number, rpx: number, light: Vec, rot: number, detail: boolean) {
+export function drawSphere(ctx: Ctx, body: BodyDef, cx: number, cy: number, rpx: number, light: Vec, rot: number, detail: boolean) {
   if (body.id === 'sun') {
     const glow = ctx.createRadialGradient(cx, cy, rpx * 0.6, cx, cy, rpx * 4)
     glow.addColorStop(0, 'rgba(255,220,120,.55)')
