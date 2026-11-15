@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { baseReport, COLONY_SLOTS, colonyStationStatus, colonyTier, EARTH_MODULES, ensureSites, isBodyColonized, MODULE_BY_ID, MODULES, TIER_HINT } from '../game/base'
+import { baseReport, COLONY_SLOTS, colonyStationStatus, EARTH_MODULES, ensureSites, MODULE_BY_ID, MODULES, TIER_HINT } from '../game/base'
 import { runCommand, useActiveGame } from '../game/store'
 import { BODIES, type BodyId, solarFlux } from '../nasa/bodies'
 import { bodyAbsState, len } from '../flight/orbit'
@@ -55,9 +55,7 @@ export default function ColonyPanel({ initialBody = 'earth', onNotify }: Props) 
   const flux = solarFlux(len(bodyAbsState(bodyId, gs.time).r))
   const sites = base ? ensureSites(base) : Array.from({ length: COLONY_SLOTS }, () => null)
   const report = base ? baseReport(base, flux) : null
-  const tier = colonyTier(base)
   const stationStatus = colonyStationStatus(base, flux)
-  const colonized = bodyId === 'earth' || isBodyColonized(base, flux)
   const idx = tabs.indexOf(bodyId)
 
   const say = (text: string, kind: 'info' | 'warn' = 'info') => {
@@ -162,7 +160,7 @@ export default function ColonyPanel({ initialBody = 'earth', onNotify }: Props) 
         {!canBuild && (
           <div className="colony-locked">
             {gs.mp && mpCapOwner && mpCapOwner !== myId
-              ? `${body.name} şu an başka bir oyuncunun kontrolünde — önce Uzay İstasyonu'nu devre dışı bırak.`
+              ? `${body.name} şu an başka bir oyuncunun kolonisi — burada koloni kuramazsın.`
               : `Buraya üs kurmak için önce ${body.name} yüzeyine bir araç indir.`}
           </div>
         )}
@@ -172,7 +170,7 @@ export default function ColonyPanel({ initialBody = 'earth', onNotify }: Props) 
         {selDef && selSlot !== null ? (
           <>
             <span><b>{selDef.name}</b> — {selDef.desc} {selPowered ? '' : 'Şu an elektrik yetmediği için çalışmıyor.'}</span>
-            <button className="hud-btn" onClick={() => remove(selSlot)}>Sök (%60 iade)</button>
+            <button className="hud-btn" onClick={() => remove(selSlot)}>{bodyId === 'earth' ? 'Sök (%60 iade)' : 'Sök (depoya döner)'}</button>
           </>
         ) : !powerOk ? (
           <span>⚡ Elektrik yetmiyor: {report!.unpowered} yapı durdu. {flux < 0.9 ? `Burada güneş ışığı yalnızca %${sunPct}; daha fazla panel ya da Reaktör kur.` : 'Güneş Paneli ekle.'}</span>
@@ -184,10 +182,10 @@ export default function ColonyPanel({ initialBody = 'earth', onNotify }: Props) 
       {bodyId !== 'earth' && (
         <div className={`colony-status-bar is-${stationStatus}`}>
           {stationStatus === 'active'
-            ? '🛰️ Kolonileştirildi · Yerinde üretim açık'
+            ? '🛰️ Kolonileştirildi · Yeni yapılar yine Dünya\'dan kargoyla gelir'
             : stationStatus === 'unpowered'
-              ? '⚡ Uzay İstasyonu elektriksiz (7 ⚡ gerekir) · Yerinde üretim kilitli'
-              : '📦 Kargo Modu · Yerinde üretim için kargoyla Uzay İstasyonu kur (-7 ⚡)'}
+              ? '⚡ Uzay İstasyonu elektriksiz (7 ⚡ gerekir) · Panel getir'
+              : '📦 Burada yalnızca kargoyla getirdiğin yapılar kurulur'}
         </div>
       )}
 
@@ -196,15 +194,15 @@ export default function ColonyPanel({ initialBody = 'earth', onNotify }: Props) 
         <div className="colony-cards">
           {MODULES.filter((m) => bodyId !== 'earth' || EARTH_MODULES.includes(m.id)).map((m) => {
             const stock = base?.stock?.[m.id] ?? 0
-            const tierLocked = bodyId !== 'earth' && !stock && m.tier > tier
-            const cargoOnly = bodyId !== 'earth' && !stock && !colonized
+            const tierLocked = false
+            const cargoOnly = bodyId !== 'earth' && !stock
             const locked = tierLocked || cargoOnly
             const price = modulePrice(gs, bodyId, m.id)
             const afford = gs.money >= price
             const power = m.power > 0 ? m.power * (m.constantPower ? 1 : flux) : m.power
             const disabled = locked || !canBuild
             const lockHint = cargoOnly
-              ? 'Yerinde inşaat kapalı: önce kargoyla getir veya gezegende çalışan bir Uzay İstasyonu kur.'
+              ? 'Dünya\'da roketin kargo bölmesine ekle ve buraya getir; sadece getirdiğin yapılar kurulur.'
               : TIER_HINT[m.tier]
             return (
               <button

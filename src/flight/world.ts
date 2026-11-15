@@ -2,7 +2,7 @@
  * Açık dünya simülasyonu: tüm araçlar, zaman hızlandırma, etki alanı (SOI) geçişleri,
  * otopilotlar (yörünge & hedef transferi), gezegen gridi ve komut dağıtıcısı. React'ten bağımsızdır.
  */
-import { baseReport, COLONY_STATION_ID, colonyStationStatus, colonyTier, emptyBase, ensureSites, ISS_SUPPLY_REWARD, MODULE_BY_ID, STARTER_EARTH_SITES, syncModules, tickBase, TIER_HINT, EARTH_MODULES } from '../game/base'
+import { baseReport, COLONY_STATION_ID, colonyStationStatus, emptyBase, ensureSites, ISS_SUPPLY_REWARD, MODULE_BY_ID, STARTER_EARTH_SITES, syncModules, tickBase, EARTH_MODULES } from '../game/base'
 import { DEFAULT_DESIGN, INITIAL_MONEY, ISS_ALTITUDE_M, ISS_DESIGN, partDef } from '../game/data'
 import { MISSION_BY_ID, MISSIONS } from '../game/missions'
 import { baseIncomeMultiplier, hasAutoLandTech, INITIAL_TECH, isModuleUnlocked, isPartUnlocked, orePriceMultiplier, requiredTechForModule, requiredTechForPart } from '../game/tech'
@@ -1556,7 +1556,7 @@ export function deployModules(sim: Sim, v: Vessel): string | null {
   }
   if (sim.gs.mp) {
     const cap = sim.gs.mp.captures[v.bodyId]
-    if (cap?.ownerId && cap.ownerId !== v.ownerId) return 'Bu gezegen rakip kontrolünde: önce bayrağı ele geçir.'
+    if (cap?.ownerId && cap.ownerId !== v.ownerId) return 'Bu gezegen başka bir oyuncunun kolonisi.'
     if (!cap?.ownerId && cap?.phase === 'contested') return 'İki oyuncu yüzeyde çatışıyor: önce rakibi uzaklaştır.'
   }
   const total = Object.values(v.cargo.modules).reduce((s, n) => s + n, 0)
@@ -1603,7 +1603,7 @@ function canEditPlanetBase(gs: GameState, bodyId: BodyId, actorId = gs.ownerId ?
   if (gs.mp) {
     const cap = gs.mp.captures[bodyId]
     if (cap?.ownerId === actorId) return null
-    if (cap?.ownerId && cap.ownerId !== actorId) return 'Bu gezegen rakip kontrolünde: önce bayrağı ele geçir.'
+    if (cap?.ownerId && cap.ownerId !== actorId) return 'Bu gezegen başka bir oyuncunun kolonisi.'
     if (cap?.phase === 'contested') return 'İki oyuncu yüzeyde çatışıyor: önce rakibi uzaklaştır.'
     const landed = gs.vessels.find((v) => v.landed && v.bodyId === bodyId && v.ownerId === actorId)
     if (!landed) return 'Önce bu gezegene inip yüzey kontrolünü almalısın.'
@@ -1635,16 +1635,11 @@ export function placePlanetModule(sim: Sim, bodyId: BodyId, slot: number, module
   const sites = ensureSites(base)
   if (slot < 0 || slot >= sites.length || sites[slot]) return 'Boş bir yuva seç.'
   const inStock = (base.stock?.[moduleId] ?? 0) > 0
-  if (bodyId !== 'earth' && !inStock) {
-    const flux = solarFlux(len(bodyAbsState(bodyId, gs.time).r))
-    const st = colonyStationStatus(base, flux)
-    if (st === 'none') return 'Yerinde üretim için önce kargoyla Uzay İstasyonu ve güç getirip kurmalısın (veya kargoyla taşı).'
-    if (st === 'unpowered') return 'Uzay İstasyonu elektriksiz! Yerinde inşaat için 7 ⚡ güç sağla (veya kargoyla taşı).'
-  }
-  if (bodyId !== 'earth' && !inStock && m.tier > colonyTier(base)) return TIER_HINT[m.tier] ?? 'Bu yapı henüz açılmadı.'
-  const price = modulePrice(gs, bodyId, moduleId, ownerId)
+  // Uzay kolonilerinde yalnızca Dünya'dan kargo bölmesinde getirilen yapılar kurulur.
+  if (bodyId !== 'earth' && !inStock) return "Bu yapı kargoda yok: Dünya'da roketin kargo bölmesine ekleyip buraya getir."
+  const price = bodyId === 'earth' ? modulePrice(gs, bodyId, moduleId, ownerId) : 0
   if (getPlayerMoney(gs, ownerId) < price) return `${price.toLocaleString('tr-TR')} ₡ gerekli.`
-  if (price === 0 && base.stock?.[moduleId]) base.stock[moduleId]! -= 1
+  if (bodyId !== 'earth' && base.stock?.[moduleId]) base.stock[moduleId]! -= 1
   addPlayerMoney(gs, -price, ownerId)
   sites[slot] = moduleId
   syncModules(base)
@@ -1656,7 +1651,7 @@ export function removePlanetModule(sim: Sim, bodyId: BodyId, slot: number, owner
   const gs = sim.gs
   if (gs.mp && bodyId !== 'earth') {
     const cap = gs.mp.captures[bodyId]
-    if (cap?.ownerId && cap.ownerId !== ownerId) return { error: 'Bu gezegen rakip kontrolünde.' }
+    if (cap?.ownerId && cap.ownerId !== ownerId) return { error: 'Bu gezegen başka bir oyuncunun kolonisi.' }
     if (!cap?.ownerId) {
       if (cap?.phase === 'contested') return { error: 'İki oyuncu yüzeyde çatışıyor.' }
       const landed = gs.vessels.find((v) => v.landed && v.bodyId === bodyId && v.ownerId === ownerId)
@@ -1668,8 +1663,14 @@ export function removePlanetModule(sim: Sim, bodyId: BodyId, slot: number, owner
   const sites = ensureSites(base)
   const id = sites[slot]
   if (!id) return { error: 'Sökülecek yapı yok.' }
-  const refund = Math.round((MODULE_BY_ID[id]?.cost ?? 0) * 0.6)
-  addPlayerMoney(gs, refund, ownerId)
+  // Dünya'da %60 para iadesi; uzay kolonisinde yapı depoya geri döner (başka yuvaya kurulabilir).
+  let refund = 0
+  if (bodyId === 'earth') {
+    refund = Math.round((MODULE_BY_ID[id]?.cost ?? 0) * 0.6)
+    addPlayerMoney(gs, refund, ownerId)
+  } else {
+    base.stock = { ...(base.stock ?? {}), [id]: (base.stock?.[id] ?? 0) + 1 }
+  }
   sites[slot] = null
   syncModules(base)
   if (gs.mp && bodyId !== 'earth' && id === COLONY_STATION_ID && gs.mp.captures[bodyId]?.ownerId === ownerId) {
@@ -1697,7 +1698,7 @@ export function loadOre(sim: Sim, v: Vessel): string | null {
   if (!v.landed || !base) return 'Maden yüklemek için üssün olduğu yüzeye inmelisin.'
   if (sim.gs.mp && v.bodyId !== 'earth') {
     const capOwner = sim.gs.mp.captures[v.bodyId]?.ownerId
-    if (capOwner && capOwner !== v.ownerId) return 'Bu koloni rakip kontrolünde!'
+    if (capOwner && capOwner !== v.ownerId) return 'Bu koloni başka bir oyuncuya ait.'
   }
   const free = vesselStats(v.parts).cargoCap - cargoMass(v.cargo)
   const amount = Math.min(free, base.ore)
@@ -1714,7 +1715,7 @@ export function refuelAtBase(sim: Sim, v: Vessel): string | null {
   if (!v.landed || !base) return 'Yakıt ikmali için üssün olduğu yüzeye inmelisin.'
   if (sim.gs.mp && v.bodyId !== 'earth') {
     const capOwner = sim.gs.mp.captures[v.bodyId]?.ownerId
-    if (capOwner && capOwner !== v.ownerId) return 'Bu koloni rakip kontrolünde!'
+    if (capOwner && capOwner !== v.ownerId) return 'Bu koloni başka bir oyuncuya ait.'
   }
   if (!(base.modules.isru ?? 0)) return 'Üste ISRU Yakıt Tesisi yok.'
   const tanks = v.parts.filter((p) => partDef(p.def).kind === 'tank')
@@ -1815,7 +1816,7 @@ export function dockCandidate(gs: GameState, v: Vessel): Vessel | null {
 export function dockVessels(sim: Sim, v: Vessel, other: Vessel): GameEvent[] {
   const gs = sim.gs
   if (gs.mp && !other.station && other.ownerId && v.ownerId && other.ownerId !== v.ownerId) {
-    return [{ type: 'toast', text: 'Rakip oyuncunun gemisine kenetlenemezsin!' }]
+    return [{ type: 'toast', text: 'Başka bir oyuncunun gemisine kenetlenemezsin.' }]
   }
   const center = (p: PartInst) => p.x + partDef(p.def).w / 2
   const top = v.parts.reduce((a, p) => (p.y < a.y ? p : a))

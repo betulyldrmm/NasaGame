@@ -953,7 +953,7 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
         ctx.stroke()
         ctx.font = 'bold 10px "DM Mono", monospace'
         ctx.textAlign = 'center'
-        ctx.fillText(`⚔ ${distLabel}`, p.x, p.y + 32)
+        ctx.fillText(distLabel, p.x, p.y + 32)
       } else {
         const cx = view.w / 2
         const cy = view.h / 2
@@ -973,7 +973,7 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
         ctx.restore()
         ctx.font = 'bold 10px "DM Mono", monospace'
         ctx.textAlign = 'center'
-        ctx.fillText(`⚔ ${owner.username} · ${distLabel}`, bx, by + 16)
+        ctx.fillText(`${owner.username} · ${distLabel}`, bx, by + 16)
       }
       ctx.restore()
     }
@@ -1207,7 +1207,7 @@ export function renderMap(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): Map
       if (cap.phase === 'contested') {
         ctx.fillStyle = '#fb7185'
         ctx.font = 'bold 10px "DM Mono", monospace'
-        ctx.fillText('⚔', p.x, p.y + rpx + 29)
+        ctx.fillText('⇄', p.x, p.y + rpx + 29)
         ctx.font = '12px "DM Mono", monospace'
       } else if (owner) {
         ctx.fillStyle = owner.color
@@ -1217,7 +1217,7 @@ export function renderMap(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): Map
       } else if (capturer && cap.phase === 'neutralizing') {
         ctx.fillStyle = capturer.color
         ctx.font = 'bold 10px "DM Mono", monospace'
-        ctx.fillText(`⚔ ${Math.round(cap.progress * 100)}%`, p.x, p.y + rpx + 29)
+        ctx.fillText(`🛰️ ${Math.round(cap.progress * 100)}%`, p.x, p.y + rpx + 29)
         ctx.font = '12px "DM Mono", monospace'
       } else if (capturer && cap.progress > 0) {
         ctx.fillStyle = capturer.color

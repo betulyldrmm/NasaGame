@@ -210,7 +210,7 @@ function snapshot(): Hud {
   const meMp = gs.mp?.players[myId]
   const targetBody = ((isMp ? meMp?.targetBody : gs.targetBody) ?? gs.targetBody ?? 'moon') as BodyId
   const mpPlayers = gs.mp
-    ? Object.values(gs.mp.players).sort((a, b) => b.planetsHeld - a.planetsHeld || b.kills - a.kills || b.captures - a.captures)
+    ? Object.values(gs.mp.players).sort((a, b) => b.planetsHeld - a.planetsHeld || b.captures - a.captures)
     : []
   let mpNearestRival: { username: string; color: string; dist: number } | null = null
   if (gs.mp && v && !v.debris) {
@@ -491,7 +491,6 @@ export default function FlightScreen({ onBuilder }: Props) {
       if (e.type === 'toast') toast(e.text)
       else if (e.type === 'mission') toast(`Görev tamamlandı: ${e.title}  +${fmt(e.reward)} ₡`, 'mission')
       else if (e.type === 'capture') toast(e.text, 'mission')
-      else if (e.type === 'kill') toast(`💥 ${e.victimName} çarpışmada yok oldu (${e.speed.toFixed(0)} m/s)!`, 'mission')
       else if (e.type === 'victory') toast(`🏆 ${e.winnerName} zaferi kazandı!`, 'mission')
       else if (e.type === 'soi') toast(`${BODIES[e.to].name} etki alanına girildi (${BODIES[e.from].name} → ${BODIES[e.to].name}).`)
       else if (e.type === 'explosion') audio.sfx('explosion', Math.min(0.9, 0.35 + e.size * 0.05))
@@ -1047,7 +1046,7 @@ export default function FlightScreen({ onBuilder }: Props) {
                   <i className="mp-dot" style={{ background: col ?? '#64748b' }} />
                   <span>{BODIES[bid].name}</span>
                   {cap?.phase === 'contested' ? (
-                    <small style={{ color: '#fb7185' }}>⚔</small>
+                    <small style={{ color: '#fbbf24' }}>⇄</small>
                   ) : cap?.phase === 'neutralizing' ? (
                     <small style={{ color: col }}>{Math.round(cap.progress * 100)}%</small>
                   ) : cap?.phase === 'claiming' ? (
@@ -1062,7 +1061,7 @@ export default function FlightScreen({ onBuilder }: Props) {
           {hud.mpCaptures[hud.body] && (hud.mpCaptures[hud.body]!.phase === 'claiming' || hud.mpCaptures[hud.body]!.phase === 'neutralizing' || hud.mpCaptures[hud.body]!.phase === 'contested') && (
             <div className="mp-capture-banner">
               {hud.mpCaptures[hud.body]!.phase === 'contested' ? (
-                <span>⚔ <b>{BODIES[hud.body].name}</b> için çatışma — rakip gemileri yok et!</span>
+                <span>⇄ <b>{BODIES[hud.body].name}</b> yüzeyinde birden fazla oyuncu var — ilk çalışan Uzay İstasyonunu kuran koloniyi alır.</span>
               ) : hud.mpCaptures[hud.body]!.phase === 'claiming' ? (
                 <span>
                   📍 <b>{BODIES[hud.body].name}</b> yüzey kontrolü — kolonileştirmek için kargodan <b>Uzay İstasyonu + 7 ⚡</b> kur!
@@ -1070,7 +1069,7 @@ export default function FlightScreen({ onBuilder }: Props) {
               ) : (
                 <>
                   <span>
-                    💥 <b>{BODIES[hud.body].name}</b> Uzay İstasyonu devre dışı bırakılıyor…{' '}
+                    🛰️ <b>{BODIES[hud.body].name}</b> kolonisi el değiştiriyor…{' '}
                     {Math.round(hud.mpCaptures[hud.body]!.progress * 100)}%
                   </span>
                   <div className="mp-cap-bar">
@@ -1089,7 +1088,7 @@ export default function FlightScreen({ onBuilder }: Props) {
           )}
           {hud.mpNearestRival && hud.mpNearestRival.dist < 25_000 && (
             <div className="mp-rival-alert" style={{ borderColor: hud.mpNearestRival.color }}>
-              ⚔ En yakın rakip: <b style={{ color: hud.mpNearestRival.color }}>{hud.mpNearestRival.username}</b> · {km(hud.mpNearestRival.dist)}
+              🛰️ Yakındaki oyuncu: <b style={{ color: hud.mpNearestRival.color }}>{hud.mpNearestRival.username}</b> · {km(hud.mpNearestRival.dist)}
             </div>
           )}
         </div>
@@ -1177,7 +1176,6 @@ export default function FlightScreen({ onBuilder }: Props) {
                 <i className="mp-dot" style={{ background: p.color }} />
                 <span className="mp-s-name">{p.username}</span>
                 <span className="mp-s-flags">🚩 {p.planetsHeld}</span>
-                <span className="mp-s-kills">💥 {p.kills}</span>
               </div>
             ))}
             {hud.mpFeed.length > 0 && (
@@ -1577,8 +1575,7 @@ export default function FlightScreen({ onBuilder }: Props) {
                   <i className="mp-dot" style={{ background: p.color }} />
                   <span className="mp-s-name">{p.username}</span>
                   <span className="mp-s-flags">🚩 {p.planetsHeld}</span>
-                  <span className="mp-s-kills">💥 {p.kills}</span>
-                  <span>{fmt(p.money)} ₡</span>
+                    <span>{fmt(p.money)} ₡</span>
                 </div>
               ))}
             </div>

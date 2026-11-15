@@ -20,7 +20,7 @@ const TARGET_CHOICES = [
   { val: 3, label: '3 Gezegen (Hızlı)' },
   { val: 4, label: '4 Gezegen (Standart)' },
   { val: 5, label: '5 Gezegen (Uzun)' },
-  { val: 7, label: '7 Gezegen (Tam Fetih)' },
+  { val: 7, label: '7 Gezegen (Hepsi)' },
   { val: 0, label: 'Sonsuz Mod' },
 ]
 
@@ -29,7 +29,7 @@ const MONEY_CHOICES = [30_000, 50_000, 100_000, 200_000]
 export default function MultiplayerLobby({ defaultName, onBack }: Props) {
   const mp = useMultiplayer()
   const [pilotName, setPilotName] = useState(defaultName || 'Pilot')
-  const [roomName, setRoomName] = useState(`${defaultName || 'Pilot'} Fetih Odası`)
+  const [roomName, setRoomName] = useState(`${defaultName || 'Pilot'} Koloni Odası`)
   const [joinCode, setJoinCode] = useState('')
   const [targetPlanets, setTargetPlanets] = useState(4)
   const [startingMoney, setStartingMoney] = useState(50_000)
@@ -78,7 +78,7 @@ export default function MultiplayerLobby({ defaultName, onBack }: Props) {
       <div className="stars" aria-hidden="true" />
       <header className="topbar">
         <div className="wordmark">
-          <span className="wordmark-icon" aria-hidden="true">⚔</span>
+          <span className="wordmark-icon" aria-hidden="true">🪐</span>
           <span>GEZEGEN FETİH MODU</span>
           <small className="mp-sub-badge">ÇOK OYUNCULU · BAYRAK KAPMACA</small>
         </div>
@@ -134,7 +134,7 @@ export default function MultiplayerLobby({ defaultName, onBack }: Props) {
                   maxLength={32}
                   value={roomName}
                   onChange={(e) => setRoomName(e.target.value)}
-                  placeholder="Fetih Odası"
+                  placeholder="Koloni Odası"
                 />
               </label>
               <div className="mp-form-row">
@@ -268,8 +268,9 @@ export default function MultiplayerLobby({ defaultName, onBack }: Props) {
                 ))}
               </ul>
               <ul className="mp-rules">
-                <li>🚩 <b>7 Fethedilebilir Dünya:</b> Ay, Merkür, Venüs, Mars, Ceres, Ganimed, Titan.</li>
-                <li>💥 <b>Roket Çarpışması:</b> Rakiplerin roketlerine çarpıp imha edebilir, bayrak kapabilirsin.</li>
+                <li>🚩 <b>7 Kolonileştirilebilir Dünya:</b> Ay, Merkür, Venüs, Mars, Ceres, Ganimed, Titan.</li>
+                <li>🛰️ <b>Koloni:</b> Kargoda Uzay İstasyonu ve güneş paneli götür, yüzeye in ve kur; çalışan istasyon gezegeni senin yapar.</li>
+                <li>⚠️ <b>Dikkat:</b> Roketler birbirine çarparsa iki taraf da hasar görür.</li>
                 <li>⏱️ <b>Dinamik Zaman:</b> Uzayda süzülürken hızlanır, 3 km yakın temasta ve manuel yanışta anında 1×&apos;e düşer.</li>
               </ul>
             </div>
@@ -306,10 +307,10 @@ export default function MultiplayerLobby({ defaultName, onBack }: Props) {
             </button>
             {mp.isHost ? (
               <button type="button" className="button button-primary" onClick={startMpMatch}>
-                🚀 Savaşı Başlat
+                🚀 Görevi Başlat
               </button>
             ) : (
-              <span className="mp-wait-note">Ev sahibinin savaşı başlatması bekleniyor…</span>
+              <span className="mp-wait-note">Ev sahibinin görevi başlatması bekleniyor…</span>
             )}
           </footer>
         </section>

@@ -40,7 +40,7 @@ export const MODULES: ModuleDef[] = [
   { id: 'lab', name: 'Bilim Lab', icon: '🔬', sprite: 'lab', mass: 2, cost: 4800, power: -3, income: 1300, ore: 0, tier: 2, desc: 'Deneyler yapar; en yüksek geliri getirir ama çok elektrik ister.' },
   { id: 'rtg-reactor', name: 'Reaktör', icon: '☢️', sprite: 'reactor', mass: 2, cost: 6500, power: 15, income: 0, ore: 0, constantPower: true, tier: 3, desc: 'Güneş\'ten bağımsız bol elektrik. Mars ve ötesi için ideal.' },
   { id: 'isru', name: 'Yakıt Tesisi', icon: '⛽', sprite: 'isru', mass: 2, cost: 5000, power: -2, income: 0, ore: 0, tier: 3, desc: 'Madenden roket yakıtı üretir (1 t maden → 4 t yakıt).' },
-  { id: 'colony-station', name: 'Uzay İstasyonu', icon: '🛰️', sprite: 'station', mass: 4, cost: 8000, power: -7, income: 1600, ore: 0, tier: 1, desc: 'Yüksek elektrik ister (-7 ⚡); çalışırken gezegeni kolonileştirir ve kargo taşımadan yerinde inşaatı açar.' },
+  { id: 'colony-station', name: 'Uzay İstasyonu', icon: '🛰️', sprite: 'station', mass: 4, cost: 8000, power: -7, income: 1600, ore: 0, tier: 1, desc: 'Yüksek elektrik ister (-7 ⚡); çalışırken gezegeni kolonileştirir ve gelir getirir.' },
 ]
 
 export const COLONY_STATION_ID = 'colony-station'

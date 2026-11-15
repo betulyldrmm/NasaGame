@@ -832,7 +832,7 @@ describe('ISS, break-up and easter eggs', () => {
   })
 })
 
-describe('multiplayer conquest mode', () => {
+describe('multiplayer colony race', () => {
   const twoPlayerSim = (targetPlanets = 3): Sim => {
     const gs = newMultiplayerGame(
       'TEST',
@@ -991,7 +991,7 @@ describe('multiplayer conquest mode', () => {
     expect(WARPS[ramped.warpIdx]).toBe(1)
   })
 
-  it('shatters rival rockets on high-speed ramming and leaves gentle bumps intact', () => {
+  it('shatters rockets on high-speed collisions (no bounty) and leaves gentle bumps intact', () => {
     const sim = twoPlayerSim()
     expect(dispatchCommand(sim, { type: 'launch', design: DEFAULT_DESIGN }, 'p1').error).toBeUndefined()
     expect(
@@ -1026,7 +1026,7 @@ describe('multiplayer conquest mode', () => {
     expect(mildEvents.some((e) => e.type === 'kill')).toBe(false)
     expect(sim.gs.vessels.find((v) => v.id === v2.id)?.parts.length).toBe(3)
 
-    // Yüksek hızda çarpışma (~140 m/s): hafif rakip gemi uzayda parçalanır ve avcı ödül kazanır
+    // Yüksek hızda çarpışma (~140 m/s): hafif gemi uzayda parçalanır (çarpışma ve patlama kalır), ödül/puan yok
     const p1MoneyBefore = sim.gs.mp!.players.p1.money
     v1.noCollideUntil = 0
     v2.noCollideUntil = 0
@@ -1035,13 +1035,13 @@ describe('multiplayer conquest mode', () => {
     v2.pos = { x: r, y: 3 }
     v2.vel = { x: 0, y: -70 }
     const ramEvents = stepWorld(sim, 0.05, new Map())
-    expect(ramEvents.some((e) => e.type === 'kill' && e.attackerId === 'p1' && e.victimId === 'p2')).toBe(true)
+    expect(ramEvents.some((e) => e.type === 'kill')).toBe(false)
     expect(sim.gs.vessels.some((v) => v.id === v2.id)).toBe(false)
-    expect(sim.gs.mp!.players.p1.kills).toBeGreaterThanOrEqual(1)
-    expect(sim.gs.mp!.players.p1.money).toBeGreaterThanOrEqual(p1MoneyBefore + 3000)
+    expect(sim.gs.mp!.players.p1.kills).toBe(0)
+    expect(sim.gs.mp!.players.p1.money).toBeLessThan(p1MoneyBefore + 100) // yalnızca pasif gelir, ödül yok
   })
 
-  it('requires carrying off-world modules in cargo until a powered Space Station unlocks on-site building', async () => {
+  it('uzay kolonisinde yalnızca kargoyla getirilen yapılar kurulur (istasyon olsa da)', async () => {
     const { colonyStationStatus, isBodyColonized } = await import('../game/base')
     const { removePlanetModule } = await import('./world')
     const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
@@ -1050,33 +1050,29 @@ describe('multiplayer conquest mode', () => {
     sim.gs.bases.moon = moon
     const flux = solarFlux(BODIES.earth.orbit!.a)
 
-    // Uzay İstasyonu yokken stokta olmayan yapı parayla kurulamaz
+    // Stokta olmayan yapı parayla kurulamaz
     expect(placePlanetModule(sim, 'moon', 0, 'solar-farm')).not.toBeNull()
-    expect(isBodyColonized(moon, flux)).toBe(false)
+    expect(sim.gs.money).toBe(100_000)
 
-    // Kargo stoğundan 1 Güneş Paneli (4 ⚡) + Uzay İstasyonu (-7 ⚡) kurulur ama güç yetmez
-    moon.stock = { 'solar-farm': 1, 'colony-station': 1 }
+    // Kargodan gelenler kurulur, para harcanmaz
+    moon.stock = { 'solar-farm': 2, 'colony-station': 1 }
     expect(placePlanetModule(sim, 'moon', 0, 'solar-farm')).toBeNull()
     expect(placePlanetModule(sim, 'moon', 1, 'colony-station')).toBeNull()
     expect(colonyStationStatus(moon, flux)).toBe('unpowered')
-    expect(isBodyColonized(moon, flux)).toBe(false)
-    expect(placePlanetModule(sim, 'moon', 2, 'habitat')).not.toBeNull()
-
-    // 2. Güneş Paneli gelince istasyon çalışır (8 ⚡ >= 7 ⚡) ve yerinde inşaat açılır!
-    moon.stock = { 'solar-farm': 1 }
     expect(placePlanetModule(sim, 'moon', 2, 'solar-farm')).toBeNull()
-    expect(colonyStationStatus(moon, flux)).toBe('active')
     expect(isBodyColonized(moon, flux)).toBe(true)
+    expect(sim.gs.money).toBe(100_000)
 
-    const before = sim.gs.money
-    expect(placePlanetModule(sim, 'moon', 3, 'habitat')).toBeNull()
-    expect(sim.gs.money).toBeLessThan(before)
+    // İstasyon çalışsa bile getirilmeyen yapı kurulamaz
+    expect(placePlanetModule(sim, 'moon', 3, 'habitat')).not.toBeNull()
 
-    // Paneli sökünce istasyon tekrar güçsüz kalır ve yerinde inşaat kapanır
+    // Sökülen yapı depoya döner ve yeniden kurulabilir
     expect(removePlanetModule(sim, 'moon', 0).error).toBeUndefined()
-    expect(colonyStationStatus(moon, flux)).toBe('unpowered')
-    expect(placePlanetModule(sim, 'moon', 4, 'telemetry')).not.toBeNull()
+    expect(moon.stock['solar-farm']).toBe(1)
+    expect(placePlanetModule(sim, 'moon', 4, 'solar-farm')).toBeNull()
+    expect(sim.gs.money).toBe(100_000)
   })
+
 
   it('captures neutral planets by building powered Space Stations, contests/neutralizes rivals, and declares victory', async () => {
     const { deployModules } = await import('./world')

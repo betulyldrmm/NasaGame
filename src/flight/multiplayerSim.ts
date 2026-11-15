@@ -161,7 +161,7 @@ export function newMultiplayerGame(
         reason: 'Akıllı zaman senkronu aktif',
         nearestInterceptM: null,
       },
-      feed: [{ id: 1, time: 0, text: '🚀 Fetih başladı! En çok gezegeni ele geçir ve rakip roketleri avla.' }],
+      feed: [{ id: 1, time: 0, text: '🚀 Koloni yarışı başladı! Gezegenlere in, kargodan Uzay İstasyonu kur; en çok koloni kuran kazanır.' }],
     },
   }
 }
@@ -171,7 +171,7 @@ export function addMultiplayerPlayer(gs: GameState, id: string, username: string
   if (gs.mp.players[id]) return
   gs.mp.players[id] = createMultiplayerPlayer(id, username, slot, color, gs.mp.config.startingMoney)
   gs.players = { ...(gs.players ?? {}), [id]: { id, username, color } }
-  pushMpFeed(gs, `🛰️ ${username} savaşa katıldı.`, color)
+  pushMpFeed(gs, `🛰️ ${username} göreve katıldı.`, color)
 }
 
 export function removeMultiplayerPlayer(gs: GameState, id: string) {
@@ -410,18 +410,6 @@ function shatterMidAir(
     clearOwnershipPointers(gs, v.id)
     spawnBoomFx(fxOut, events, v.bodyId, v.pos.x, v.pos.y, clock, 7.5)
     events.push({ type: 'crash', name: v.name, wasActive, reason, ownerId: v.ownerId, vesselId: v.id })
-    if (gs.mp && attackerId && v.ownerId && attackerId !== v.ownerId) {
-      const attacker = gs.mp.players[attackerId]
-      const victim = gs.mp.players[v.ownerId]
-      if (attacker) {
-        attacker.kills += 1
-        attacker.money += 3000
-        if (gs.ownerId === attacker.id) gs.money = attacker.money
-      }
-      const txt = `💥 ${attacker?.username ?? attackerId}, ${victim?.username ?? v.ownerId} oyuncusunun ${v.name} aracını yok etti (+3.000 ₡)!`
-      pushMpFeed(gs, txt, attacker?.color)
-      events.push({ type: 'kill', attackerId, victimId: v.ownerId, victimName: v.name, speed: shockSpeed })
-    }
     return
   }
 
@@ -548,7 +536,7 @@ export function resolveVesselCollisions(
   }
 }
 
-// ───────────────────────── Bayrak Kapmaca: Gezegen Fethi ─────────────────────────
+// ───────────────────────── Koloni yarışı: gezegen kontrolü ─────────────────────────
 
 export function stepPlanetCaptures(gs: GameState, realDt: number, events: GameEvent[]) {
   const mp = gs.mp
@@ -666,7 +654,7 @@ export function stepPlanetCaptures(gs: GameState, realDt: number, events: GameEv
             winner.money += raidBounty
             if (gs.ownerId === winner.id) gs.money = winner.money
           }
-          const msg = `💥 ${winner?.username ?? challenger}, ${loser?.username ?? prevOwner} oyuncusunun ${body.name} Uzay İstasyonu'nu devre dışı bıraktı (+${raidBounty.toLocaleString('tr-TR')} ₡)!`
+          const msg = `💥 ${winner?.username ?? challenger}, ${loser?.username ?? prevOwner} oyuncusundan ${body.name} kolonisini devraldı (+${raidBounty.toLocaleString('tr-TR')} ₡).`
           pushMpFeed(gs, msg, winner?.color)
           events.push({ type: 'capture', bodyId, ownerId: null, previousOwnerId: prevOwner, text: msg })
         }
@@ -794,9 +782,9 @@ export function computeDynamicWarp(
       if (nearestInterceptM === null || ca.dist < nearestInterceptM) nearestInterceptM = ca.dist
       if (ca.dist < 3000 || (ca.tca > 0 && ca.tca < Math.min(lookAheadSec, Math.max(15, (WARPS[curWarpIdx] ?? 1) * 0.2)) && ca.minAtTca < 2500)) {
         const capTo = ca.dist < 3000 ? 0 : 1
-        tighten(capTo, 'combat', `⚔️ Yakın temas (${Math.round(ca.dist)} m) — ${WARPS[capTo]}×`, p.username)
+        tighten(capTo, 'combat', `🛰️ Yakın geçiş (${Math.round(ca.dist)} m) — ${WARPS[capTo]}×`, p.username)
       } else if (ca.dist < 12000 && ca.minAtTca < 4000) {
-        tighten(1, 'combat', `⚔️ Kesişme yaklaşımı (${(ca.dist / 1000).toFixed(1)} km)`, p.username)
+        tighten(1, 'combat', `🛰️ Yakın geçiş (${(ca.dist / 1000).toFixed(1)} km)`, p.username)
       }
     }
 
