@@ -7,6 +7,7 @@ import { elementsFromState, hohmann, len, propagate, wrapPi } from './orbit'
 import { type Controls, PAD_ANGLE, situation, terrainHeight } from './physics'
 import { predictTrajectory } from './predict'
 import {
+  computeDynamicWarp,
   newMultiplayerGame,
   padAngleForSlot,
   stepPlanetCaptures,
@@ -980,23 +981,42 @@ describe('multiplayer colony race', () => {
     expect(v.angle).toBeCloseTo(0, 2)
   })
 
-  it('çok oyunculuda zaman her durumda sabit 2×', () => {
+  it('dynamically speeds up time while coasting and slams down on close approach or manual thrust', () => {
     const sim = twoPlayerSim()
     expect(dispatchCommand(sim, { type: 'launch', design: DEFAULT_DESIGN }, 'p1').error).toBeUndefined()
     expect(dispatchCommand(sim, { type: 'launch', design: DEFAULT_DESIGN }, 'p2').error).toBeUndefined()
+
     const v1 = sim.gs.vessels.find((v) => v.ownerId === 'p1')!
+    const v2 = sim.gs.vessels.find((v) => v.ownerId === 'p2')!
     const r = BODIES.earth.radius + 90_000
+    const vCirc = Math.sqrt(BODIES.earth.mu / r)
     v1.landed = false
     v1.pos = { x: r, y: 0 }
-    v1.vel = { x: 0, y: Math.sqrt(BODIES.earth.mu / r) }
-    sim.warpIdx = 6
-    for (let i = 0; i < 20; i += 1) {
-      stepWorld(sim, 0.05, new Map())
-      expect(WARPS[sim.warpIdx]).toBe(2)
-    }
-    v1.throttle = 1
-    stepWorld(sim, 0.05, new Map())
-    expect(WARPS[sim.warpIdx]).toBe(2)
+    v1.vel = { x: 0, y: vCirc }
+    v2.landed = false
+    v2.pos = { x: -r, y: 0 }
+    v2.vel = { x: 0, y: -vCirc }
+
+    // Güvenli yörüngede süzülüp hızlandırma talep edildiğinde (kalkış sonrası 2.2 sn koruma bitince) zaman yükselir
+    expect(dispatchCommand(sim, { type: 'setWarpPref', warpIdx: 6 }, 'p1').error).toBeUndefined()
+    const emptyCtrls = new Map<string, typeof ctrl>()
+    for (let i = 0; i < 80; i += 1) stepWorld(sim, 0.05, emptyCtrls)
+    expect(sim.warpIdx).toBeGreaterThan(2)
+    expect(WARPS[sim.warpIdx]).toBeGreaterThanOrEqual(10)
+
+    // Elle itki uygulandığında zaman fizik hızlandırma sınırının üstüne çıkamaz / anında düşer
+    const burnCtrls = new Map<string, typeof ctrl>([['p1', { rotate: 0, tx: 0, ty: 1 }]])
+    stepWorld(sim, 0.05, burnCtrls)
+    expect(sim.warpIdx).toBeLessThanOrEqual(PHYSICS_WARP_MAX_IDX)
+
+    // Hızlı konumda iki oyuncu roketi < 3 km mesafeye girince anında 1x'e düşer
+    let ramped = computeDynamicWarp(sim.gs, 5, 10, 0.05, 10, emptyCtrls, new Map())
+    expect(ramped.warpIdx).toBeGreaterThanOrEqual(4)
+    v2.pos = { x: v1.pos.x, y: v1.pos.y + 2_000 }
+    v2.vel = { x: v1.vel.x, y: v1.vel.y }
+    ramped = computeDynamicWarp(sim.gs, ramped.warpIdx, ramped.rampTimer, 0.05, 10.1, emptyCtrls, new Map())
+    expect(ramped.warpIdx).toBe(0)
+    expect(WARPS[ramped.warpIdx]).toBe(1)
   })
 
   it('shatters rockets on high-speed collisions (no bounty) and leaves gentle bumps intact', () => {
@@ -1356,23 +1376,72 @@ describe('auto-land orbital, mp stuck protection & fast-travel upgrades', () => 
     expect(realSteps * 0.05).toBeLessThan(30)
   })
 
-  it('MP auto-land runs at the fixed 2× and ships never freeze', () => {
-    const gs = newMultiplayerGame('TEST', 'p1', [{ id: 'p1', username: 'Ada', color: '#38d9e8', slot: 0 }], { startingMoney: 100_000 })
+  it('MP auto-land speeds up high up, drops to 1x near touchdown, and ships never freeze above physics warp', () => {
+    const gs = newMultiplayerGame(
+      'MP-FIX',
+      'p1',
+      [
+        { id: 'p1', username: 'Ada', color: '#38d9e8', slot: 0 },
+        { id: 'p2', username: 'Ali', color: '#fb7185', slot: 1 },
+      ],
+      { targetPlanets: 3, startingMoney: 100_000 },
+    )
     gs.mp!.started = true
-    const sim: Sim = { gs, warpIdx: 0, firing: new Map(), clock: 0 }
+    const sim: Sim = { gs, warpIdx: 0, firing: new Map() }
     expect(dispatchCommand(sim, { type: 'launch', design: DEFAULT_DESIGN }, 'p1').error).toBeUndefined()
-    const v = sim.gs.vessels.find((o) => o.ownerId === 'p1')!
-    v.bodyId = 'moon'
-    v.landed = false
-    const r = BODIES.moon.radius + 3000
-    v.pos = { x: r, y: 0 }
-    v.vel = { x: -20, y: 0 }
-    v.autopilot = 'land'
-    v.autoLand = true
-    const r0 = Math.hypot(v.pos.x, v.pos.y)
-    for (let i = 0; i < 40; i += 1) stepWorld(sim, 0.05, new Map())
-    expect(WARPS[sim.warpIdx]).toBe(2)
-    expect(Math.hypot(v.pos.x, v.pos.y)).not.toBe(r0)
+    expect(dispatchCommand(sim, { type: 'launch', design: DEFAULT_DESIGN }, 'p2').error).toBeUndefined()
+
+    const v1 = gs.vessels.find((v) => v.ownerId === 'p1')!
+    const v2 = gs.vessels.find((v) => v.ownerId === 'p2')!
+
+    // 1) Yüksek warp varken yerde gaz açılınca gemi rayda donmaz, kalkış yapar
+    v1.throttle = 1
+    sim.warpIdx = 5
+    const r2 = BODIES.earth.radius + 250_000
+    v2.landed = false
+    v2.pos = { x: r2, y: 0 }
+    v2.vel = { x: 0, y: Math.sqrt(BODIES.earth.mu / r2) }
+    stepWorld(sim, 0.05, new Map())
+    expect(sim.warpIdx).toBe(0)
+    expect(v1.landed).toBe(false)
+    expect(situation(v1).alt).toBeGreaterThan(0)
+
+    // 2) MP oto-iniş yüksek alçalmasında (2.5 km) otomatik hızlanır (<=10×), 90 m altında 1×'e iner ve güvenle iner
+    const theta = 0.5
+    const mrHigh = BODIES.moon.radius + terrainHeight('moon', theta) + 2500
+    v1.bodyId = 'moon'
+    v1.landed = false
+    v1.throttle = 0
+    v1.pos = { x: Math.cos(theta) * mrHigh, y: Math.sin(theta) * mrHigh }
+    v1.vel = { x: Math.cos(theta) * -22, y: Math.sin(theta) * -22 }
+    v1.angle = theta
+    expect(setVesselAutopilot(sim, v1, 'land')).toBeNull()
+    sim.clock = 10
+    sim.warpIdx = 2
+    const dynHigh = computeDynamicWarp(gs, sim.warpIdx, 0.4, 0.05, sim.clock, new Map(), new Map())
+    expect(dynHigh.warpIdx).toBe(3)
+    const dynHigher = computeDynamicWarp(gs, dynHigh.warpIdx, 0.4, 0.05, sim.clock, new Map(), new Map())
+    expect(dynHigher.warpIdx).toBe(4)
+
+    const mrLow = BODIES.moon.radius + terrainHeight('moon', theta) + 85
+    v1.pos = { x: Math.cos(theta) * mrLow, y: Math.sin(theta) * mrLow }
+    v1.vel = { x: Math.cos(theta) * -12, y: Math.sin(theta) * -12 }
+    const dynLow = computeDynamicWarp(gs, 3, 0, 0.05, sim.clock, new Map(), new Map())
+    expect(dynLow.warpIdx).toBe(0)
+
+    v1.pos = { x: Math.cos(theta) * mrHigh, y: Math.sin(theta) * mrHigh }
+    v1.vel = { x: Math.cos(theta) * -22, y: Math.sin(theta) * -22 }
+    let crashed = false
+    let saw1xNearGround = false
+    for (let i = 0; i < 1200 && !v1.landed && !crashed; i += 1) {
+      const evs = stepWorld(sim, 0.05, new Map())
+      const s = situation(v1)
+      if (!v1.landed && s.alt < 90 && sim.warpIdx === 0) saw1xNearGround = true
+      if (evs.some((e) => e.type === 'crash')) crashed = true
+    }
+    expect(crashed).toBe(false)
+    expect(saw1xNearGround).toBe(true)
+    expect(v1.landed).toBe(true)
   })
 
   it('fast travel lasts longer with active telemetry and recovers missing snapshot parts', async () => {

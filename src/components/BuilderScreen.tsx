@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { audio } from '../audio'
 import { MODULES, ISS_SUPPLY } from '../game/base'
-import { GRID_H, GRID_W, partDef, PARTS, SHIP_PRESETS, SHIP_SLOT_COUNT } from '../game/data'
+import { COMBAT_PRESETS, GRID_H, GRID_W, partDef, PARTS, SHIP_PRESETS, SHIP_SLOT_COUNT } from '../game/data'
 import { bump, saveGame, setIdleWarp, sim, useActiveGame, useAuthState } from '../game/store'
 import { isModuleUnlocked, isPartUnlocked, requiredTechForModule, requiredTechForPart } from '../game/tech'
 import type { PartCategory, PartInst } from '../game/types'
@@ -15,7 +15,7 @@ import { drawPart } from '../render/partArt'
 import PartIcon from './PartIcon'
 import PlanetGridPanel from './ColonyPanel'
 
-const CATEGORIES: PartCategory[] = ['Komuta', 'Yakıt', 'Motorlar', 'Kademe', 'Güç', 'İniş', 'Kargo']
+const CATEGORIES: PartCategory[] = ['Komuta', 'Silahlar', 'Savunma', 'Yakıt', 'Motorlar', 'Kademe', 'Güç', 'İniş', 'Kargo']
 const IDLE_WARPS = [1, 5, 25]
 const fmt = (n: number) => Math.round(n).toLocaleString('tr-TR')
 
@@ -29,6 +29,10 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
   const auth = useAuthState()
   const mp = useMultiplayer()
   const inMp = mp.active && mp.inMatch
+  const isColonyRace = inMp && mp.room?.config.mode !== 'orbital-warfare'
+  const isWarfare = inMp && mp.room?.config.mode === 'orbital-warfare'
+  const categories = isColonyRace ? CATEGORIES.filter((c) => c !== 'Silahlar' && c !== 'Savunma') : CATEGORIES
+  const presets = isWarfare ? [...COMBAT_PRESETS, ...SHIP_PRESETS] : isColonyRace ? SHIP_PRESETS : [...SHIP_PRESETS, ...COMBAT_PRESETS]
   const [selected, setSelected] = useState<string | null>(null)
   const [mirror, setMirror] = useState(true)
   const [hover, setHover] = useState<{ x: number; y: number } | null>(null)
@@ -397,7 +401,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
 
       <div className="builder-body">
         <aside className="palette">
-          {CATEGORIES.map((cat) => (
+          {categories.map((cat) => (
             <section key={cat}>
               <h3>{cat}</h3>
               <div className="palette-grid">
@@ -443,7 +447,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
           </div>
           <div className="ship-bar">
             <span className="ship-bar-label">Hazır gemiler</span>
-            {SHIP_PRESETS.map((s) => (
+            {presets.map((s) => (
               <button key={s.id} className="hud-btn" title={s.desc} onClick={() => loadShip(s.design, {})}>{s.name}</button>
             ))}
             <span className="ship-bar-label">Gemilerim</span>
@@ -503,6 +507,12 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
             <div><dt>TWR</dt><dd className={twr >= 1.2 ? 'ok' : twr >= 1 ? 'warn' : 'bad'}>{twr.toFixed(2)}</dd></div>
             <div><dt>Toplam Δv</dt><dd>{fmt(totalDv)} m/s</dd></div>
             <div><dt>Maliyet</dt><dd className={cost > gs.money ? 'bad' : ''}>{fmt(cost)} ₡</dd></div>
+            {(stats.hasCombatParts || isWarfare) && (
+              <>
+                <div><dt>Silah / DPS</dt><dd className={stats.weaponCount > 0 ? 'ok' : 'warn'}>{stats.weaponCount} · {fmt(stats.weaponDps)}</dd></div>
+                <div><dt>Gövde / Kalkan</dt><dd>{fmt(stats.maxHp)} / {fmt(stats.shieldCap)}</dd></div>
+              </>
+            )}
           </dl>
           <div className="twr-meter" title="1,0 altı kalkamaz · 1,2 ve üstü güvenli">
             <i><em className={twr >= 1.2 ? 'ok' : twr >= 1 ? 'warn' : 'bad'} style={{ width: `${Math.min(100, (twr / 2.4) * 100)}%` }} /></i>
@@ -550,7 +560,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
                 </div>
               )}
               <ul className="cargo-list">
-                {[ISS_SUPPLY, ...MODULES].map((m) => {
+                {[ISS_SUPPLY, ...MODULES].filter((m) => !m.warfare || !isColonyRace).map((m) => {
                   const unlocked = isModuleUnlocked(gs, m.id)
                   const req = unlocked ? null : requiredTechForModule(m.id)
                   return (

@@ -16,8 +16,90 @@ export type PartKind =
   | 'battery'
   | 'cargo'
   | 'station'
+  | 'weapon'
+  | 'armor'
+  | 'shield'
 
-export type PartCategory = 'Komuta' | 'Yakıt' | 'Motorlar' | 'Kademe' | 'Güç' | 'İniş' | 'Kargo'
+export type PartCategory = 'Komuta' | 'Yakıt' | 'Motorlar' | 'Kademe' | 'Güç' | 'İniş' | 'Kargo' | 'Silahlar' | 'Savunma'
+
+export type WeaponKind =
+  | 'ballistic'
+  | 'flak'
+  | 'railgun'
+  | 'beam'
+  | 'plasma'
+  | 'rocket'
+  | 'missile'
+  | 'torpedo'
+  | 'emp'
+
+export interface WeaponSpec {
+  kind: WeaponKind
+  /** 1: Toplar/Lazer · 2: Füzeler/Roketler · 3: Kuşatma/EMP */
+  group: 1 | 2 | 3
+  dmg: number
+  /** Koloni yapılarına karşı hasar çarpanı (varsayılan 1) */
+  colonyMult?: number
+  /** Enerji kalkanlarına karşı hasar çarpanı */
+  shieldMult?: number
+  /** Kalkanı delen hasar oranı (0..1) */
+  shieldPierce?: number
+  /** Atışlar arası bekleme (s) */
+  cooldown: number
+  /** Namlu çıkış hızı (m/s), beam için 0 */
+  speed: number
+  /** Anlık ışın menzili (m) */
+  range?: number
+  /** Mermi ömrü (s) */
+  ttl: number
+  /** Patlama etki yarıçapı (m) */
+  splash?: number
+  /** Saçma sayısı (flak için) */
+  pellets?: number
+  /** Namlu dağılımı (rad) */
+  spread?: number
+  /** Başlangıç cephanesi (undefined = sınırsız, yalnızca elektrik harcar) */
+  ammo?: number
+  /** Atış başına elektrik tüketimi */
+  ecUse?: number
+  /** Geri tepme itkisi (kN·s) */
+  recoil?: number
+  /** Buruna göre taret dönüş açısı sınırı (rad) */
+  gimbal?: number
+  /** Güdümlü füze dönüş hızı (rad/s) */
+  turnRate?: number
+  /** Yerçekimi çarpanı (0 = düz gider, 1 = tam yerçekimi) */
+  gravityScale?: number
+  /** Vurulan araçtan çekilen elektrik */
+  empDrain?: number
+  /** Vurulan araç/taret devre dışı kalma süresi (s) */
+  empStun?: number
+  /** Yakınlık tapası tetikleme mesafesi (m) */
+  proximity?: number
+  /** Tetik tutma şarj süresi (s) — raylı top / ölüm lazeri için */
+  chargeTime?: number
+  /** Şarj sonrası kesintisiz ışın süresi (s; 0/tanımsız = basılı tutulduğu sürece) */
+  beamDuration?: number
+  /** Basılı tutarken kesintisiz ışın yakar (Odak Lazeri) */
+  beamSustain?: boolean
+  /** Işın kalınlığı (m) */
+  beamWidth?: number
+  /** Tek atışta delip geçeceği parça/bina sayısı */
+  overpenetrate?: number
+  /** Seri atış (burst) sayısı ve aralığı (s) */
+  burstCount?: number
+  burstInterval?: number
+  /** Zincir hızlanma (FTL Vulcan): en düşük bekleme ve hızlanma oranı */
+  minCooldown?: number
+  spinRate?: number
+  /** Plazma yanma hasarı süresi (s) */
+  burnDot?: number
+  /** Kalkana ekstra düz hasar (EMP İyon için) */
+  shieldFlat?: number
+  /** İsabet alan geminin silah şarjını sıfırlar (EMP) */
+  resetCharge?: boolean
+  color: string
+}
 
 export interface PartDef {
   id: string
@@ -31,6 +113,12 @@ export interface PartDef {
   mass: number
   cost: number
   desc: string
+  /** parça canı (savaş modunda) */
+  hp?: number
+  /** enerji kalkanı kapasitesi */
+  shieldCap?: number
+  /** silah özellikleri */
+  weapon?: WeaponSpec
   /** tank: yakıt kapasitesi (t) */
   fuel?: number
   /** motor: vakum itkisi (kN) */
@@ -62,6 +150,21 @@ export interface PartInst {
   deployed?: boolean
   /** İniş ayağı açılma animasyonunun 0..1 ilerlemesi. */
   deployProgress?: number
+  /** kalan parça canı (undefined = tam) */
+  hp?: number
+  /** kalan cephane */
+  ammo?: number
+  /** kalan silah bekleme süresi / hazır olacağı sim.clock (s) */
+  cd?: number
+  /** 0..1 silah şarjı veya Vulcan dönüş hızı */
+  charge?: number
+  /** seri atışta kalan mermi ve sonraki alt-atış saati */
+  burstLeft?: number
+  burstCd?: number
+  /** son ateşleme saati (namlu tepmesi ve alev animasyonu için) */
+  fireAt?: number
+  /** dev ışın aktif kalma süresi (sim.clock) */
+  beamUntil?: number
 }
 
 export type SasMode = 'off' | 'prograde' | 'retrograde' | 'radial'
@@ -116,8 +219,20 @@ export interface Vessel {
   targetBody?: BodyId
   /** ayrılma/enkaz sonrası aynı sahibin parçalarıyla kısa çarpışma muafiyeti (oyun zamanı s) */
   noCollideUntil?: number
-  /** son çarpışmada hasar veren oyuncu */
+  /** son çarpışmada / saldırıda hasar veren oyuncu */
   lastAttackerId?: string
+  /** enerji kalkanı (savaş modu) */
+  shield?: number
+  /** bu sim.clock saatine kadar kalkan yenilenmez */
+  shieldRegenAt?: number
+  /** EMP darbesiyle silah/kalkan devre dışı bitiş saati (sim.clock) */
+  empUntil?: number
+  /** yeni fırlatılan aracın kısa rampa koruması (sim.clock) */
+  spawnShieldUntil?: number
+  /** son nişan alınan dünya açısı (taret çizimi için) */
+  aimAngle?: number
+  /** plazma yanığı bitiş saati (sim.clock) */
+  burnUntil?: number
   /** Tek oyunculu "hedefe git": hedefte yörüngeye oturunca otomatik inişe geçilecek cisim */
   landAt?: BodyId
   /** Çok oyunculu arcade hızlı yolculuk: başlangıç ve varış (atmosfer sınırı) arasında kısa süreli geçiş */
@@ -155,6 +270,8 @@ export interface Base {
   earned: number
   /** koloni yuvaları: her yuvada bir yapı kimliği ya da boş */
   sites?: (string | null)[]
+  /** koloni yuvalarının kalan canı (undefined = tam can) */
+  siteHp?: (number | null)[]
   /** kargoyla getirilip henüz kurulmamış yapılar */
   stock?: Record<string, number>
   /** eski 4×4 grid (yalnızca eski kayıtları okumak için) */
@@ -163,6 +280,16 @@ export interface Base {
   sectorLevel?: number
   /** çok oyunculu hazırlığı: üs sahibi oyuncu kimliği */
   ownerId?: string
+  /** koloni kalkan kubbesi canı */
+  shield?: number
+  /** kalkanın yeniden dolmaya başlayacağı saat (sim.clock) */
+  shieldRegenAt?: number
+  /** EMP ile devre dışı kalma bitiş saati (sim.clock) */
+  stunUntil?: number
+  /** savunma taretleri kalan bekleme süresi (s) */
+  turretCd?: number
+  /** yok edilmiş koloni bayrağı */
+  destroyed?: boolean
 }
 
 export interface ShipSlot {
@@ -177,12 +304,54 @@ export interface PlayerMeta {
   color?: string
 }
 
+export type MultiplayerMode = 'colony-race' | 'orbital-warfare'
+export type WarfareGoal = 'siege' | 'score15' | 'score30' | 'endless'
+
 export interface MultiplayerConfig {
+  /** Çok oyunculu oyun modu */
+  mode?: MultiplayerMode
+  /** Uzay Savaşı modunda zafer koşulu */
+  warfareGoal?: WarfareGoal
   /** Kazanmak için gereken gezegen sayısı (0 = sınırsız fetih) */
   targetPlanets: number
   startingMoney: number
   passiveBonusPerPlanet: number
   allowAutoWarp: boolean
+}
+
+export interface Projectile {
+  id: number
+  ownerId: string
+  vesselId: number
+  weaponId: string
+  kind: WeaponKind
+  bodyId: BodyId
+  pos: { x: number; y: number }
+  vel: { x: number; y: number }
+  born: number
+  ttl: number
+  dmg: number
+  colonyMult: number
+  shieldMult: number
+  shieldPierce: number
+  splash: number
+  gravityScale: number
+  turnRate: number
+  targetId?: number
+  empDrain: number
+  empStun: number
+  proximity: number
+  traveled?: number
+  refVel?: { x: number; y: number }
+  airburstRange?: number
+  overpenetrate?: number
+  hitIds?: number[]
+  burnDot?: number
+  shieldFlat?: number
+  resetCharge?: boolean
+  color: string
+  /** düşman koloni savunmasından ateşlendiyse */
+  fromColony?: boolean
 }
 
 export interface PlanetCapture {
@@ -213,7 +382,12 @@ export interface MultiplayerPlayer {
   planetsHeld: number
   captures: number
   kills: number
+  score?: number
+  coloniesDestroyed?: number
+  eliminated?: boolean
   earthBase?: Base
+  /** Uzay Savaşı modunda her oyuncunun kendi gezegen kolonileri */
+  colonies?: Partial<Record<BodyId, Base>>
 }
 
 export interface DynamicWarpInfo {
@@ -242,6 +416,8 @@ export interface MultiplayerState {
   captures: Partial<Record<BodyId, PlanetCapture>>
   warpInfo: DynamicWarpInfo
   feed: MultiplayerFeedItem[]
+  projectiles?: Projectile[]
+  nextProjId?: number
 }
 
 export interface GameState {
@@ -274,6 +450,9 @@ export interface GameState {
   /** yakıt verimi bonusunun bittiği an (ms, Date.now) */
   buffUntil?: number
   issDeliveries?: number
+  /** Tek oyunculu test atışları için geçici mermiler */
+  projectiles?: Projectile[]
+  nextProjId?: number
 }
 
 /** Çok oyunculu hazırlığı: serileştirilebilir oyuncu komutları. */
@@ -301,6 +480,7 @@ export type GameCommand =
   | { type: 'placeGridModule'; bodyId: BodyId; x: number; moduleId: string }
   | { type: 'removeGridModule'; bodyId: BodyId; x: number }
   | { type: 'rendezvous'; vesselId: number }
+  | { type: 'repairVessel'; vesselId: number }
 
 export type GameEvent =
   | { type: 'toast'; text: string; ownerId?: string }
@@ -308,7 +488,10 @@ export type GameEvent =
   | { type: 'mission'; id: string; title: string; reward: number }
   | { type: 'soi'; from: BodyId; to: BodyId; ownerId?: string }
   | { type: 'explosion'; size: number; bodyId?: BodyId; x?: number; y?: number }
+  | { type: 'weaponFire'; weaponId: string; kind: WeaponKind; bodyId: BodyId; x: number; y: number; pitch?: number }
+  | { type: 'shieldHit'; bodyId: BodyId; x: number; y: number }
   | { type: 'achievement'; id: string; title: string; text: string }
   | { type: 'capture'; bodyId: BodyId; ownerId: string | null; previousOwnerId: string | null; text: string }
+  | { type: 'colonyDestroyed'; bodyId: BodyId; victimId: string; attackerId: string; text: string }
   | { type: 'kill'; attackerId: string | null; victimId: string | null; victimName: string; speed: number }
   | { type: 'victory'; winnerId: string; winnerName: string }

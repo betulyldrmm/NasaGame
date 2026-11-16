@@ -103,18 +103,24 @@ export function listPublicRooms() {
 
 // Yavaş bağlantıda anlık görüntüler kuyrukta birikip saniyelerce gecikmesin: tampon dolunca
 // yalnızca EN SON görüntü saklanır ve soket boşalınca gönderilir (eski kareler atılır).
-const SNAPSHOT_BACKPRESSURE_BYTES = 48 * 1024
+const SNAPSHOT_BACKPRESSURE_BYTES = 24 * 1024
 
 function broadcastRoom(room, obj, exceptClient = null, dropIfBacklogged = false) {
   let frame = null
+  const isImportant = !dropIfBacklogged
   for (const m of room.members) {
     if (m === exceptClient) continue
     if (!m || m.closed || m.socket.destroyed || !m.socket.writable) continue
     if (!frame) frame = encodeFrame(0x1, Buffer.from(JSON.stringify(obj), 'utf8'))
     if (dropIfBacklogged && m.socket.writableLength > SNAPSHOT_BACKPRESSURE_BYTES) {
-      m.pendingSnap = frame
+      if (!m.pendingImportant) m.pendingSnap = frame
       continue
     }
+    if (!isImportant && m.pendingImportant && m.socket.writableLength > SNAPSHOT_BACKPRESSURE_BYTES * 0.5) {
+      continue
+    }
+    m.pendingSnap = null
+    m.pendingImportant = false
     try {
       m.socket.write(frame)
     } catch {
@@ -123,8 +129,14 @@ function broadcastRoom(room, obj, exceptClient = null, dropIfBacklogged = false)
   }
 }
 
+function sanitizeName(raw, fallback = 'Pilot') {
+  const clean = (typeof raw === 'string' ? raw : '').trim().replace(/[^\p{L}\p{N}_-]/gu, '').slice(0, 20) || fallback
+  if (clean === '__proto__' || clean === 'constructor' || clean === 'prototype') return fallback
+  return clean
+}
+
 function uniqueUsername(room, desired) {
-  const clean = (desired || 'Pilot').trim().replace(/[^\p{L}\p{N}_-]/gu, '').slice(0, 20) || 'Pilot'
+  const clean = sanitizeName(desired, 'Pilot')
   const used = new Set(room.members.map((m) => m.playerId.toLowerCase()))
   if (!used.has(clean.toLowerCase())) return clean
   for (let i = 2; i < 99; i += 1) {
@@ -176,14 +188,21 @@ function handleMessage(client, msg) {
     case 'createRoom': {
       leaveRoom(client)
       const code = makeCode()
+      const mode = msg.config?.mode === 'orbital-warfare' ? 'orbital-warfare' : 'colony-race'
+      const warfareGoal = ['siege', 'score15', 'score30', 'endless'].includes(msg.config?.warfareGoal)
+        ? msg.config.warfareGoal
+        : 'siege'
       const cfg = {
+        mode,
+        warfareGoal,
         targetPlanets: [0, 3, 4, 5, 7].includes(Number(msg.config?.targetPlanets)) ? Number(msg.config.targetPlanets) : 4,
-        startingMoney: Math.max(20_000, Math.min(500_000, Number(msg.config?.startingMoney) || 50_000)),
+        startingMoney: Math.max(20_000, Math.min(500_000, Number(msg.config?.startingMoney) || (mode === 'orbital-warfare' ? 100_000 : 50_000))),
         passiveBonusPerPlanet: 12_000,
         allowAutoWarp: msg.config?.allowAutoWarp !== false,
       }
-      const username = typeof msg.username === 'string' && msg.username.trim() ? msg.username.trim().slice(0, 20) : 'Host'
-      const roomName = typeof msg.roomName === 'string' && msg.roomName.trim() ? msg.roomName.trim().slice(0, 32) : `${username} Fetih Odası`
+      const username = sanitizeName(msg.username, 'Host')
+      const defaultRoomName = mode === 'orbital-warfare' ? `${username} Savaş Odası` : `${username} Fetih Odası`
+      const roomName = typeof msg.roomName === 'string' && msg.roomName.trim() ? msg.roomName.trim().slice(0, 32) : defaultRoomName
       client.playerId = username
       client.username = username
       client.slot = 0
@@ -214,6 +233,10 @@ function handleMessage(client, msg) {
       const room = rooms.get(code)
       if (!room) {
         sendWs(client, { type: 'error', message: `Oda bulunamadı: ${code || '?'}` })
+        return
+      }
+      if (room.started) {
+        sendWs(client, { type: 'error', message: 'Maç zaten başlamış; lütfen bekleyen bir odaya katıl.' })
         return
       }
       if (room.members.length >= 16) {
@@ -249,7 +272,7 @@ function handleMessage(client, msg) {
     }
     case 'startMatch': {
       const room = client.roomCode ? rooms.get(client.roomCode) : null
-      if (!room || room.host !== client) return
+      if (!room || room.host !== client || room.started) return
       room.started = true
       const snap = serializeRoom(room)
       broadcastRoom(room, { type: 'matchStarted', room: snap })
@@ -257,21 +280,37 @@ function handleMessage(client, msg) {
     }
     case 'clientCmd': {
       const room = client.roomCode ? rooms.get(client.roomCode) : null
-      if (!room || !room.started) return
+      if (!room || !room.started || !msg.cmd || typeof msg.cmd !== 'object' || typeof msg.cmd.type !== 'string') return
       sendWs(room.host, { type: 'peerCmd', fromId: client.playerId, cmd: msg.cmd })
       return
     }
     case 'clientCtrl': {
       const room = client.roomCode ? rooms.get(client.roomCode) : null
-      if (!room || !room.started) return
-      sendWs(room.host, { type: 'peerCtrl', fromId: client.playerId, ctrl: msg.ctrl })
+      const c = msg.ctrl
+      if (
+        !room ||
+        !room.started ||
+        !c ||
+        typeof c !== 'object' ||
+        !Number.isFinite(c.rotate) ||
+        !Number.isFinite(c.tx) ||
+        !Number.isFinite(c.ty)
+      ) {
+        return
+      }
+      sendWs(room.host, { type: 'peerCtrl', fromId: client.playerId, ctrl: c })
+      return
+    }
+    case 'requestParts': {
+      const room = client.roomCode ? rooms.get(client.roomCode) : null
+      if (!room || !room.started || room.host === client) return
+      sendWs(room.host, { type: 'requestParts', vesselId: msg.vesselId })
       return
     }
     case 'hostSnapshot': {
       const room = client.roomCode ? rooms.get(client.roomCode) : null
       if (!room || room.host !== client) return
-      const hasParts = Boolean(msg.state?.vessels?.some?.((v) => Array.isArray(v?.parts) && v.parts.length > 0))
-      const important = (Array.isArray(msg.events) && msg.events.length > 0) || hasParts
+      const important = Array.isArray(msg.events) && msg.events.length > 0
       broadcastRoom(room, { type: 'snapshot', state: msg.state, events: msg.events }, client, !important)
       return
     }
@@ -308,11 +347,17 @@ export function attachMultiplayerWs(server) {
         clients.delete(c)
       }
     }
-  }, 20_000)
+  }, 30_000)
   pingTimer.unref?.()
 
   server.on('upgrade', (req, socket, head) => {
-    const url = new URL(req.url ?? '/', 'http://localhost')
+    let url
+    try {
+      url = new URL(req.url ?? '/', 'http://localhost')
+    } catch {
+      socket.destroy()
+      return
+    }
     if (url.pathname !== '/api/mp/ws') {
       socket.destroy()
       return
@@ -341,11 +386,13 @@ export function attachMultiplayerWs(server) {
       slot: 0,
       color: PLAYER_COLORS[0],
       pendingSnap: null,
+      pendingImportant: false,
     }
     socket.on('drain', () => {
       const f = client.pendingSnap
       if (!f || client.closed || socket.destroyed || !socket.writable) return
       client.pendingSnap = null
+      client.pendingImportant = false
       try {
         socket.write(f)
       } catch {
@@ -407,6 +454,13 @@ export function attachMultiplayerWs(server) {
 
         if (opcode === 0x0) {
           fragChunks.push(payload)
+          const fragLen = fragChunks.reduce((s, c) => s + c.length, 0)
+          if (fragLen > MAX_FRAME_BYTES) {
+            fragChunks = []
+            closeClient(client)
+            clients.delete(client)
+            return
+          }
           if (fin) {
             const full = Buffer.concat(fragChunks)
             fragChunks = []

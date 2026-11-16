@@ -5,8 +5,18 @@
  *  - Bayrak kapmaca tarzı gezegen ele geçirme ve savunma
  *  - Oyuncu başına bağımsız bütçe, fırlatma rampası ve hedef yönetimi
  */
-import { baseReport, COLONY_STATION_ID, emptyBase, isBodyColonized, STARTER_EARTH_SITES, syncModules, tickBase } from '../game/base'
-import { DEFAULT_DESIGN, partDef } from '../game/data'
+import {
+  baseReport,
+  COLONY_STATION_ID,
+  emptyBase,
+  ensureSiteHp,
+  isBodyColonized,
+  STARTER_EARTH_SITES,
+  syncModules,
+  tickBase,
+  WARFARE_STARTER_EARTH_SITES,
+} from '../game/base'
+import { COMBAT_PRESETS, DEFAULT_DESIGN, partDef } from '../game/data'
 import { INITIAL_TECH } from '../game/tech'
 import type {
   Base,
@@ -14,6 +24,7 @@ import type {
   GameEvent,
   GameState,
   MultiplayerConfig,
+  MultiplayerMode,
   MultiplayerPlayer,
   PartInst,
   PlanetCapture,
@@ -21,6 +32,7 @@ import type {
 } from '../game/types'
 import { cargoMass, components, vesselStats } from '../game/vessel'
 import { BODIES, type BodyId, solarFlux } from '../nasa/bodies'
+import { isWarfareMode, stepWarfareRules } from './combat'
 import { bodyAbsState, elementsFromState, len } from './orbit'
 import {
   type Controls,
@@ -41,32 +53,37 @@ export const PLAYER_COLORS = ['#38d9e8', '#fb7185', '#4ade80', '#fbbf24', '#c084
 const CAPTURE_NEUTRALIZE_SEC = 5
 
 export interface FxEventLike {
-  kind: 'boom' | 'whale' | 'tower'
+  kind: 'boom' | 'whale' | 'tower' | 'beam' | 'hit' | 'shield' | 'muzzle'
   bodyId: BodyId
   x: number
   y: number
+  x2?: number
+  y2?: number
+  color?: string
   born: number
   size: number
 }
 
 /** Dünya üzerindeki düz rampa bölgesinde her oyuncu yuvası için ayrı açı döndürür. */
-export function padAngleForSlot(slot: number): number {
+export function padAngleForSlot(slot: number, mode: MultiplayerMode = 'colony-race'): number {
   if (slot <= 0) return PAD_ANGLE
+  const step = mode === 'orbital-warfare' ? 0.00085 : 0.00045
   const k = Math.ceil(slot / 2)
   const dir = slot % 2 === 1 ? 1 : -1
-  return PAD_ANGLE + dir * k * 0.00045
+  return PAD_ANGLE + dir * k * step
 }
 
 export function playerPadAngle(gs: GameState, ownerId?: string): number {
   if (!gs.mp || !ownerId) return PAD_ANGLE
   const p = gs.mp.players[ownerId]
-  return padAngleForSlot(p?.slot ?? 0)
+  return padAngleForSlot(p?.slot ?? 0, gs.mp.config.mode ?? 'colony-race')
 }
 
-export function makeStarterEarthBase(slot: number, ownerId?: string): Base {
-  const b = emptyBase(padAngleForSlot(slot), ownerId)
-  b.sites = [...STARTER_EARTH_SITES]
+export function makeStarterEarthBase(slot: number, ownerId?: string, mode: MultiplayerMode = 'colony-race'): Base {
+  const b = emptyBase(padAngleForSlot(slot, mode), ownerId)
+  b.sites = mode === 'orbital-warfare' ? [...WARFARE_STARTER_EARTH_SITES] : [...STARTER_EARTH_SITES]
   syncModules(b)
+  if (mode === 'orbital-warfare') ensureSiteHp(b)
   return b
 }
 
@@ -76,6 +93,7 @@ export function createMultiplayerPlayer(
   slot: number,
   color: string,
   startingMoney: number,
+  mode: MultiplayerMode = 'colony-race',
 ): MultiplayerPlayer {
   return {
     id,
@@ -90,7 +108,11 @@ export function createMultiplayerPlayer(
     planetsHeld: 0,
     captures: 0,
     kills: 0,
-    earthBase: makeStarterEarthBase(slot, id),
+    score: 0,
+    coloniesDestroyed: 0,
+    eliminated: false,
+    earthBase: makeStarterEarthBase(slot, id, mode),
+    ...(mode === 'orbital-warfare' ? { colonies: {} } : {}),
   }
 }
 
@@ -100,21 +122,24 @@ export function newMultiplayerGame(
   playersList: { id: string; username: string; color: string; slot: number }[],
   config: Partial<MultiplayerConfig> = {},
 ): GameState {
+  const mode: MultiplayerMode = config.mode === 'orbital-warfare' ? 'orbital-warfare' : 'colony-race'
   const cfg: MultiplayerConfig = {
+    mode,
+    warfareGoal: config.warfareGoal ?? 'siege',
     targetPlanets: config.targetPlanets ?? 4,
-    startingMoney: config.startingMoney ?? 50_000,
+    startingMoney: config.startingMoney ?? (mode === 'orbital-warfare' ? 100_000 : 50_000),
     passiveBonusPerPlanet: config.passiveBonusPerPlanet ?? 12_000,
     allowAutoWarp: config.allowAutoWarp ?? true,
   }
   const players: Record<string, MultiplayerPlayer> = {}
   const playerMeta: Record<string, { id: string; username: string; color: string }> = {}
   for (const p of playersList) {
-    players[p.id] = createMultiplayerPlayer(p.id, p.username, p.slot, p.color, cfg.startingMoney)
+    players[p.id] = createMultiplayerPlayer(p.id, p.username, p.slot, p.color, cfg.startingMoney, mode)
     playerMeta[p.id] = { id: p.id, username: p.username, color: p.color }
   }
   if (!players[hostId]) {
     const col = PLAYER_COLORS[0]!
-    players[hostId] = createMultiplayerPlayer(hostId, hostId, 0, col, cfg.startingMoney)
+    players[hostId] = createMultiplayerPlayer(hostId, hostId, 0, col, cfg.startingMoney, mode)
     playerMeta[hostId] = { id: hostId, username: hostId, color: col }
   }
   const captures: Partial<Record<BodyId, PlanetCapture>> = {}
@@ -128,7 +153,12 @@ export function newMultiplayerGame(
       phase: 'idle',
     }
   }
-  const earth = makeStarterEarthBase(0, hostId)
+  const earth = makeStarterEarthBase(0, hostId, mode)
+  const initialDesign = (mode === 'orbital-warfare' ? COMBAT_PRESETS[0]!.design : DEFAULT_DESIGN).map((p) => ({ ...p }))
+  const welcomeText =
+    mode === 'orbital-warfare'
+      ? '⚔️ Uzay Savaşı başladı! Roketine silahlar ekle, rakiplerle çarpış ve düşman kolonilerini yok et!'
+      : '🚀 Koloni yarışı başladı! Gezegenlere in, kargodan Uzay İstasyonu kur; en çok koloni kuran kazanır.'
   return {
     time: 0,
     tick: 0,
@@ -142,7 +172,7 @@ export function newMultiplayerGame(
     bases: { earth },
     missionsDone: [],
     techDone: [INITIAL_TECH],
-    design: DEFAULT_DESIGN.map((p) => ({ ...p })),
+    design: initialDesign,
     designCargo: {},
     targetBody: 'moon',
     lastSavedAt: Date.now(),
@@ -161,7 +191,8 @@ export function newMultiplayerGame(
         reason: 'Akıllı zaman senkronu aktif',
         nearestInterceptM: null,
       },
-      feed: [{ id: 1, time: 0, text: '🚀 Koloni yarışı başladı! Gezegenlere in, kargodan Uzay İstasyonu kur; en çok koloni kuran kazanır.' }],
+      feed: [{ id: 1, time: 0, text: welcomeText }],
+      ...(mode === 'orbital-warfare' ? { projectiles: [], nextProjId: 1 } : {}),
     },
   }
 }
@@ -169,7 +200,8 @@ export function newMultiplayerGame(
 export function addMultiplayerPlayer(gs: GameState, id: string, username: string, color: string, slot: number) {
   if (!gs.mp) return
   if (gs.mp.players[id]) return
-  gs.mp.players[id] = createMultiplayerPlayer(id, username, slot, color, gs.mp.config.startingMoney)
+  const mode = gs.mp.config.mode ?? 'colony-race'
+  gs.mp.players[id] = createMultiplayerPlayer(id, username, slot, color, gs.mp.config.startingMoney, mode)
   gs.players = { ...(gs.players ?? {}), [id]: { id, username, color } }
   pushMpFeed(gs, `🛰️ ${username} göreve katıldı.`, color)
 }
@@ -246,7 +278,20 @@ export function playerPassiveIncomePerHour(gs: GameState, playerId: string): num
   const p = gs.mp.players[playerId]
   if (!p) return 0
   const earthFlux = solarFlux(len(bodyAbsState('earth', gs.time).r))
-  let sum = p.earthBase ? baseReport(p.earthBase, earthFlux, 1).incomePerHour : 0
+  let sum = p.earthBase && !p.earthBase.destroyed ? baseReport(p.earthBase, earthFlux, 1).incomePerHour : 0
+  if (isWarfareMode(gs)) {
+    for (const bodyId of CONQUERABLE_BODIES) {
+      const colony = p.colonies?.[bodyId]
+      if (!colony || colony.destroyed) continue
+      const b = BODIES[bodyId]
+      const flux = solarFlux(len(bodyAbsState(bodyId, gs.time).r))
+      if (isBodyColonized(colony, flux)) {
+        sum += gs.mp.config.passiveBonusPerPlanet * Math.max(1, b.incomeMult * 0.5)
+      }
+      sum += baseReport(colony, flux, b.incomeMult).incomePerHour
+    }
+    return sum
+  }
   for (const bodyId of CONQUERABLE_BODIES) {
     const cap = gs.mp.captures[bodyId]
     if (cap?.ownerId !== playerId) continue
@@ -268,9 +313,26 @@ export function stepMultiplayerIncome(gs: GameState, incomeDt: number) {
   const hours = incomeDt / 3600
   const earthFlux = solarFlux(len(bodyAbsState('earth', gs.time).r))
   for (const p of Object.values(gs.mp.players)) {
-    if (p.earthBase) {
+    if (p.earthBase && !p.earthBase.destroyed) {
       p.money += tickBase(p.earthBase, earthFlux, incomeDt, 1, false)
     }
+  }
+  if (isWarfareMode(gs)) {
+    for (const p of Object.values(gs.mp.players)) {
+      if (!p.colonies) continue
+      for (const bodyId of CONQUERABLE_BODIES) {
+        const colony = p.colonies[bodyId]
+        if (!colony || colony.destroyed) continue
+        const b = BODIES[bodyId]
+        const flux = solarFlux(len(bodyAbsState(bodyId, gs.time).r))
+        if (isBodyColonized(colony, flux)) {
+          p.money += gs.mp.config.passiveBonusPerPlanet * Math.max(1, b.incomeMult * 0.5) * hours
+        }
+        p.money += tickBase(colony, flux, incomeDt, b.incomeMult, true)
+      }
+    }
+    if (gs.ownerId && gs.mp.players[gs.ownerId]) gs.money = gs.mp.players[gs.ownerId]!.money
+    return
   }
   for (const bodyId of CONQUERABLE_BODIES) {
     const cap = gs.mp.captures[bodyId]
@@ -358,7 +420,7 @@ function shatterMidAir(
   const tol = landingTolerance(st)
   const severity = shockSpeed / Math.max(1, tol)
   const total = v.parts.length
-  const totalDestroy = severity >= 2.2
+  const totalDestroy = total <= 1 || severity >= 2.2
   const breakCount = totalDestroy
     ? total
     : Math.max(1, Math.min(total - 1, Math.round(total * 0.34 * Math.max(0.25, severity - 0.55))))
@@ -408,6 +470,15 @@ function shatterMidAir(
     gs.vessels = gs.vessels.filter((o) => o.id !== v.id)
     firing.delete(v.id)
     clearOwnershipPointers(gs, v.id)
+    if (isWarfareMode(gs) && gs.mp && st.hasCommand && attackerId && attackerId !== v.ownerId) {
+      const atk = gs.mp.players[attackerId]
+      if (atk) {
+        atk.kills += 1
+        atk.score = (atk.score ?? 0) + 1
+        atk.money += 1500
+        if (gs.ownerId === atk.id) gs.money = atk.money
+      }
+    }
     spawnBoomFx(fxOut, events, v.bodyId, v.pos.x, v.pos.y, clock, 7.5)
     events.push({ type: 'crash', name: v.name, wasActive, reason, ownerId: v.ownerId, vesselId: v.id })
     return
@@ -419,10 +490,12 @@ function shatterMidAir(
   v.autopilot = 'off'
   v.autoLand = false
   v.autopilotNote = undefined
+  v.approachWarn = null
   v.noCollideUntil = gs.time + 0.6
   if (attackerId && attackerId !== v.ownerId) v.lastAttackerId = attackerId
   const st2 = vesselStats(v.parts)
   v.ec = Math.min(v.ec, st2.ecCap)
+  if (v.shield !== undefined) v.shield = Math.min(v.shield, st2.shieldCap)
   if (cargoMass(v.cargo) > st2.cargoCap + 1e-9) v.cargo = { modules: {}, ore: 0, oreFrom: null }
   events.push({ type: 'toast', text: `${v.name}: ${reason} (hasarlı)!` })
 }
@@ -451,6 +524,7 @@ export function resolveVesselCollisions(
       if (a.debris && b.debris) continue
       if (a.cruise || b.cruise) continue
       if (a.landed && b.landed) continue
+      if ((a.spawnShieldUntil && clock < a.spawnShieldUntil) || (b.spawnShieldUntil && clock < b.spawnShieldUntil)) continue
       if (a.ownerId && a.ownerId === b.ownerId && (a.noCollideUntil ?? 0) > gs.time && (b.noCollideUntil ?? 0) > gs.time) {
         continue
       }
@@ -489,18 +563,18 @@ export function resolveVesselCollisions(
       const kA = mB / (mA + mB)
       const kB = mA / (mA + mB)
 
-      // Çarpışma anındaki konuma al + ayır
+      // Çarpışma anındaki konuma al + ayır (yerdeki durağan aracı kaydırma)
       const overlap = Math.max(0.15, rSum - dist + 0.15)
-      a.pos = { x: a.pos.x + nx * overlap * kA, y: a.pos.y + ny * overlap * kA }
-      b.pos = { x: b.pos.x - nx * overlap * kB, y: b.pos.y - ny * overlap * kB }
+      if (!a.landed) a.pos = { x: a.pos.x + nx * overlap * kA, y: a.pos.y + ny * overlap * kA }
+      if (!b.landed) b.pos = { x: b.pos.x - nx * overlap * kB, y: b.pos.y - ny * overlap * kB }
 
       if (vRel < 3.5) {
         // Yavaş temas: kenetlenme için hasarsız yumuşak itme
         const vn = rvx * nx + rvy * ny
         if (vn < 0) {
           const jImp = -1.25 * vn
-          a.vel = { x: a.vel.x + nx * jImp * kA, y: a.vel.y + ny * jImp * kA }
-          b.vel = { x: b.vel.x - nx * jImp * kB, y: b.vel.y - ny * jImp * kB }
+          if (!a.landed) a.vel = { x: a.vel.x + nx * jImp * kA, y: a.vel.y + ny * jImp * kA }
+          if (!b.landed) b.vel = { x: b.vel.x - nx * jImp * kB, y: b.vel.y - ny * jImp * kB }
         }
         continue
       }
@@ -541,6 +615,10 @@ export function resolveVesselCollisions(
 export function stepPlanetCaptures(gs: GameState, realDt: number, events: GameEvent[]) {
   const mp = gs.mp
   if (!mp || !mp.started) return
+  if (isWarfareMode(gs)) {
+    stepWarfareRules(gs, events)
+    return
+  }
 
   const counts: Record<string, number> = {}
   for (const bodyId of CONQUERABLE_BODIES) {
@@ -571,7 +649,11 @@ export function stepPlanetCaptures(gs: GameState, realDt: number, events: GameEv
     const hasStation = (base?.modules[COLONY_STATION_ID] ?? 0) > 0
 
     if (!cap.ownerId) {
-      const settler = base?.ownerId && mp.players[base.ownerId] ? base.ownerId : (activeOwners.length === 1 ? activeOwners[0]! : null)
+      const hasAnyModule = !!(hasStation || base?.sites?.some(Boolean))
+      const settler =
+        base?.ownerId && hasAnyModule && mp.players[base.ownerId]
+          ? base.ownerId
+          : (activeOwners.length === 1 ? activeOwners[0]! : null)
       const rivalsAtSite = settler ? activeOwners.filter((id) => id !== settler) : activeOwners
       if (colonized && settler && rivalsAtSite.length === 0) {
         if (base) base.ownerId = settler
@@ -643,7 +725,8 @@ export function stepPlanetCaptures(gs: GameState, realDt: number, events: GameEv
             syncModules(base)
             base.ownerId = challenger
           }
-          const raidBounty = Math.round(bounty * 0.4)
+          const raidBounty = cap.lastRewardedId !== challenger ? Math.round(bounty * 0.4) : 0
+          if (raidBounty > 0) cap.lastRewardedId = challenger
           cap.ownerId = null
           cap.capturerId = challenger
           cap.progress = 0.25
@@ -654,7 +737,8 @@ export function stepPlanetCaptures(gs: GameState, realDt: number, events: GameEv
             winner.money += raidBounty
             if (gs.ownerId === winner.id) gs.money = winner.money
           }
-          const msg = `💥 ${winner?.username ?? challenger}, ${loser?.username ?? prevOwner} oyuncusundan ${body.name} kolonisini devraldı (+${raidBounty.toLocaleString('tr-TR')} ₡).`
+          const rewardTxt = raidBounty > 0 ? ` (+${raidBounty.toLocaleString('tr-TR')} ₡)` : ''
+          const msg = `💥 ${winner?.username ?? challenger}, ${loser?.username ?? prevOwner} oyuncusundan ${body.name} kolonisini devraldı${rewardTxt}.`
           pushMpFeed(gs, msg, winner?.color)
           events.push({ type: 'capture', bodyId, ownerId: null, previousOwnerId: prevOwner, text: msg })
         }
@@ -759,6 +843,11 @@ export function computeDynamicWarp(
     }
   }
 
+  // Aktif mermiler veya ateş eden gemi varsa çatışma hızı 1×'e iner (it dalaşında zaman kaçmasın)
+  if (isWarfareMode(gs) && (mp.projectiles?.length ?? 0) > 0) {
+    tighten(0, 'combat', '⚔️ Çatışma — 1×')
+  }
+
   for (const p of Object.values(mp.players)) {
     if (p.warpAnchor) {
       tighten(0, 'anchor', `${p.username}: 1× sabitledi`, p.username)
@@ -766,7 +855,6 @@ export function computeDynamicWarp(
 
     const v = p.activeVesselId ? gs.vessels.find((o) => o.id === p.activeVesselId) ?? null : null
     if (!v || v.debris) {
-      if (p.wantsWarpIdx >= 0) manualDesires.push({ who: p.username, idx: p.wantsWarpIdx, active: false })
       continue
     }
 
@@ -775,14 +863,20 @@ export function computeDynamicWarp(
     const s = situation(v, st)
     const ap = effectiveAutopilot(v)
     const c = controlsByPlayer.get(p.id) ?? null
-    const usingControls = !!(c && (c.rotate !== 0 || c.tx !== 0 || c.ty !== 0))
+    const usingControls = !!(c && (c.rotate !== 0 || c.tx !== 0 || c.ty !== 0 || c.fire))
     const recentManual = usingControls || (p.lastManualAt !== undefined && realClock - p.lastManualAt < 2.2)
 
-    // 1) Roket-roket yakın temas / çarpışma algılama (yüksek warp'ta öngörü mesafesi genişler)
+    if (c?.fire) {
+      tighten(0, 'combat', `${p.username}: silah ateşi — 1×`, p.username)
+    }
+
+    // 1) Roket-roket yakın temas / çarpışma algılama (yerdeki rampalı araçlar veya hızlı kalkış hariç)
     const lookAheadSec = Math.max(22, Math.min(300, (WARPS[curWarpIdx] ?? 1) * 0.35))
     for (const o of gs.vessels) {
       if (o.id === v.id || o.bodyId !== v.bodyId || o.debris) continue
-      if (o.ownerId === v.ownerId && (aLandedSkip(v, o))) continue
+      if (aLandedSkip(v, o)) continue
+      if (o.landed && v.bodyId === 'earth' && (ap === 'transfer' && !c?.fire)) continue
+      if ((o.spawnShieldUntil && realClock < o.spawnShieldUntil) && o.landed) continue
       const ca = closestApproach(v, o, lookAheadSec)
       if (nearestInterceptM === null || ca.dist < nearestInterceptM) nearestInterceptM = ca.dist
       if (ca.dist < 3000 || (ca.tca > 0 && ca.tca < Math.min(lookAheadSec, Math.max(15, (WARPS[curWarpIdx] ?? 1) * 0.2)) && ca.minAtTca < 2500)) {
@@ -797,7 +891,9 @@ export function computeDynamicWarp(
       tighten(0, 'burn', `${p.username}: kalkış hazırlığı`, p.username)
     }
     if (!v.landed) {
-      if (body.landable && ap === 'land') {
+      if (v.cruise) {
+        maxAutoCoastWish = Math.max(maxAutoCoastWish, 1)
+      } else if (body.landable && ap === 'land') {
         const cap = landingWarpCap(v, st)
         cap.maxIdx = Math.min(cap.maxIdx, PHYSICS_WARP_MAX_IDX)
         tighten(
@@ -807,6 +903,11 @@ export function computeDynamicWarp(
           p.username,
         )
         maxAutoCoastWish = Math.max(maxAutoCoastWish, cap.autoIdx)
+      } else if (ap === 'transfer') {
+        // Hedefe Git tırmanışı: yakıt varken/tırmanırken atmosferi hızla aşmak için 4× hıza izin ver
+        const climbCap = s.alt < 1200 ? 1 : 2
+        tighten(climbCap, 'burn', `${p.username}: ${body.name} transfer tırmanışı`, p.username)
+        if (s.alt >= 800 && (v.throttle > 0.05 || s.vr >= -2)) maxAutoCoastWish = Math.max(maxAutoCoastWish, 2)
       } else {
         if (v.throttle > 0.01 || usingControls) {
           tighten(s.alt < 12_000 ? 0 : 2, 'burn', `${p.username}: motor yanışı`, p.username)
@@ -820,7 +921,7 @@ export function computeDynamicWarp(
           tighten(recentManual || v.throttle > 0 ? 1 : 2, 'burn', `${p.username}: ${body.name} atmosferi`, p.username)
         } else if (recentManual || (v.throttle > 0 && ap === 'off')) {
           tighten(2, 'burn', `${p.username}: manuel uçuş`, p.username)
-        } else if (ap === 'orbit' || ap === 'transfer') {
+        } else if (ap === 'orbit') {
           const autoWish = autopilotWantedByVessel.get(v.id)
           if (v.throttle > 0) {
             tighten(2, 'burn', `${p.username}: otopilot yanışı`, p.username)
@@ -830,7 +931,7 @@ export function computeDynamicWarp(
             if (wait !== null && wait > 20) {
               maxAutoCoastWish = Math.max(maxAutoCoastWish, chooseCoastIdx(wait, 4))
             } else {
-              const toAp = s.vr > 0 && el.e < 1 ? (el.ra - s.r) / Math.max(1, s.vr) : 0
+              const toAp = s.vr > 2 && el.e < 1 ? (el.ra - s.r) / s.vr : 0
               if (toAp > 45) maxAutoCoastWish = Math.max(maxAutoCoastWish, 4)
               else tighten(2, 'burn', `${p.username}: manevra hazırlığı`, p.username)
             }
@@ -842,7 +943,7 @@ export function computeDynamicWarp(
     }
 
     if (p.wantsWarpIdx >= 0) {
-      manualDesires.push({ who: p.username, idx: p.wantsWarpIdx, active: !v.landed && ap === 'off' && v.throttle > 0 })
+      manualDesires.push({ who: p.username, idx: p.wantsWarpIdx, active: !v.landed && !v.cruise && ap === 'off' && v.throttle > 0 })
     }
   }
 
@@ -850,12 +951,13 @@ export function computeDynamicWarp(
   if (manualDesires.length > 0) {
     // Manuel tercih veren oyunculardan en temkinlisi belirler; Auto oyuncular güvenli ise engellemez.
     targetIdx = Math.min(...manualDesires.map((m) => m.idx))
-    if (maxAutoCoastWish > targetIdx && manualDesires.every((m) => !m.active && m.idx >= 0)) {
+    if (maxAutoCoastWish > targetIdx && manualDesires.every((m) => !m.active && m.idx > 0)) {
       targetIdx = Math.max(targetIdx, maxAutoCoastWish)
     }
     if (targetIdx > 0 && capMode === 'auto') {
+      const limiter = manualDesires.find((m) => m.idx === targetIdx) ?? manualDesires[0]!
       capMode = 'manual'
-      capReason = `${manualDesires[0]!.who}: ${WARPS[Math.min(hardCap, targetIdx)]!.toLocaleString('tr-TR')}× seçildi`
+      capReason = `${limiter.who}: ${WARPS[Math.min(hardCap, targetIdx)]!.toLocaleString('tr-TR')}× seçildi`
     }
   } else {
     targetIdx = mp.config.allowAutoWarp ? maxAutoCoastWish : 0

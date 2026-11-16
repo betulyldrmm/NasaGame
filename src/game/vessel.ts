@@ -1,7 +1,7 @@
 /** Grid tabanlı roket yapısı: bağlantı, kademe, kütle ve motor hesapları (saf fonksiyonlar). */
 import { G0 } from '../nasa/bodies'
 import { MODULE_BY_ID } from './base'
-import { GRID_H, GRID_W, partDef } from './data'
+import { GRID_H, GRID_W, partDef, partMaxHp } from './data'
 import type { Cargo, PartDef, PartInst } from './types'
 
 const key = (x: number, y: number) => x * 1000 + y
@@ -110,6 +110,13 @@ export interface VesselStats {
   chutes: number
   chutesDeployed: number
   hasNose: boolean
+  hp: number
+  maxHp: number
+  shieldCap: number
+  weaponCount: number
+  weaponDps: number
+  ammoTotal: number
+  hasCombatParts: boolean
 }
 
 export function vesselStats(parts: PartInst[], cargo?: Cargo | null): VesselStats {
@@ -133,6 +140,13 @@ export function vesselStats(parts: PartInst[], cargo?: Cargo | null): VesselStat
   let chutes = 0
   let chutesDeployed = 0
   let hasNose = false
+  let hp = 0
+  let maxHp = 0
+  let shieldCap = 0
+  let weaponCount = 0
+  let weaponDps = 0
+  let ammoTotal = 0
+  let hasCombatParts = false
   for (const p of parts) {
     const d = partDef(p.def)
     const f = d.kind === 'tank' ? (p.fuel ?? d.fuel ?? 0) : 0
@@ -149,6 +163,16 @@ export function vesselStats(parts: PartInst[], cargo?: Cargo | null): VesselStat
     maxX = Math.max(maxX, p.x + d.w)
     minY = Math.min(minY, p.y)
     maxY = Math.max(maxY, p.y + d.h)
+    const pMax = partMaxHp(d.id)
+    maxHp += pMax
+    hp += Math.max(0, Math.min(pMax, p.hp ?? pMax))
+    shieldCap += d.shieldCap ?? 0
+    if (d.kind === 'weapon' || d.kind === 'armor' || d.kind === 'shield') hasCombatParts = true
+    if (d.weapon) {
+      weaponCount += 1
+      weaponDps += (d.weapon.dmg * (d.weapon.pellets ?? 1)) / Math.max(0.05, d.weapon.cooldown)
+      if (d.weapon.ammo !== undefined) ammoTotal += p.ammo ?? d.weapon.ammo
+    }
     if (d.kind === 'command') hasCommand = true
     if (d.kind === 'rcs') rcs += 1
     if (d.kind === 'leg') {
@@ -171,6 +195,7 @@ export function vesselStats(parts: PartInst[], cargo?: Cargo | null): VesselStat
   return {
     mass: mass + cm, dryMass: mass - fuel + cm, fuel, fuelCap, comX, comY, minX, maxX, minY, maxY, cost, ecCap, cargoCap,
     hasCommand, rcs, legs, legsDeployed, legTolerance, chutes, chutesDeployed, hasNose,
+    hp, maxHp, shieldCap, weaponCount, weaponDps, ammoTotal, hasCombatParts,
   }
 }
 
@@ -215,17 +240,18 @@ export function runEngines(parts: PartInst[], throttle: number, pressure: number
   for (const i of activeEngines(parts)) {
     const d = partDef(parts[i]!.def)
     const flow = (d.thrust! / (d.ispVac! * ispBoost * G0)) * throttle
+    const tanks = parts.filter((p, j) => groups[j] === groups[i] && partDef(p.def).kind === 'tank' && (p.fuel ?? 0) > 0)
+    const avail = tanks.reduce((s, t) => s + (t.fuel ?? 0), 0)
+    if (avail <= 0) continue
     let frac = 1
     if (d.ecUse) {
-      const need = d.ecUse * throttle * dt
-      const got = Math.min(need, Math.max(0, ecAvailable - ecUsed))
-      frac = need > 0 ? got / need : 0
+      const needEc = d.ecUse * throttle * dt
+      const got = Math.min(needEc, Math.max(0, ecAvailable - ecUsed))
+      frac = needEc > 0 ? got / needEc : 0
       ecUsed += got
     }
     const need = flow * dt * frac
-    const tanks = parts.filter((p, j) => groups[j] === groups[i] && partDef(p.def).kind === 'tank' && (p.fuel ?? 0) > 0)
-    const avail = tanks.reduce((s, t) => s + (t.fuel ?? 0), 0)
-    if (avail <= 0 || need <= 0) continue
+    if (need <= 0) continue
     const used = Math.min(need, avail)
     for (const t of tanks) t.fuel = Math.max(0, (t.fuel ?? 0) - used * ((t.fuel ?? 0) / avail))
     const power = (used / (flow * dt)) * throttle
@@ -301,8 +327,21 @@ export function estimateDeltaV(design: PartInst[], extraMass = 0, gravity = 9.8)
 export function freshParts(design: PartInst[]): PartInst[] {
   return design.map((p) => {
     const d = partDef(p.def)
-    return { def: p.def, x: p.x, y: p.y, fuel: d.fuel, on: d.kind === 'engine' ? true : undefined, deployed: false }
+    return {
+      def: p.def,
+      x: p.x,
+      y: p.y,
+      fuel: d.fuel,
+      on: d.kind === 'engine' ? true : undefined,
+      deployed: false,
+      ...(d.weapon?.ammo !== undefined ? { ammo: d.weapon.ammo } : {}),
+    }
   })
+}
+
+export function isCombatPart(defId: string): boolean {
+  const k = partDef(defId).kind
+  return k === 'weapon' || k === 'armor' || k === 'shield'
 }
 
 /** Tasarımı hangar ızgarasında yatayda ortalar ve altını alttan 1 kare yukarıya hizalar (büyük ızgara için). */

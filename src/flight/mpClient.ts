@@ -4,8 +4,8 @@
  * istemci tarayıcılar ise kareler arasında yörünge/konum ara kestirimi (dead-reckoning) yaparak akıcı 60 FPS çizer.
  */
 import { useSyncExternalStore } from 'react'
-import { BODIES } from '../nasa/bodies'
-import { DEFAULT_DESIGN } from '../game/data'
+import { BODIES, type BodyId } from '../nasa/bodies'
+import { COMBAT_PRESETS, DEFAULT_DESIGN } from '../game/data'
 import type {
   AutopilotMode,
   GameCommand,
@@ -13,14 +13,17 @@ import type {
   GameState,
   MultiplayerConfig,
   PartInst,
+  Projectile,
   Vessel,
 } from '../game/types'
 import { INITIAL_TECH } from '../game/tech'
+import { isWarfareMode } from './combat'
 import { effectiveAutopilot, stepPhysics, stepRails, type Controls } from './physics'
 import {
   addMultiplayerPlayer,
   newMultiplayerGame,
   PHYSICS_WARP_MAX_IDX,
+  pushMpFeed,
   removeMultiplayerPlayer,
   WARPS,
 } from './multiplayerSim'
@@ -50,6 +53,7 @@ export interface RoomSnapshot {
   hostId: string
   hostName: string
   started: boolean
+  maxPlayers?: number
   config: MultiplayerConfig
   players: RoomMemberInfo[]
 }
@@ -95,21 +99,30 @@ export interface SnapshotWire extends GameState {
   _hostPing?: number
 }
 
-/** Ağ üzerindeki araç: yapı (parçalar) yalnızca değişince/periyodik gelir, yakıt her karede kısa listedir. */
-type WireVessel = Omit<Vessel, 'parts'> & { parts?: PartInst[]; _pf?: [number, number][] }
+/** Ağ üzerindeki araç: yapı (parçalar) yalnızca değişince gönderilir; yakıt/can/cephane/silah şarjı kısa listedir. */
+type WireVessel = Omit<Vessel, 'parts'> & {
+  parts?: PartInst[]
+  _pk?: string
+  _pf?: [number, number][]
+  _ph?: [number, number][]
+  _pa?: [number, number][]
+  _pc?: [number, number, number, number, number][]
+}
 
 const r2 = (x: number) => Math.round(x * 100) / 100
 const r4 = (x: number) => Math.round(x * 10000) / 10000
 
-/** Parçaların yapısal imzası: sayısı, açılma ve motor durumları. Değişince tam yapı gönderilir. */
+/** Parçaların yapısal imzası: parça kimliği, konumu, açılma ve motor durumları. Değişince tam yapı gönderilir. */
 function partsKey(parts: PartInst[]): string {
   let k = `${parts.length}:`
-  for (const p of parts) k += (p.deployed ? 'd' : '') + (p.on === false ? 'o' : '') + p.def.length
+  for (const p of parts) {
+    k += `${p.def}@${p.x},${p.y}${(p.deployed ? 'd' : '')}${(p.on === false ? 'o' : '')}|`
+  }
   return k
 }
-const sentPartsKey = new WeakMap<Sim, Map<number, { key: string; until: number }>>()
+const sentPartsKey = new WeakMap<Sim, Map<number, { key: string; lastFull: number }>>()
 
-function compactVessel(v: Vessel, withParts: boolean): WireVessel {
+function compactVessel(v: Vessel, withParts: boolean, key?: string, clock = 0): WireVessel {
   const { parts, ...rest } = v
   const out: WireVessel = {
     ...rest,
@@ -120,14 +133,30 @@ function compactVessel(v: Vessel, withParts: boolean): WireVessel {
     throttle: r4(v.throttle),
     ec: r2(v.ec),
     dvUsed: Math.round(v.dvUsed),
+    ...(v.shield !== undefined ? { shield: r2(v.shield) } : {}),
+    ...(v.aimAngle !== undefined ? { aimAngle: r4(v.aimAngle) } : {}),
   }
+  if (key) out._pk = key
   if (withParts) out.parts = parts
   else {
     const pf: [number, number][] = []
+    const ph: [number, number][] = []
+    const pa: [number, number][] = []
+    const pc: [number, number, number, number, number][] = []
     parts.forEach((p, i) => {
       if (p.fuel !== undefined) pf.push([i, Math.round(p.fuel * 1000) / 1000])
+      if (p.hp !== undefined) ph.push([i, Math.round(p.hp)])
+      if (p.ammo !== undefined) pa.push([i, p.ammo])
+      const beamRem = p.beamUntil && p.beamUntil > clock ? Math.round((p.beamUntil - clock) * 100) / 100 : 0
+      const fireAge = p.fireAt !== undefined && clock - p.fireAt < 0.35 ? Math.round((clock - p.fireAt) * 100) / 100 : -1
+      const ch = p.charge ? Math.round(p.charge * 100) / 100 : 0
+      const cd = p.cd && p.cd > 0.01 ? Math.round(p.cd * 100) / 100 : 0
+      if (ch > 0 || beamRem > 0 || fireAge >= 0 || cd > 0) pc.push([i, ch, beamRem, fireAge, cd])
     })
     out._pf = pf
+    if (ph.length) out._ph = ph
+    if (pa.length) out._pa = pa
+    if (pc.length) out._pc = pc
   }
   return out
 }
@@ -144,6 +173,7 @@ type ServerMessage =
   | { type: 'matchStarted'; room: RoomSnapshot }
   | { type: 'peerCmd'; fromId: string; cmd: GameCommand }
   | { type: 'peerCtrl'; fromId: string; ctrl: Controls }
+  | { type: 'requestParts'; vesselId: number }
   | { type: 'snapshot'; state: SnapshotWire; events?: GameEvent[] }
   | { type: 'chat'; fromId: string; username: string; color: string; text: string }
   | { type: 'error'; message: string }
@@ -189,14 +219,19 @@ let lastHostPing = 0
 let lastLoopAt = 0
 let rafId = 0
 let bgWorker: Worker | null = null
+let bgWorkerUrl: string | null = null
 let bgIntervalId = 0
 let lastUiBumpAt = 0
+let lastPingSentAt = 0
+const lastPartsReqAt = new Map<number, number>()
 
 let pendingLaunchUntil = 0
 let pendingLaunchMinId = 0
 let pendingThrottle: { vesselId: number; value: number; until: number } | null = null
 let pendingActive: { vesselId: number; until: number } | null = null
 let pendingAutopilot: { vesselId: number; mode: AutopilotMode; until: number } | null = null
+let pendingTarget: { bodyId: BodyId; until: number } | null = null
+let pendingWarpPref: { warpIdx: number; anchor?: boolean; until: number } | null = null
 
 const STATIC_DIRTY_CMDS = new Set<GameCommand['type']>([
   'buyModule',
@@ -230,8 +265,12 @@ function clearPendingOptimistic() {
   pendingThrottle = null
   pendingActive = null
   pendingAutopilot = null
+  pendingTarget = null
+  pendingWarpPref = null
   vesselVisualOffsets.clear()
   knownVesselParts.clear()
+  knownPartsKey.clear()
+  lastPartsReqAt.clear()
 }
 
 const storeListeners = new Set<() => void>()
@@ -259,7 +298,7 @@ function rebuildView(): MpViewState {
 
 function emitUi(force = false) {
   const now = performance.now()
-  if (!force && now - lastUiBumpAt < 65) return
+  if (!force && now - lastUiBumpAt < 95) return
   lastUiBumpAt = now
   version += 1
   rebuildView()
@@ -299,12 +338,17 @@ function flushQueue() {
 
 function startPingTimer() {
   stopPingTimer()
+  lastPingSentAt = performance.now()
   sendRaw({ type: 'ping', t: Date.now() })
   pingIntervalId = window.setInterval(() => {
-    if (ws && ws.readyState === WebSocket.OPEN) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return
+    const now = performance.now()
+    const interval = inMatch ? 4000 : 8000
+    if (now - lastPingSentAt >= interval - 50) {
+      lastPingSentAt = now
       sendRaw({ type: 'ping', t: Date.now() })
     }
-  }, 1000)
+  }, 4000)
 }
 
 function stopPingTimer() {
@@ -339,6 +383,7 @@ export function ensureConnected(): Promise<void> {
 
     socket.onerror = () => {
       connecting = false
+      sendQueue.length = 0
       error = 'Çok oyunculu sunucusuna bağlanılamadı.'
       connectPromise = null
       emitUi(true)
@@ -347,13 +392,15 @@ export function ensureConnected(): Promise<void> {
 
     socket.onclose = () => {
       const wasInMatch = inMatch
+      const hadRoom = !!room
       stopPingTimer()
       ws = null
       connected = false
       connecting = false
       pingMs = null
       connectPromise = null
-      if (wasInMatch) {
+      sendQueue.length = 0
+      if (wasInMatch || hadRoom) {
         stopLoops()
         clearPendingOptimistic()
         inMatch = false
@@ -361,6 +408,8 @@ export function ensureConnected(): Promise<void> {
         isHost = false
         hostSim = null
         clientSim = null
+        peerControls.clear()
+        pendingHostEvents = []
         error = 'Sunucu bağlantısı kesildi.'
       }
       emitUi(true)
@@ -423,21 +472,34 @@ export function buildCompactSnapshot(sim: Sim, includeStatic: boolean): Snapshot
   const gs = sim.gs
   const clock = sim.clock ?? 0
   if (sim.fx?.length) {
-    sim.fx = sim.fx.filter((f) => clock - f.born < 3.5)
+    sim.fx = sim.fx.filter((f) => clock - f.born < (f.kind === 'beam' || f.kind === 'hit' || f.kind === 'shield' || f.kind === 'muzzle' ? 0.65 : 3.5))
   }
-  const fxList = (sim.fx ?? []).slice(-12)
+  const fxList = (sim.fx ?? []).slice(-24)
 
   let mpOut = gs.mp
-  if (gs.mp && !includeStatic) {
-    const slimPlayers: typeof gs.mp.players = {}
-    for (const [pid, p] of Object.entries(gs.mp.players)) {
-      const { earthBase: _omitBase, ...rest } = p
-      slimPlayers[pid] = rest
-    }
-    mpOut = {
-      ...gs.mp,
-      players: slimPlayers,
-      feed: gs.mp.feed.slice(-14),
+  if (gs.mp) {
+    const slimProj: Projectile[] | undefined = gs.mp.projectiles?.map((pr) => ({
+      ...pr,
+      pos: { x: r2(pr.pos.x), y: r2(pr.pos.y) },
+      vel: { x: r2(pr.vel.x), y: r2(pr.vel.y) },
+    }))
+    if (!includeStatic) {
+      const slimPlayers: typeof gs.mp.players = {}
+      for (const [pid, p] of Object.entries(gs.mp.players)) {
+        const { earthBase: _omitBase, colonies: _omitCols, ...rest } = p
+        slimPlayers[pid] = rest
+      }
+      mpOut = {
+        ...gs.mp,
+        players: slimPlayers,
+        feed: gs.mp.feed.slice(-14),
+        ...(slimProj ? { projectiles: slimProj } : {}),
+      }
+    } else if (slimProj) {
+      mpOut = {
+        ...gs.mp,
+        projectiles: slimProj,
+      }
     }
   }
 
@@ -453,10 +515,10 @@ export function buildCompactSnapshot(sim: Sim, includeStatic: boolean): Snapshot
       if (!tracked) sentPartsKey.set(sim, (tracked = new Map()))
       const key = partsKey(v.parts)
       const prev = tracked.get(v.id)
-      // Yapı değiştiyse, araç yeniyse ya da periyodik senkron yenilemesinde 1,5 sn boyunca tam yapı gönder.
-      if (!prev || prev.key !== key || clock > prev.until + 4) tracked.set(v.id, { key, until: clock + 1.5 })
-      const withParts = !prev || clock < tracked.get(v.id)!.until
-      return compactVessel(v, withParts)
+      // Yapı yalnızca araç yeniyken, değişince veya 12 sn'de bir tek kare gönderilir (kuyruk şişmez).
+      const needParts = !prev || prev.key !== key || clock - prev.lastFull >= 12
+      if (needParts) tracked.set(v.id, { key, lastFull: clock })
+      return compactVessel(v, needParts, key, clock)
     }) as unknown as Vessel[],
     activeId: gs.activeId,
     nextId: gs.nextId,
@@ -477,6 +539,7 @@ export function buildCompactSnapshot(sim: Sim, includeStatic: boolean): Snapshot
 }
 
 const knownVesselParts = new Map<number, PartInst[]>()
+const knownPartsKey = new Map<number, string>()
 
 export function hydrateCompactSnapshot(
   raw: SnapshotWire,
@@ -490,6 +553,7 @@ export function hydrateCompactSnapshot(
   firing: Map<number, Map<number, number>>
   fx: Fx[]
   clock: number
+  missingPartIds: number[]
 } {
   const warpIdx = raw._warpIdx ?? raw.mp?.warpInfo?.warpIdx ?? 0
   const firingEntries = raw._firing ?? []
@@ -499,21 +563,53 @@ export function hydrateCompactSnapshot(
 
   const { _warpIdx: _w, _firing: _fi, _fx: _fx, _clock: _cl, _omitStatic: _os, _hostPing: _hp, ...cleanGs } = raw
 
-  // Yapısı gelmeyen araçlar önceki görüntüden tamamlanır; hiç görülmemişse tam yapı gelene kadar beklenir.
+  const missingPartIds: number[] = []
+  // Yapısı gelmeyen araçlar önceki görüntüden tamamlanır; eksik/eskiyse host'tan tek seferlik istenir.
   const prevById = new Map((prevGs?.vessels ?? []).map((v) => [v.id, v]))
   cleanGs.vessels = (cleanGs.vessels as unknown as WireVessel[]).flatMap((wv) => {
-    const { _pf, parts, ...rest } = wv
+    const { _pf, _ph, _pa, _pc, _pk, parts, ...rest } = wv
     let full = parts
+    let partsMismatch = false
     if (full) {
       knownVesselParts.set(wv.id, full.map((p) => ({ ...p })))
+      if (_pk) knownPartsKey.set(wv.id, _pk)
     } else {
+      if (_pk && knownPartsKey.get(wv.id) !== _pk) {
+        missingPartIds.push(wv.id)
+        partsMismatch = true
+      }
       const pv = prevById.get(wv.id)
       const cached = knownVesselParts.get(wv.id)
       if (pv) full = pv.parts.map((p) => ({ ...p }))
       else if (cached) full = cached.map((p) => ({ ...p }))
-      else return []
+      else {
+        missingPartIds.push(wv.id)
+        return []
+      }
     }
-    if (_pf) for (const [i, f] of _pf) if (full[i]) full[i].fuel = f
+    if (!partsMismatch) {
+      if (_pf) for (const [i, f] of _pf) if (full[i]) full[i].fuel = f
+      if (_ph) for (const [i, h] of _ph) if (full[i]) full[i].hp = h
+      if (_pa) for (const [i, a] of _pa) if (full[i]) full[i].ammo = a
+    }
+    if (!parts) {
+      for (const pt of full) {
+        pt.charge = 0
+        pt.cd = 0
+        pt.beamUntil = 0
+      }
+    }
+    if (_pc && !partsMismatch) {
+      for (const [i, ch, beamRem, fireOrCd, explicitCd] of _pc) {
+        const pt = full[i]
+        if (!pt) continue
+        pt.charge = ch
+        pt.beamUntil = beamRem > 0 ? clock + beamRem : 0
+        if (fireOrCd >= 0) pt.fireAt = clock - fireOrCd
+        else if (explicitCd === undefined) pt.cd = -fireOrCd
+        if (explicitCd !== undefined) pt.cd = explicitCd
+      }
+    }
     return [{ ...rest, parts: full } as Vessel]
   })
 
@@ -522,8 +618,14 @@ export function hydrateCompactSnapshot(
     if (cleanGs.mp && prevGs.mp) {
       const restored: typeof cleanGs.mp.players = {}
       for (const [pid, p] of Object.entries(cleanGs.mp.players)) {
-        const prevBase = prevGs.mp.players[pid]?.earthBase
-        restored[pid] = p.earthBase || !prevBase ? p : { ...p, earthBase: prevBase }
+        const prevP = prevGs.mp.players[pid]
+        const earthBase = p.earthBase ?? prevP?.earthBase
+        const colonies = p.colonies ?? prevP?.colonies
+        restored[pid] = {
+          ...p,
+          ...(earthBase ? { earthBase } : {}),
+          ...(colonies ? { colonies } : {}),
+        }
       }
       cleanGs.mp = { ...cleanGs.mp, players: restored }
     }
@@ -547,13 +649,14 @@ export function hydrateCompactSnapshot(
     firing: new Map(firingEntries.map(([id, pairs]) => [id, new Map(pairs)])),
     fx,
     clock,
+    missingPartIds,
   }
 }
 
 function sendHostSnapshot(now: number) {
   if (!isHost || !hostSim) return
-  if (!forceImmediateSnapshot && now - lastSnapshotSentAt < 14) return
-  if (!forceImmediateSnapshot && ws && ws.bufferedAmount > 48 * 1024) {
+  if (!forceImmediateSnapshot && now - lastSnapshotSentAt < 20) return
+  if (!forceImmediateSnapshot && ws && ws.bufferedAmount > 24 * 1024) {
     urgentSnapshot = false
     return
   }
@@ -571,10 +674,13 @@ function sendHostSnapshot(now: number) {
   const evs = pendingHostEvents.filter(
     (e) =>
       e.type === 'capture' ||
+      e.type === 'colonyDestroyed' ||
       e.type === 'kill' ||
       e.type === 'victory' ||
       e.type === 'crash' ||
       e.type === 'explosion' ||
+      e.type === 'weaponFire' ||
+      e.type === 'shieldHit' ||
       (e.type === 'toast' && !!e.ownerId),
   )
   pendingHostEvents = []
@@ -610,7 +716,7 @@ function predictOwn(v: Vessel, simDt: number, warp: number, writeFiring = false)
 }
 
 function applyClientSnapshot(raw: SnapshotWire, events?: GameEvent[]) {
-  if (!you) return
+  if (!you || !inMatch || !room) return
   const prevGs = clientSim?.gs ?? null
   const prevVis = new Map<number, { bodyId: string; x: number; y: number }>()
   if (prevGs && clientSim) {
@@ -631,9 +737,33 @@ function applyClientSnapshot(raw: SnapshotWire, events?: GameEvent[]) {
 
   if (pendingLaunchUntil > 0) {
     const spawned = gs.vessels.some((v) => v.ownerId === you!.id && v.id > pendingLaunchMinId)
-    if (spawned || now >= pendingLaunchUntil) {
+    const rejected = events?.some((e) => e.type === 'toast' && (!('ownerId' in e) || e.ownerId === you!.id))
+    if (spawned || rejected || now >= pendingLaunchUntil) {
       pendingLaunchUntil = 0
       pendingLaunchMinId = 0
+    }
+  }
+
+  if (pendingTarget && gs.mp?.players[you.id]) {
+    const me = gs.mp.players[you.id]!
+    if (me.targetBody === pendingTarget.bodyId || now >= pendingTarget.until) {
+      pendingTarget = null
+    } else {
+      me.targetBody = pendingTarget.bodyId
+      gs.targetBody = pendingTarget.bodyId
+      const av = ownActive(gs)
+      if (av) av.targetBody = pendingTarget.bodyId
+    }
+  }
+
+  if (pendingWarpPref && gs.mp?.players[you.id]) {
+    const me = gs.mp.players[you.id]!
+    const matched = me.wantsWarpIdx === pendingWarpPref.warpIdx && (pendingWarpPref.anchor === undefined || me.warpAnchor === pendingWarpPref.anchor)
+    if (matched || now >= pendingWarpPref.until) {
+      pendingWarpPref = null
+    } else {
+      me.wantsWarpIdx = pendingWarpPref.warpIdx
+      if (pendingWarpPref.anchor !== undefined) me.warpAnchor = pendingWarpPref.anchor
     }
   }
 
@@ -666,30 +796,27 @@ function applyClientSnapshot(raw: SnapshotWire, events?: GameEvent[]) {
     }
   }
 
-  // Kendi aracında uzlaştırma: ev sahibinin (gecikmeli) durumu gecikme kadar ileri sarılır ve
-  // yerel tahmine yumuşakça karıştırılır; burun yönü istemcide kalır. Böylece kontrol anında hissedilir.
+  // Kendi aracında uzlaştırma: yakıt/EC tüketmeden gecikme kadar ileri sar ve yumuşat.
   const nv = pred ? ownActive(gs) : null
   if (pred && nv && !nv.cruise && nv.id === pred.id && nv.bodyId === pred.bodyId && effectiveAutopilot(nv) === 'off') {
     if (!nv.landed) {
       nv.angle = pred.angle
       nv.angVel = pred.angVel
     }
+    if (localCtrl.aimAngle !== undefined) nv.aimAngle = localCtrl.aimAngle
     const liftingOff = nv.throttle > 0 || localCtrl.ty > 0 || (pendingThrottle !== null && pendingThrottle.value > 0)
     if (nv.landed && !pred.landed && liftingOff) {
-      // Kalkışı ev sahibi henüz işlemedi: yerel kalkışı koru.
       nv.angle = pred.angle
       nv.angVel = pred.angVel
       nv.landed = false
       nv.pos = pred.pos
       nv.vel = pred.vel
-    } else if (!nv.landed && !pred.landed) {
-      if (hydrated.warpIdx <= PHYSICS_WARP_MAX_IDX) predictOwn(nv, latencySec() * warpNow, warpNow)
-      const d = Math.hypot(nv.pos.x - pred.pos.x, nv.pos.y - pred.pos.y)
-      if (d < 400 * Math.max(1, warpNow) && !nv.landed) {
-        nv.pos = { x: pred.pos.x + (nv.pos.x - pred.pos.x) * 0.35, y: pred.pos.y + (nv.pos.y - pred.pos.y) * 0.35 }
-        nv.vel = { x: pred.vel.x + (nv.vel.x - pred.vel.x) * 0.5, y: pred.vel.y + (nv.vel.y - pred.vel.y) * 0.5 }
-      }
+    } else if (!nv.landed && !pred.landed && hydrated.warpIdx <= PHYSICS_WARP_MAX_IDX) {
+      const leadDt = latencySec() * warpNow
+      nv.pos = { x: nv.pos.x + nv.vel.x * leadDt, y: nv.pos.y + nv.vel.y * leadDt }
     }
+  } else if (nv && localCtrl.aimAngle !== undefined) {
+    nv.aimAngle = localCtrl.aimAngle
   }
 
   // Görsel konum yumuşatması: ağ paketi geldiğinde hiçbir roket kareler arası sıçramasın.
@@ -717,6 +844,17 @@ function applyClientSnapshot(raw: SnapshotWire, events?: GameEvent[]) {
   }
   for (const id of vesselVisualOffsets.keys()) {
     if (!aliveIds.has(id)) vesselVisualOffsets.delete(id)
+  }
+
+  if (hydrated.missingPartIds.length) {
+    const reqNow = performance.now()
+    for (const vid of hydrated.missingPartIds) {
+      const lastReq = lastPartsReqAt.get(vid) ?? 0
+      if (reqNow - lastReq >= 450) {
+        lastPartsReqAt.set(vid, reqNow)
+        sendRaw({ type: 'requestParts', vesselId: vid })
+      }
+    }
   }
 
   if (!clientSim) {
@@ -782,20 +920,42 @@ function stepClientExtrapolation(dtReal: number) {
           if (res.crash || res.touchdown) break
         }
       } else {
+        const n = Math.min(24, Math.max(1, Math.ceil(effDt / 0.04)))
+        const h = effDt / n
         const body = BODIES[v.bodyId]
-        const r = Math.hypot(v.pos.x, v.pos.y)
-        if (body && r > 1) {
-          const gFactor = -(body.mu / (r * r * r))
-          v.vel = {
-            x: v.vel.x + v.pos.x * gFactor * simDt,
-            y: v.vel.y + v.pos.y * gFactor * simDt,
+        for (let i = 0; i < n; i += 1) {
+          const r = Math.hypot(v.pos.x, v.pos.y)
+          if (body && r > 1) {
+            const gFactor = -(body.mu / (r * r * r))
+            v.vel = {
+              x: v.vel.x + v.pos.x * gFactor * h,
+              y: v.vel.y + v.pos.y * gFactor * h,
+            }
           }
+          v.pos = { x: v.pos.x + v.vel.x * h, y: v.pos.y + v.vel.y * h }
+          v.angle = wrapPi(v.angle + v.angVel * h)
         }
-        v.pos = { x: v.pos.x + v.vel.x * simDt, y: v.pos.y + v.vel.y * simDt }
-        v.angle = wrapPi(v.angle + v.angVel * simDt)
       }
     } else {
       stepRails(v, Math.min(simDt, 1800))
+    }
+  }
+
+  const projs = clientSim.gs.mp?.projectiles
+  if (projs?.length) {
+    const curClock = clientSim.clock ?? 0
+    for (const pr of projs) {
+      if (pr.ttl <= 0 || curClock - pr.born >= pr.ttl) continue
+      const pBody = BODIES[pr.bodyId]
+      const gScale = pr.gravityScale ?? 1
+      if (gScale !== 0 && pBody) {
+        const r = Math.hypot(pr.pos.x, pr.pos.y)
+        if (r > 1) {
+          const gFactor = -(pBody.mu / (r * r * r)) * gScale
+          pr.vel = { x: pr.vel.x + pr.pos.x * gFactor * simDt, y: pr.vel.y + pr.pos.y * gFactor * simDt }
+        }
+      }
+      pr.pos = { x: pr.pos.x + pr.vel.x * simDt, y: pr.pos.y + pr.vel.y * simDt }
     }
   }
 }
@@ -816,18 +976,29 @@ function tickLoop(now: number) {
       if (events.length) {
         pendingHostEvents.push(...events)
         notifyEvents(events)
-        if (events.some((e) => e.type === 'capture')) staticDirty = true
+        if (events.some((e) => e.type === 'capture' || e.type === 'colonyDestroyed')) staticDirty = true
         if (
           events.some(
-            (e) => e.type === 'capture' || e.type === 'kill' || e.type === 'victory' || e.type === 'crash',
+            (e) =>
+              e.type === 'capture' ||
+              e.type === 'colonyDestroyed' ||
+              e.type === 'kill' ||
+              e.type === 'victory' ||
+              e.type === 'crash' ||
+              e.type === 'weaponFire',
           )
         ) {
           urgentSnapshot = true
-          if (events.some((e) => e.type === 'victory')) forceImmediateSnapshot = true
+          if (events.some((e) => e.type === 'victory' || e.type === 'colonyDestroyed')) forceImmediateSnapshot = true
         }
       }
     }
-    if (forceImmediateSnapshot || urgentSnapshot || now - lastSnapshotSentAt >= 30) {
+    if (hostSim.colonyDirty) {
+      staticDirty = true
+      urgentSnapshot = true
+      hostSim.colonyDirty = false
+    }
+    if (forceImmediateSnapshot || urgentSnapshot || now - lastSnapshotSentAt >= 42) {
       sendHostSnapshot(now)
     }
     emitUi(false)
@@ -855,7 +1026,8 @@ function startLoops() {
   // kısılmaz. Ev sahibi başka sekmeye/pencereye geçse bile oyun 30 Hz'te akmaya devam eder.
   try {
     const src = 'setInterval(function(){postMessage(0)},33)'
-    bgWorker = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })))
+    bgWorkerUrl = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }))
+    bgWorker = new Worker(bgWorkerUrl)
     bgWorker.onmessage = () => {
       if (!inMatch || !isHost) return
       const now = performance.now()
@@ -879,6 +1051,10 @@ function stopLoops() {
     bgWorker.terminate()
     bgWorker = null
   }
+  if (bgWorkerUrl) {
+    URL.revokeObjectURL(bgWorkerUrl)
+    bgWorkerUrl = null
+  }
   lastLoopAt = 0
 }
 
@@ -886,8 +1062,11 @@ function handleServerMessage(msg: ServerMessage) {
   switch (msg.type) {
     case 'pong': {
       const rtt = Math.max(1, Math.round(Date.now() - msg.t))
-      pingMs = pingMs === null ? rtt : Math.round(pingMs * 0.5 + rtt * 0.5)
-      emitUi(true)
+      const nextPing = pingMs === null ? rtt : Math.round(pingMs * 0.5 + rtt * 0.5)
+      const changed = pingMs === null || Math.abs(nextPing - pingMs) >= 2
+      pingMs = nextPing
+      if (!inMatch) emitUi(true)
+      else if (changed) emitUi(false)
       return
     }
     case 'rooms':
@@ -902,7 +1081,9 @@ function handleServerMessage(msg: ServerMessage) {
       error = null
       chat = []
       clearPendingOptimistic()
-      localDesign = DEFAULT_DESIGN.map((p) => ({ ...p }))
+      localDesign = (msg.room.config.mode === 'orbital-warfare' ? COMBAT_PRESETS[0].design : DEFAULT_DESIGN).map((p) => ({
+        ...p,
+      }))
       localDesignCargo = {}
       emitUi(true)
       return
@@ -926,7 +1107,17 @@ function handleServerMessage(msg: ServerMessage) {
         hostSim.gs.vessels = hostSim.gs.vessels.filter(
           (v) => !(v.ownerId === msg.playerId && v.bodyId === 'earth' && v.landed),
         )
-        removeMultiplayerPlayer(hostSim.gs, msg.playerId)
+        const leaving = hostSim.gs.mp?.players[msg.playerId]
+        if (isWarfareMode(hostSim.gs) && hostSim.gs.mp?.started && (hostSim.gs.mp.config.warfareGoal ?? 'siege') === 'siege' && leaving) {
+          leaving.eliminated = true
+          if (leaving.earthBase) leaving.earthBase.destroyed = true
+          if (leaving.colonies) {
+            for (const col of Object.values(leaving.colonies)) if (col) col.destroyed = true
+          }
+          pushMpFeed(hostSim.gs, `${leaving.username} ayrıldı.`, leaving.color)
+        } else {
+          removeMultiplayerPlayer(hostSim.gs, msg.playerId)
+        }
         peerControls.delete(msg.playerId)
         staticDirty = true
         forceImmediateSnapshot = true
@@ -943,6 +1134,10 @@ function handleServerMessage(msg: ServerMessage) {
       isHost = false
       hostSim = null
       clientSim = null
+      peerControls.clear()
+      pendingHostEvents = []
+      chat = []
+      lastHostPing = 0
       error = msg.reason || 'Oda kapatıldı.'
       emitUi(true)
       return
@@ -954,6 +1149,10 @@ function handleServerMessage(msg: ServerMessage) {
       isHost = false
       hostSim = null
       clientSim = null
+      peerControls.clear()
+      pendingHostEvents = []
+      chat = []
+      lastHostPing = 0
       emitUi(true)
       return
     case 'matchStarted':
@@ -991,6 +1190,12 @@ function handleServerMessage(msg: ServerMessage) {
     case 'peerCtrl':
       if (isHost) {
         peerControls.set(msg.fromId, msg.ctrl)
+      }
+      return
+    case 'requestParts':
+      if (isHost && hostSim) {
+        sentPartsKey.get(hostSim)?.delete(msg.vesselId)
+        urgentSnapshot = true
       }
       return
     case 'snapshot':
@@ -1057,6 +1262,8 @@ export function leaveMpRoom(exitMode = false) {
   clientSim = null
   peerControls.clear()
   pendingHostEvents = []
+  chat = []
+  lastHostPing = 0
   error = null
   if (exitMode) active = false
   emitUi(true)
@@ -1084,14 +1291,41 @@ export function sendMpControls(ctrl: Controls) {
     return
   }
   const now = performance.now()
-  localCtrl = { rotate: ctrl.rotate, tx: ctrl.tx, ty: ctrl.ty }
+  localCtrl = {
+    rotate: ctrl.rotate,
+    tx: ctrl.tx,
+    ty: ctrl.ty,
+    ...(ctrl.fire ? { fire: true } : {}),
+    ...(ctrl.weaponKey ? { weaponKey: ctrl.weaponKey } : {}),
+    ...(ctrl.fireGroup !== undefined ? { fireGroup: ctrl.fireGroup } : {}),
+    ...(ctrl.aimAngle !== undefined ? { aimAngle: Math.round(ctrl.aimAngle * 10000) / 10000 } : {}),
+    ...(ctrl.aimDist !== undefined ? { aimDist: Math.round(ctrl.aimDist) } : {}),
+  }
   const own = ownActive(clientSim?.gs)
   const withAngle = own && !own.landed && effectiveAutopilot(own) === 'off'
   const changed =
-    ctrl.rotate !== lastSentCtrl.rotate || ctrl.tx !== lastSentCtrl.tx || ctrl.ty !== lastSentCtrl.ty
+    ctrl.rotate !== lastSentCtrl.rotate ||
+    ctrl.tx !== lastSentCtrl.tx ||
+    ctrl.ty !== lastSentCtrl.ty ||
+    Boolean(ctrl.fire) !== Boolean(lastSentCtrl.fire) ||
+    ctrl.weaponKey !== lastSentCtrl.weaponKey ||
+    (ctrl.fireGroup ?? 0) !== (lastSentCtrl.fireGroup ?? 0)
   const activeCtrl = ctrl.rotate !== 0 || ctrl.tx !== 0 || ctrl.ty !== 0
-  const turned = withAngle && Math.abs(wrapPi(own!.angle - lastSentAngle)) > 0.01 && now - lastSentCtrlAt >= 28
-  if (changed || turned || (activeCtrl && now - lastSentCtrlAt >= 28)) {
+  const aimMovedFiring =
+    Boolean(ctrl.fire) &&
+    ctrl.aimAngle !== undefined &&
+    (lastSentCtrl.aimAngle === undefined ||
+      Math.abs(wrapPi(ctrl.aimAngle - lastSentCtrl.aimAngle)) > 0.03 ||
+      Math.abs((ctrl.aimDist ?? 0) - (lastSentCtrl.aimDist ?? 0)) > 35) &&
+    now - lastSentCtrlAt >= 36
+  const aimMovedIdle =
+    !ctrl.fire &&
+    ctrl.aimAngle !== undefined &&
+    (lastSentCtrl.aimAngle === undefined || Math.abs(wrapPi(ctrl.aimAngle - lastSentCtrl.aimAngle)) > 0.08) &&
+    now - lastSentCtrlAt >= 120
+  const aimingChanged = aimMovedFiring || aimMovedIdle
+  const turned = withAngle && Math.abs(wrapPi(own!.angle - lastSentAngle)) > 0.06 && now - lastSentCtrlAt >= 48
+  if (changed || aimingChanged || turned || (activeCtrl && now - lastSentCtrlAt >= 42)) {
     lastSentCtrl = { ...localCtrl }
     lastSentCtrlAt = now
     const payload: Controls = withAngle
@@ -1140,6 +1374,24 @@ export function sendMpCommand(cmd: GameCommand): { ok: boolean; error?: string; 
   } else if (cmd.type === 'setActive') {
     pendingActive = { vesselId: cmd.vesselId, until: now + pendWindow() }
     if (clientSim) clientSim.gs.activeId = cmd.vesselId
+  } else if (cmd.type === 'setTarget') {
+    pendingTarget = { bodyId: cmd.bodyId, until: now + pendWindow() }
+    if (clientSim?.gs.mp) {
+      const me = clientSim.gs.mp.players[you.id]
+      if (me) me.targetBody = cmd.bodyId
+      clientSim.gs.targetBody = cmd.bodyId
+      const av = ownActive(clientSim.gs)
+      if (av) av.targetBody = cmd.bodyId
+    }
+  } else if (cmd.type === 'setWarpPref') {
+    pendingWarpPref = { warpIdx: cmd.warpIdx, anchor: cmd.anchor, until: now + pendWindow() }
+    if (clientSim?.gs.mp) {
+      const me = clientSim.gs.mp.players[you.id]
+      if (me) {
+        me.wantsWarpIdx = cmd.warpIdx
+        if (cmd.anchor !== undefined) me.warpAnchor = cmd.anchor
+      }
+    }
   } else if (cmd.type === 'setAutopilot') {
     pendingAutopilot = { vesselId: cmd.vesselId, mode: cmd.mode, until: now + pendWindow() }
     const v = clientSim?.gs.vessels.find((o) => o.id === cmd.vesselId && o.ownerId === you!.id)
@@ -1166,6 +1418,10 @@ export function isMpMatchActive(): boolean {
 
 export function isMpModeActive(): boolean {
   return active
+}
+
+export function isMpWarfareActive(): boolean {
+  return active && room?.config.mode === 'orbital-warfare'
 }
 
 export function getLocalMpDesign(): { design: PartInst[]; cargo: Record<string, number> } {

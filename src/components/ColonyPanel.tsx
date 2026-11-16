@@ -1,9 +1,22 @@
 import { useEffect, useMemo, useState } from 'react'
-import { baseReport, COLONY_SLOTS, colonyStationStatus, EARTH_MODULES, ensureSites, MODULE_BY_ID, MODULES, TIER_HINT } from '../game/base'
+import {
+  baseReport,
+  COLONY_SLOTS,
+  colonyHealthSummary,
+  colonyShieldCap,
+  colonyStationStatus,
+  EARTH_MODULES,
+  ensureSites,
+  MODULE_BY_ID,
+  MODULES,
+  TIER_HINT,
+  WARFARE_EARTH_MODULES,
+} from '../game/base'
 import { runCommand, useActiveGame } from '../game/store'
 import { BODIES, type BodyId, solarFlux } from '../nasa/bodies'
+import { isWarfareMode } from '../flight/combat'
 import { bodyAbsState, len } from '../flight/orbit'
-import { modulePrice } from '../flight/world'
+import { getActorBase, modulePrice } from '../flight/world'
 
 const fmt = (n: number) => Math.round(n).toLocaleString('tr-TR')
 const spriteUrl = (s: string) => `/assets/colony/${s}.png`
@@ -18,6 +31,7 @@ interface Props {
 export default function ColonyPanel({ initialBody = 'earth', onNotify }: Props) {
   const gs = useActiveGame()
   const myId = gs.ownerId ?? 'local'
+  const warfare = isWarfareMode(gs)
   const [bodyId, setBodyId] = useState<BodyId>(BODIES[initialBody]?.landable ? initialBody : 'earth')
   const [picked, setPicked] = useState<string | null>(null)
   const [selSlot, setSelSlot] = useState<number | null>(null)
@@ -35,6 +49,8 @@ export default function ColonyPanel({ initialBody = 'earth', onNotify }: Props) 
       for (const cap of Object.values(gs.mp.captures)) {
         if (cap?.ownerId === myId && BODIES[cap.bodyId]?.landable) ids.add(cap.bodyId)
       }
+      const myCols = gs.mp.players[myId]?.colonies
+      if (myCols) for (const id of Object.keys(myCols) as BodyId[]) if (BODIES[id]?.landable) ids.add(id)
     }
     for (const v of gs.vessels) {
       if (v.landed && BODIES[v.bodyId]?.landable && (!gs.mp || v.ownerId === myId)) ids.add(v.bodyId)
@@ -43,17 +59,22 @@ export default function ColonyPanel({ initialBody = 'earth', onNotify }: Props) 
   }, [gs.bases, gs.vessels, gs.mp, myId])
 
   const body = BODIES[bodyId]
-  const base = gs.mp && bodyId === 'earth' ? gs.mp.players[myId]?.earthBase : gs.bases[bodyId]
+  const base = getActorBase(gs, bodyId, myId)
   const landedHere = gs.vessels.some((v) => v.landed && v.bodyId === bodyId && (!gs.mp || v.ownerId === myId))
-  const mpCapOwner = gs.mp && bodyId !== 'earth' ? gs.mp.captures[bodyId]?.ownerId : undefined
-  const canBuild =
-    bodyId === 'earth'
+  const mpCapOwner = gs.mp && !warfare && bodyId !== 'earth' ? gs.mp.captures[bodyId]?.ownerId : undefined
+  const canBuild = base?.destroyed
+    ? false
+    : bodyId === 'earth'
       ? true
       : gs.mp
-        ? mpCapOwner === myId || (!mpCapOwner && landedHere)
+        ? warfare
+          ? landedHere || !!base
+          : mpCapOwner === myId || (!mpCapOwner && landedHere)
         : landedHere || !!base
   const flux = solarFlux(len(bodyAbsState(bodyId, gs.time).r))
   const sites = base ? ensureSites(base) : Array.from({ length: COLONY_SLOTS }, () => null)
+  const colShieldCap = colonyShieldCap(base, flux)
+  const colHealth = base ? colonyHealthSummary(base) : { hp: 0, maxHp: 0, buildings: 0 }
   const report = base ? baseReport(base, flux) : null
   const stationStatus = colonyStationStatus(base, flux)
   const idx = tabs.indexOf(bodyId)
@@ -75,7 +96,8 @@ export default function ColonyPanel({ initialBody = 'earth', onNotify }: Props) 
   const remove = (slot: number) => {
     const res = runCommand({ type: 'removeGridModule', bodyId, x: slot })
     if (res.error) say(res.error, 'warn')
-    else say('Yapı söküldü; bedelinin %60\'ı iade edildi.')
+    else if (bodyId === 'earth') say('Yapı söküldü; bedelinin %60\'ı iade edildi.')
+    else say('Yapı söküldü; depoya kaldırıldı.')
     setSelSlot(null)
   }
 
@@ -109,6 +131,12 @@ export default function ColonyPanel({ initialBody = 'earth', onNotify }: Props) 
           </div>
           <div className="colony-stat plain"><span>💰 Gelir</span><b>{fmt(report?.incomePerHour ?? 0)} ₡/sa</b></div>
           <div className="colony-stat plain"><span>⛏️ Maden</span><b>{(base?.ore ?? 0).toFixed(1)} t</b></div>
+          {warfare && colHealth.maxHp > 0 && (
+            <div className="colony-stat plain"><span>🧱 Yapılar</span><b>{Math.round(colHealth.hp)}/{colHealth.maxHp}</b></div>
+          )}
+          {colShieldCap > 0 && (
+            <div className="colony-stat plain"><span>🛡️ Kubbe</span><b>{Math.round(base?.shield ?? 0)}/{colShieldCap}</b></div>
+          )}
         </div>
       </header>
 
@@ -149,6 +177,11 @@ export default function ColonyPanel({ initialBody = 'earth', onNotify }: Props) 
                   <>
                     <img src={spriteUrl(def.sprite)} alt="" draggable={false} className={powered ? '' : 'is-off'} />
                     {!powered && <span className="colony-nopower" title="Elektrik yetmiyor">⚡✕</span>}
+                    {def.hp && base?.siteHp?.[i] != null && base.siteHp[i]! < def.hp && (
+                      <span className="colony-slot-hp">
+                        <i style={{ width: `${Math.max(0, Math.min(100, (base.siteHp[i]! / def.hp) * 100))}%` }} />
+                      </span>
+                    )}
                   </>
                 ) : (
                   <span className="colony-plus">＋</span>
@@ -159,9 +192,11 @@ export default function ColonyPanel({ initialBody = 'earth', onNotify }: Props) 
         </div>
         {!canBuild && (
           <div className="colony-locked">
-            {gs.mp && mpCapOwner && mpCapOwner !== myId
-              ? `${body.name} şu an başka bir oyuncunun kolonisi — burada koloni kuramazsın.`
-              : `Buraya üs kurmak için önce ${body.name} yüzeyine bir araç indir.`}
+            {base?.destroyed
+              ? `${body.name} üssün düşman saldırısında imha edildi!`
+              : gs.mp && mpCapOwner && mpCapOwner !== myId
+                ? `${body.name} şu an başka bir oyuncunun kolonisi — burada koloni kuramazsın.`
+                : `Buraya üs kurmak için önce ${body.name} yüzeyine bir araç indir.`}
           </div>
         )}
       </div>
@@ -192,7 +227,7 @@ export default function ColonyPanel({ initialBody = 'earth', onNotify }: Props) 
       <div className="colony-build">
         <h3>İnşaat</h3>
         <div className="colony-cards">
-          {MODULES.filter((m) => bodyId !== 'earth' || EARTH_MODULES.includes(m.id)).map((m) => {
+          {MODULES.filter((m) => (bodyId === 'earth' ? (warfare ? WARFARE_EARTH_MODULES : EARTH_MODULES).includes(m.id) : !m.warfare || warfare)).map((m) => {
             const stock = base?.stock?.[m.id] ?? 0
             const tierLocked = false
             const cargoOnly = bodyId !== 'earth' && !stock

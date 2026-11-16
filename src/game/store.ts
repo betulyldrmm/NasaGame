@@ -1,10 +1,10 @@
 /** Tekil oyun durumu, hesap oturumu ve hesaba özel kalıcılık. */
 import { useSyncExternalStore } from 'react'
-import { SHIP_SLOT_COUNT } from './data'
+import { PART_BY_ID, SHIP_SLOT_COUNT } from './data'
 import { emptyBase, ensureSites, STARTER_EARTH_SITES, syncModules } from './base'
 import { INITIAL_TECH } from './tech'
 import type { GameCommand, GameState } from './types'
-import type { BodyId } from '../nasa/bodies'
+import { BODIES, type BodyId } from '../nasa/bodies'
 import { PAD_ANGLE } from '../flight/physics'
 import { dispatchCommand, newGame, type Sim, tickBasesOnly } from '../flight/world'
 import { getMpSim, isMpMatchActive, sendMpCommand, useMultiplayer } from '../flight/mpClient'
@@ -97,17 +97,30 @@ export function normalizeGameState(raw: unknown): GameState {
   if (!raw || typeof raw !== 'object') return base
   const gs = raw as Partial<GameState>
   if (!Array.isArray(gs.vessels) || !Array.isArray(gs.design)) return base
+  const sanitizeParts = <T extends { def?: string }>(arr: T[]) => arr.filter((p) => p && typeof p.def === 'string' && Boolean(PART_BY_ID[p.def]))
+  const targetBody = gs.targetBody && BODIES[gs.targetBody] && gs.targetBody !== 'sun' ? gs.targetBody : 'moon'
   const merged: GameState = {
     ...base,
     ...gs,
+    money: typeof gs.money === 'number' && Number.isFinite(gs.money) ? gs.money : base.money,
+    time: typeof gs.time === 'number' && Number.isFinite(gs.time) ? gs.time : 0,
+    nextId: typeof gs.nextId === 'number' && Number.isFinite(gs.nextId) && gs.nextId >= 1 ? Math.floor(gs.nextId) : base.nextId,
+    design: sanitizeParts(gs.design),
     bases: { ...(gs.bases ?? {}) },
     missionsDone: Array.isArray(gs.missionsDone) ? [...gs.missionsDone] : [],
     techDone: [INITIAL_TECH],
     designCargo: gs.designCargo ? { ...gs.designCargo } : {},
-    targetBody: gs.targetBody ?? 'moon',
-    shipSlots: Array.from({ length: SHIP_SLOT_COUNT }, (_, i) => (Array.isArray(gs.shipSlots) ? gs.shipSlots[i] ?? null : null)),
+    targetBody,
+    shipSlots: Array.from({ length: SHIP_SLOT_COUNT }, (_, i) => {
+      const slot = Array.isArray(gs.shipSlots) ? gs.shipSlots[i] ?? null : null
+      if (!slot || !Array.isArray(slot.design)) return null
+      return { ...slot, design: sanitizeParts(slot.design) }
+    }),
   }
-  merged.vessels = merged.vessels.filter((v) => !v.debris)
+  merged.vessels = merged.vessels
+    .filter((v) => v && !v.debris && v.bodyId && Boolean(BODIES[v.bodyId]) && Array.isArray(v.parts))
+    .map((v) => ({ ...v, parts: sanitizeParts(v.parts) }))
+    .filter((v) => v.parts.length > 0)
   if (!merged.bases.earth) {
     merged.bases.earth = emptyBase(PAD_ANGLE)
     merged.bases.earth.sites = [...STARTER_EARTH_SITES]
@@ -145,10 +158,15 @@ function loadLocalForUser(username: string): GameState | null {
 
 function loadFromAccountSave(username: string, serverSave: unknown) {
   offlineGain = null
-  if (serverSave && typeof serverSave === 'object') {
+  const localSave = loadLocalForUser(username)
+  const serverTs =
+    serverSave && typeof serverSave === 'object' && typeof (serverSave as Partial<GameState>).lastSavedAt === 'number'
+      ? (serverSave as Partial<GameState>).lastSavedAt!
+      : 0
+  if (serverSave && typeof serverSave === 'object' && (!localSave || serverTs >= (localSave.lastSavedAt ?? 0))) {
     sim.gs = normalizeGameState(serverSave)
   } else {
-    sim.gs = loadLocalForUser(username) ?? newGame(username)
+    sim.gs = localSave ?? newGame(username)
   }
   sim.gs.ownerId = username
   sim.gs.players = { ...(sim.gs.players ?? {}), [username]: { id: username, username } }
@@ -187,10 +205,10 @@ export async function initAuth() {
     if (res.ok) {
       const data = (await res.json()) as { user: AuthUser | null }
       if (data.user) {
-        authUser = data.user
-        const saveRes = await fetch('/api/save')
-        const saveData = saveRes.ok ? await saveRes.json() : null
+        const saveRes = await fetch('/api/save').catch(() => null)
+        const saveData = saveRes && saveRes.ok ? await saveRes.json().catch(() => null) : null
         loadFromAccountSave(data.user.username, saveData)
+        authUser = data.user
       }
     }
   } catch {
@@ -248,19 +266,26 @@ export async function registerAccount(username: string, password: string): Promi
   }
 }
 
+let loggingOut = false
 export async function logoutAccount() {
-  await saveGame(true)
+  if (loggingOut) return
+  loggingOut = true
   try {
-    await fetch('/api/auth/logout', { method: 'POST' })
-  } catch {
-    /* yoksay */
+    await saveGame(true)
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' })
+    } catch {
+      /* yoksay */
+    }
+    authUser = null
+    offlineGain = null
+    sim.gs = newGame()
+    sim.warpIdx = 0
+    sim.firing.clear()
+    bump()
+  } finally {
+    loggingOut = false
   }
-  authUser = null
-  offlineGain = null
-  sim.gs = newGame()
-  sim.warpIdx = 0
-  sim.firing.clear()
-  bump()
 }
 
 export function resetGame() {

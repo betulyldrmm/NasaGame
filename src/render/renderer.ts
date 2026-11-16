@@ -1,11 +1,12 @@
 /** Uçuş görünümü ve uzay haritası çizimi (Canvas 2D, 2.5D gölgelendirme). */
-import { partDef } from '../game/data'
-import { isBodyColonized, MODULE_BY_ID } from '../game/base'
-import type { Vessel } from '../game/types'
+import { partDef, partMaxHp } from '../game/data'
+import { colonyShieldCap, isBodyColonized, MODULE_BY_ID } from '../game/base'
+import type { Projectile, Vessel } from '../game/types'
 import { vesselStats } from '../game/vessel'
 import { bodyAbsState, len, stateAtAnomaly, type Vec, wrapPi } from '../flight/orbit'
 import { airDensity, PAD_ANGLE, situation, terrainHeight } from '../flight/physics'
 import type { Patch } from '../flight/predict'
+import { allColoniesOnBody, colonyCenterWorldPos, colonySlotOffset, findLockTarget, isWarfareMode } from '../flight/combat'
 import { padAngleForSlot, playerPadAngle } from '../flight/multiplayerSim'
 import { getVisualPos } from '../flight/mpClient'
 import { activeVessel, type Sim } from '../flight/world'
@@ -31,6 +32,10 @@ export interface View {
   rcsTx: number
   /** uçuş kamerasının fareyle kaydırılması (ekran pikseli, roket ekranda kalacak şekilde sınırlı) */
   camPan?: Vec
+  /** nişan alınan imleç ekran konumu (silah hedeflemesi ve nişangah için) */
+  aimScreen?: Vec
+  /** seçili silah türü (Füze kilidi halkası için) */
+  selectedWeapon?: string
 }
 
 /** Kaydırma sınırı: roket ekranın kenarına kadar gidebilir ama dışına çıkamaz. */
@@ -193,6 +198,30 @@ const toScreen = (c: Cam, p: Vec): Vec => {
   return { x: c.w / 2 + (dx * cs - dy * sn) * c.z, y: c.h / 2 - (dx * sn + dy * cs) * c.z }
 }
 
+const screenToWorld = (c: Cam, sx: number, sy: number): Vec => {
+  const ux = (sx - c.w / 2) / c.z
+  const uy = -(sy - c.h / 2) / c.z
+  const cs = Math.cos(c.rot)
+  const sn = Math.sin(c.rot)
+  return { x: c.cx + ux * cs + uy * sn, y: c.cy - ux * sn + uy * cs }
+}
+
+/** Uçuş ekranı imleç pikselinden roketin hedefleyeceği dünya açısını ve mesafesini (m) hesaplar. */
+export function aimAngleFromScreen(frame: FlightFrame | null, v: Vessel | null, sx: number, sy: number): number | undefined {
+  return aimInfoFromScreen(frame, v, sx, sy)?.angle
+}
+
+export function aimInfoFromScreen(frame: FlightFrame | null, v: Vessel | null, sx: number, sy: number): { angle: number; dist: number } | undefined {
+  if (!frame?.cam || !v) return undefined
+  const wp = screenToWorld(frame.cam, sx, sy)
+  const vp = getVisualPos(v)
+  const dx = wp.x - vp.x
+  const dy = wp.y - vp.y
+  const dist = Math.hypot(dx, dy)
+  if (dist < 0.5) return undefined
+  return { angle: Math.atan2(dy, dx), dist }
+}
+
 /** Yüzeydeki bir noktada yerel çerçeve: +x teğet, −y yukarı (radyal), birim metre. */
 function withSurfaceFrame(ctx: Ctx, cam: Cam, body: BodyDef, theta: number, fn: () => void) {
   const r = body.radius + terrainHeight(body.id, theta)
@@ -251,15 +280,36 @@ function sprite(name: string): HTMLImageElement | null {
 }
 
 /** Koloni yapıları: koloni ekranındaki aynı piksel-art görseller yüzeyde de durur. */
-function drawBaseSites(ctx: Ctx, sites: (string | null)[]) {
+function drawBaseSites(
+  ctx: Ctx,
+  sites: (string | null)[],
+  opts: { compact?: boolean; siteHp?: (number | null)[]; clock?: number } = {},
+) {
   ctx.imageSmoothingEnabled = false
   sites.forEach((id, i) => {
     const def = id ? MODULE_BY_ID[id] : null
     const img = def ? sprite(def.sprite) : null
-    if (!img) return
-    const w = 11
+    if (!img || !def) return
+    const w = opts.compact ? 9.2 : 11
     const h = (w * img.naturalHeight) / img.naturalWidth
-    ctx.drawImage(img, 28 + i * 13 - w / 2, -h + 0.3, w, h)
+    const x = colonySlotOffset(i, !!opts.compact)
+    ctx.drawImage(img, x - w / 2, -h + 0.3, w, h)
+    const maxHp = def.hp ?? 320
+    const curHp = opts.siteHp?.[i] ?? maxHp
+    if (curHp < maxHp) {
+      const frac = Math.max(0, Math.min(1, curHp / maxHp))
+      ctx.fillStyle = 'rgba(10,14,22,.82)'
+      ctx.fillRect(x - w * 0.45, -h - 2.4, w * 0.9, 1.3)
+      ctx.fillStyle = frac > 0.5 ? '#4ade80' : frac > 0.25 ? '#fbbf24' : '#f87171'
+      ctx.fillRect(x - w * 0.45, -h - 2.4, w * 0.9 * frac, 1.3)
+      if (frac < 0.5 && opts.clock !== undefined) {
+        const rise = ((opts.clock * 4 + i * 0.7) % 1) * 5
+        ctx.fillStyle = `rgba(90,95,105,${(0.55 * (1 - rise / 5)).toFixed(2)})`
+        ctx.beginPath()
+        ctx.arc(x + Math.sin(opts.clock * 3 + i) * 1.1, -h * 0.55 - rise, 1.4 + rise * 0.25, 0, Math.PI * 2)
+        ctx.fill()
+      }
+    }
   })
   ctx.imageSmoothingEnabled = true
 }
@@ -410,12 +460,128 @@ function drawSkyEggs(ctx: Ctx, sim: Sim, view: View, v: Vessel | null) {
   }
 }
 
-/** Patlamalar: ateş topu, şok dalgası, kıvılcımlar ve duman. */
+/** Patlamalar ve muharebe efektleri: ateş topu, ışın, kalkan halkası ve isabet kıvılcımları. */
 function drawBooms(ctx: Ctx, sim: Sim, cam: Cam, bodyId: BodyId) {
   const clock = sim.clock ?? 0
   for (const f of sim.fx ?? []) {
-    if (f.kind !== 'boom' || f.bodyId !== bodyId) continue
+    if (f.bodyId !== bodyId) continue
     const age = clock - f.born
+    if (f.kind === 'muzzle') {
+      const life = 0.11
+      if (age < 0 || age > life || f.x2 === undefined || f.y2 === undefined) continue
+      const a = 1 - age / life
+      const p0 = toScreen(cam, f)
+      const p1 = toScreen(cam, { x: f.x2, y: f.y2 })
+      const ang = Math.atan2(p1.y - p0.y, p1.x - p0.x)
+      const lenPx = Math.max(8, Math.hypot(p1.x - p0.x, p1.y - p0.y))
+      ctx.save()
+      ctx.translate(p0.x, p0.y)
+      ctx.rotate(ang)
+      ctx.globalCompositeOperation = 'lighter'
+      ctx.globalAlpha = a
+      const wCone = Math.max(3, f.size * cam.z * 0.55) * a
+      ctx.fillStyle = f.color ?? '#fde047'
+      ctx.beginPath()
+      ctx.moveTo(0, -wCone)
+      ctx.lineTo(lenPx, 0)
+      ctx.lineTo(0, wCone)
+      ctx.closePath()
+      ctx.fill()
+      ctx.fillStyle = '#ffffff'
+      ctx.beginPath()
+      ctx.arc(lenPx * 0.15, 0, Math.max(2, wCone * 0.6), 0, 6.283)
+      ctx.fill()
+      ctx.restore()
+      continue
+    }
+    if (f.kind === 'beam') {
+      const giant = f.size >= 5
+      const life = giant ? 0.34 : 0.22
+      if (age < 0 || age > life || f.x2 === undefined || f.y2 === undefined) continue
+      const a = 1 - age / life
+      const p0 = toScreen(cam, f)
+      const p1 = toScreen(cam, { x: f.x2, y: f.y2 })
+      const pulse = 0.85 + 0.15 * Math.sin(clock * 46)
+      ctx.save()
+      ctx.globalCompositeOperation = 'lighter'
+      ctx.lineCap = 'round'
+      // Dış plazma halesi
+      ctx.globalAlpha = a * (giant ? 0.55 : 0.45)
+      ctx.strokeStyle = f.color ?? '#fb7185'
+      ctx.lineWidth = Math.max(giant ? 10 : 4.5, f.size * cam.z * (giant ? 1.85 : 1.5) * pulse) * a
+      ctx.beginPath()
+      ctx.moveTo(p0.x, p0.y)
+      ctx.lineTo(p1.x, p1.y)
+      ctx.stroke()
+      // Orta ışın
+      ctx.globalAlpha = a * 0.9
+      ctx.strokeStyle = f.color ?? '#fb7185'
+      ctx.lineWidth = Math.max(giant ? 5 : 2.5, f.size * cam.z * 0.9 * pulse) * a
+      ctx.beginPath()
+      ctx.moveTo(p0.x, p0.y)
+      ctx.lineTo(p1.x, p1.y)
+      ctx.stroke()
+      // Kavurucu beyaz çekirdek
+      ctx.globalAlpha = a
+      ctx.strokeStyle = '#ffffff'
+      ctx.lineWidth = Math.max(giant ? 2.4 : 1.2, f.size * cam.z * 0.36) * a
+      ctx.beginPath()
+      ctx.moveTo(p0.x, p0.y)
+      ctx.lineTo(p1.x, p1.y)
+      ctx.stroke()
+      // Namlu ve hedef yanık parıltıları
+      const endR = Math.max(giant ? 12 : 5, f.size * cam.z * 1.1) * a
+      const eg = ctx.createRadialGradient(p1.x, p1.y, 0, p1.x, p1.y, endR)
+      eg.addColorStop(0, '#ffffff')
+      eg.addColorStop(0.45, f.color ?? '#fb7185')
+      eg.addColorStop(1, 'rgba(0,0,0,0)')
+      ctx.fillStyle = eg
+      ctx.beginPath()
+      ctx.arc(p1.x, p1.y, endR, 0, 6.283)
+      ctx.fill()
+      ctx.restore()
+      continue
+    }
+    if (f.kind === 'hit') {
+      const life = 0.28
+      if (age < 0 || age > life) continue
+      const t = age / life
+      const p = toScreen(cam, f)
+      const R = Math.max(5, f.size * cam.z) * (0.4 + t * 1.4)
+      ctx.save()
+      ctx.translate(p.x, p.y)
+      ctx.globalCompositeOperation = 'lighter'
+      ctx.globalAlpha = 1 - t
+      ctx.strokeStyle = f.color ?? '#ffad57'
+      ctx.lineWidth = 1.6
+      for (let i = 0; i < 6; i += 1) {
+        const a = hash(f.born * 13 + i * 2.3) * 6.283
+        ctx.beginPath()
+        ctx.moveTo(Math.cos(a) * R * 0.25, Math.sin(a) * R * 0.25)
+        ctx.lineTo(Math.cos(a) * R, Math.sin(a) * R)
+        ctx.stroke()
+      }
+      ctx.restore()
+      continue
+    }
+    if (f.kind === 'shield') {
+      const life = 0.45
+      if (age < 0 || age > life) continue
+      const t = age / life
+      const p = toScreen(cam, f)
+      const R = Math.max(8, f.size * cam.z * (0.65 + t * 0.55))
+      ctx.save()
+      ctx.globalCompositeOperation = 'lighter'
+      ctx.globalAlpha = (1 - t) * 0.8
+      ctx.strokeStyle = f.color ?? '#38d9e8'
+      ctx.lineWidth = Math.max(1.5, 3 * (1 - t))
+      ctx.beginPath()
+      ctx.arc(p.x, p.y, R, 0, 6.283)
+      ctx.stroke()
+      ctx.restore()
+      continue
+    }
+    if (f.kind !== 'boom') continue
     const life = 1.25
     if (age < 0 || age > life) continue
     const t = age / life
@@ -578,8 +744,9 @@ function drawTerrain(ctx: Ctx, cam: Cam, body: BodyDef, focusTheta: number, sim:
   }
   if (body.id === 'earth' && cam.z > 0.12) {
     if (sim.gs.mp) {
+      const mode = sim.gs.mp.config.mode
       for (const p of Object.values(sim.gs.mp.players)) {
-        const thetaPad = padAngleForSlot(p.slot)
+        const thetaPad = padAngleForSlot(p.slot, mode)
         withSurfaceFrame(ctx, cam, body, thetaPad, () => {
           drawPad(ctx)
           ctx.fillStyle = p.color
@@ -596,21 +763,74 @@ function drawTerrain(ctx: Ctx, cam: Cam, body: BodyDef, focusTheta: number, sim:
         drawPad(ctx)
       })
     }
-    withSurfaceFrame(ctx, cam, body, PAD_ANGLE, () => {
-      const launch = (sim.fx ?? []).find((f) => f.kind === 'tower')
-      const age = launch ? (sim.clock ?? 0) - launch.born : -1
-      if (!sim.towerGone || (age >= 0 && age < 9)) {
-        ctx.save()
-        ctx.translate(36, age >= 0 ? -4 * age * age : 0)
-        drawWaterTower(ctx, age >= 0 ? 1 + 0.2 * Math.sin(age * 40) : 0)
-        ctx.restore()
-      }
-    })
+    if (!isWarfareMode(sim.gs)) {
+      withSurfaceFrame(ctx, cam, body, PAD_ANGLE, () => {
+        const launch = (sim.fx ?? []).find((f) => f.kind === 'tower')
+        const age = launch ? (sim.clock ?? 0) - launch.born : -1
+        if (!sim.towerGone || (age >= 0 && age < 9)) {
+          ctx.save()
+          ctx.translate(36, age >= 0 ? -4 * age * age : 0)
+          drawWaterTower(ctx, age >= 0 ? 1 + 0.2 * Math.sin(age * 40) : 0)
+          ctx.restore()
+        }
+      })
+    }
   }
-  const earthBase = sim.gs.mp ? sim.gs.mp.players[sim.gs.ownerId ?? '']?.earthBase : sim.gs.bases[body.id]
-  const base = body.id === 'earth' ? earthBase : sim.gs.bases[body.id]
-  const baseAngle = body.id === 'earth' && sim.gs.mp ? playerPadAngle(sim.gs, sim.gs.ownerId) : base?.siteAngle ?? PAD_ANGLE
-  if (base && cam.z > 0.2) withSurfaceFrame(ctx, cam, body, baseAngle, () => drawBaseSites(ctx, base.sites ?? []))
+  if (sim.gs.mp && isWarfareMode(sim.gs) && cam.z > 0.14) {
+    for (const col of allColoniesOnBody(sim.gs, body.id)) {
+      const owner = sim.gs.mp.players[col.ownerId]
+      const colAngle = col.base.siteAngle ?? (col.isEarth && owner ? padAngleForSlot(owner.slot, 'orbital-warfare') : PAD_ANGLE)
+      const cx = colonySlotOffset(3.5, true)
+      withSurfaceFrame(ctx, cam, body, colAngle, () => {
+        if (col.base.destroyed) {
+          ctx.fillStyle = 'rgba(45,48,56,.92)'
+          for (let i = 0; i < 6; i += 1) {
+            const x = colonySlotOffset(i, true)
+            ctx.fillRect(x - 3.5, -2.5, 7, 2.5)
+          }
+          if (cam.z > 0.35 && owner) {
+            ctx.fillStyle = '#f87171'
+            ctx.font = 'bold 8px "DM Mono", monospace'
+            ctx.textAlign = 'center'
+            ctx.fillText(`💀 ${owner.username}`, cx, -12)
+          }
+          return
+        }
+        drawBaseSites(ctx, col.base.sites ?? [], { compact: true, siteHp: col.base.siteHp, clock })
+        const shCap = colonyShieldCap(col.base, solarFlux(len(bodyAbsState(body.id, sim.gs.time).r)))
+        if ((col.base.shield ?? 0) > 0 && shCap > 0) {
+          const shFrac = Math.min(1, (col.base.shield ?? 0) / shCap)
+          ctx.save()
+          ctx.strokeStyle = `rgba(56,217,232,${(0.35 + 0.45 * shFrac).toFixed(2)})`
+          ctx.fillStyle = `rgba(56,217,232,${(0.06 + 0.08 * shFrac).toFixed(2)})`
+          ctx.lineWidth = 1.2
+          ctx.beginPath()
+          ctx.arc(cx, 0, 52, Math.PI, 0)
+          ctx.fill()
+          ctx.stroke()
+          ctx.restore()
+        }
+        if ((col.base.stunUntil ?? 0) > clock) {
+          ctx.strokeStyle = '#60a5fa'
+          ctx.lineWidth = 1.1
+          ctx.beginPath()
+          ctx.arc(cx + Math.sin(clock * 18) * 3, -12, 16, Math.PI * 1.15, Math.PI * 1.85)
+          ctx.stroke()
+        }
+        if (cam.z > 0.35 && owner) {
+          ctx.fillStyle = owner.color
+          ctx.font = 'bold 8px "DM Mono", monospace'
+          ctx.textAlign = 'center'
+          ctx.fillText(`🏰 ${owner.username}`, cx, col.base.shield ? -56 : -22)
+        }
+      })
+    }
+  } else {
+    const earthBase = sim.gs.mp ? sim.gs.mp.players[sim.gs.ownerId ?? '']?.earthBase : sim.gs.bases[body.id]
+    const base = body.id === 'earth' ? earthBase : sim.gs.bases[body.id]
+    const baseAngle = body.id === 'earth' && sim.gs.mp ? playerPadAngle(sim.gs, sim.gs.ownerId) : base?.siteAngle ?? PAD_ANGLE
+    if (base && cam.z > 0.2) withSurfaceFrame(ctx, cam, body, baseAngle, () => drawBaseSites(ctx, base.sites ?? [], { clock }))
+  }
 
   // Çok oyunculu bayrak direği: ele geçirilmiş veya fethedilmekte olan gezegen yüzeyinde dalgalanır
   const cap = sim.gs.mp?.captures[body.id]
@@ -702,6 +922,120 @@ function drawCruiseWarp(ctx: Ctx, sim: Sim, view: View, camRot: number) {
   ctx.restore()
 }
 
+function drawProjectiles(ctx: Ctx, sim: Sim, cam: Cam, bodyId: BodyId) {
+  const projs: Projectile[] = sim.gs.mp?.projectiles ?? sim.gs.projectiles ?? []
+  if (!projs.length) return
+  for (const pr of projs) {
+    if (pr.bodyId !== bodyId || pr.ttl <= 0) continue
+    const p = toScreen(cam, pr.pos)
+    if (p.x < -80 || p.x > cam.w + 80 || p.y < -80 || p.y > cam.h + 80) continue
+    const spd = Math.hypot(pr.vel.x, pr.vel.y)
+    const dirW = spd > 1 ? Math.atan2(pr.vel.y, pr.vel.x) : 0
+    const ang = -(dirW + cam.rot)
+    ctx.save()
+    ctx.translate(p.x, p.y)
+    ctx.rotate(ang)
+    ctx.globalCompositeOperation = 'lighter'
+    const col = pr.color || '#fbbf24'
+    if (pr.kind === 'railgun') {
+      const L = Math.max(22, Math.min(64, spd * cam.z * 0.042))
+      const g = ctx.createLinearGradient(-L, 0, L * 0.35, 0)
+      g.addColorStop(0, 'rgba(56,217,232,0)')
+      g.addColorStop(0.6, col)
+      g.addColorStop(1, '#ffffff')
+      ctx.strokeStyle = g
+      ctx.lineWidth = Math.max(2.6, cam.z * 0.5)
+      ctx.beginPath()
+      ctx.moveTo(-L, 0)
+      ctx.lineTo(L * 0.35, 0)
+      ctx.stroke()
+      ctx.strokeStyle = 'rgba(224,242,254,.55)'
+      ctx.lineWidth = 1.2
+      for (const rx of [-L * 0.25, -L * 0.55]) {
+        ctx.beginPath()
+        ctx.moveTo(rx - 4, -5)
+        ctx.lineTo(rx + 2, 0)
+        ctx.lineTo(rx - 4, 5)
+        ctx.stroke()
+      }
+    } else if (pr.kind === 'plasma' || pr.kind === 'emp') {
+      const r = Math.max(4, (pr.kind === 'emp' ? 0.95 : 0.75) * cam.z)
+      const g = ctx.createRadialGradient(0, 0, 0, 0, 0, r * 2.4)
+      g.addColorStop(0, '#ffffff')
+      g.addColorStop(0.42, col)
+      g.addColorStop(1, 'rgba(0,0,0,0)')
+      ctx.fillStyle = g
+      ctx.beginPath()
+      ctx.arc(0, 0, r * 2.4, 0, 6.283)
+      ctx.fill()
+      ctx.strokeStyle = col
+      ctx.lineWidth = Math.max(1.5, r * 0.45)
+      ctx.beginPath()
+      ctx.moveTo(-r * 3.8, 0)
+      ctx.lineTo(0, 0)
+      ctx.stroke()
+      if (pr.kind === 'emp') {
+        ctx.strokeStyle = '#93c5fd'
+        ctx.lineWidth = 1.3
+        ctx.beginPath()
+        ctx.arc(0, 0, r * 1.5, sim.clock ?? 0, (sim.clock ?? 0) + 4.4)
+        ctx.stroke()
+      }
+    } else if (pr.kind === 'missile' || pr.kind === 'torpedo' || pr.kind === 'rocket') {
+      const s = pr.kind === 'torpedo' ? 1.6 : pr.kind === 'missile' ? 1.3 : 0.95
+      const rPx = Math.max(3, cam.z * 0.45 * s)
+      // Duman izi boncukları
+      ctx.globalCompositeOperation = 'source-over'
+      for (let b = 1; b <= 4; b += 1) {
+        ctx.fillStyle = `rgba(210,220,235,${(0.32 - b * 0.06).toFixed(2)})`
+        ctx.beginPath()
+        ctx.arc(-rPx * (2.6 + b * 2.2), Math.sin((sim.clock ?? 0) * 18 + b) * 1.2, rPx * (0.45 + b * 0.14), 0, 6.283)
+        ctx.fill()
+      }
+      ctx.globalCompositeOperation = 'lighter'
+      ctx.fillStyle = '#ff9a3c'
+      ctx.beginPath()
+      ctx.moveTo(-rPx * 1.4, 0)
+      ctx.lineTo(-rPx * 3.6 - Math.random() * rPx, -rPx * 0.6)
+      ctx.lineTo(-rPx * 3.6 - Math.random() * rPx, rPx * 0.6)
+      ctx.closePath()
+      ctx.fill()
+      ctx.fillStyle = col
+      ctx.beginPath()
+      ctx.moveTo(rPx * 1.9, 0)
+      ctx.lineTo(-rPx * 1.4, -rPx * 0.68)
+      ctx.lineTo(-rPx * 1.4, rPx * 0.68)
+      ctx.closePath()
+      ctx.fill()
+    } else {
+      const L = pr.kind === 'flak' ? Math.max(7, Math.min(20, cam.z * 1.8)) : Math.max(11, Math.min(30, spd * cam.z * 0.03))
+      ctx.strokeStyle = col
+      ctx.lineWidth = pr.dmg >= 100 ? Math.max(2.6, cam.z * 0.45) : Math.max(1.7, cam.z * 0.3)
+      ctx.lineCap = 'round'
+      ctx.beginPath()
+      ctx.moveTo(-L, 0)
+      ctx.lineTo(0, 0)
+      ctx.stroke()
+      ctx.fillStyle = '#ffffff'
+      ctx.beginPath()
+      ctx.arc(0, 0, ctx.lineWidth * 0.68, 0, 6.283)
+      ctx.fill()
+    }
+    ctx.restore()
+  }
+}
+
+function vesselHealthSummary(v: Vessel): { hp: number; maxHp: number } {
+  let hp = 0
+  let maxHp = 0
+  for (const p of v.parts) {
+    const m = partMaxHp(p.def)
+    maxHp += m
+    hp += Math.max(0, p.hp ?? m)
+  }
+  return { hp, maxHp }
+}
+
 function drawVesselAt(ctx: Ctx, sim: Sim, v: Vessel, p: Vec, rot: number, cell: number, clock: number, vac: number, rcsTx: number) {
   ctx.save()
   ctx.translate(p.x, p.y)
@@ -748,7 +1082,45 @@ function drawVesselAt(ctx: Ctx, sim: Sim, v: Vessel, p: Vec, rot: number, cell: 
     }
     ctx.restore()
   }
-  drawVesselParts(ctx, v.parts, cell, { firing: sim.firing.get(v.id), time: clock, vacuum: vac, rcsTx })
+  const aimDelta = v.aimAngle !== undefined ? wrapPi(v.aimAngle - v.angle) : 0
+  drawVesselParts(ctx, v.parts, cell, { firing: sim.firing.get(v.id), time: clock, vacuum: vac, rcsTx, aimDelta })
+  const spawnProtected = !!(v.spawnShieldUntil && clock < v.spawnShieldUntil)
+  if (spawnProtected || (v.shield ?? 0) > 0) {
+    const st = vesselStats(v.parts)
+    const rad = Math.max((st.maxX - st.minX), (st.maxY - st.minY)) * cell * 0.68
+    ctx.save()
+    ctx.strokeStyle = spawnProtected ? 'rgba(147,197,253,.75)' : 'rgba(56,217,232,.55)'
+    ctx.fillStyle = spawnProtected ? 'rgba(96,165,250,.10)' : 'rgba(56,217,232,.07)'
+    ctx.lineWidth = Math.max(1.2, cell * 0.12)
+    ctx.beginPath()
+    ctx.ellipse(0, 0, Math.max(rad * 0.62, (st.maxX - st.minX) * cell * 0.75), rad, 0, 0, 6.283)
+    ctx.fill()
+    ctx.stroke()
+    ctx.restore()
+  }
+  if (v.empUntil && clock < v.empUntil) {
+    const st = vesselStats(v.parts)
+    const rad = Math.max(14, (st.maxY - st.minY) * cell * 0.55)
+    ctx.strokeStyle = 'rgba(96,165,250,.9)'
+    ctx.lineWidth = 1.5
+    ctx.beginPath()
+    ctx.arc(Math.sin(clock * 23) * 3, Math.cos(clock * 19) * 3, rad, clock * 8, clock * 8 + 2.4)
+    ctx.stroke()
+  }
+  if (v.burnUntil && clock < v.burnUntil) {
+    const st = vesselStats(v.parts)
+    const rad = Math.max(12, (st.maxY - st.minY) * cell * 0.45)
+    ctx.save()
+    ctx.globalCompositeOperation = 'lighter'
+    for (let k = 0; k < 4; k += 1) {
+      const a = clock * 7 + k * 1.57
+      ctx.fillStyle = 'rgba(74,222,128,.75)'
+      ctx.beginPath()
+      ctx.arc(Math.cos(a) * rad * 0.6, Math.sin(a) * rad * 0.6, Math.max(2, cell * 0.22), 0, 6.283)
+      ctx.fill()
+    }
+    ctx.restore()
+  }
   ctx.restore()
 }
 
@@ -882,7 +1254,7 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
         })
       }
     }
-    drawVesselAt(ctx, sim, o, p, cam.rot, cell, view.clock, vac, isActive ? view.rcsTx : 0)
+    drawVesselAt(ctx, sim, o, p, cam.rot, cell, sim.clock ?? view.clock, vac, isActive ? view.rcsTx : 0)
     if (!o.debris) frame.hits.push({ id: o.id, x: p.x, y: p.y, cell, rot: Math.PI / 2 - (o.angle + cam.rot) })
     if (isActive && !o.landed && cam.z < 12 && len(o.vel) > 8) {
       const ringR = Math.max(46, ((st.maxY - st.minY) * cell) / 2 + 18)
@@ -919,10 +1291,53 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
     }
     if (!isActive && !o.debris) {
       const ownerCol = gs.mp && o.ownerId ? gs.mp.players[o.ownerId]?.color : undefined
+      const topBarY = p.y - (st.comY - st.minY) * cell - 8
       ctx.fillStyle = ownerCol ?? 'rgba(255,255,255,.75)'
       ctx.font = ownerCol ? 'bold 11px "DM Mono", monospace' : '11px "DM Mono", monospace'
       ctx.textAlign = 'center'
-      ctx.fillText(o.name, p.x, p.y - (st.comY - st.minY) * cell - 8)
+      ctx.fillText(o.name, p.x, topBarY)
+      if (isWarfareMode(gs) && o.ownerId !== gs.ownerId && !o.station) {
+        const hs = vesselHealthSummary(o)
+        const shCap = st.shieldCap
+        const bw = 38
+        const by = topBarY + 3
+        ctx.fillStyle = 'rgba(10,14,22,.8)'
+        ctx.fillRect(p.x - bw / 2, by, bw, 4)
+        ctx.fillStyle = '#f87171'
+        ctx.fillRect(p.x - bw / 2, by, bw * Math.max(0, Math.min(1, hs.hp / Math.max(1, hs.maxHp))), 4)
+        if (shCap > 0 && (o.shield ?? 0) > 0) {
+          ctx.fillStyle = '#38d9e8'
+          ctx.fillRect(p.x - bw / 2, by - 2.5, bw * Math.min(1, (o.shield ?? 0) / shCap), 2)
+        }
+      }
+    }
+  }
+  drawProjectiles(ctx, sim, cam, bodyId)
+  if (gs.mp && isWarfareMode(gs)) {
+    for (const col of allColoniesOnBody(gs, bodyId)) {
+      if (col.ownerId === gs.ownerId || col.base.destroyed) continue
+      const owner = gs.mp.players[col.ownerId]
+      if (!owner) continue
+      const colAngle = col.base.siteAngle ?? (col.isEarth ? padAngleForSlot(owner.slot, 'orbital-warfare') : PAD_ANGLE)
+      const cPos = colonyCenterWorldPos(bodyId, colAngle, true)
+      const dist = Math.hypot(cPos.x - center.x, cPos.y - center.y)
+      if (dist > 70_000) continue
+      const p = toScreen(cam, cPos)
+      const inView = p.x >= 28 && p.x <= view.w - 28 && p.y >= 28 && p.y <= view.h - 28
+      const distLabel = dist >= 1000 ? `${(dist / 1000).toFixed(1)} km` : `${Math.round(dist)} m`
+      if (!inView) {
+        const cx = view.w / 2
+        const cy = view.h / 2
+        const ang = Math.atan2(p.y - cy, p.x - cx)
+        const bx = Math.max(48, Math.min(view.w - 48, cx + Math.cos(ang) * (view.w * 0.43)))
+        const by = Math.max(48, Math.min(view.h - 48, cy + Math.sin(ang) * (view.h * 0.43)))
+        ctx.save()
+        ctx.fillStyle = owner.color
+        ctx.font = 'bold 10px "DM Mono", monospace'
+        ctx.textAlign = 'center'
+        ctx.fillText(`🏰 ${owner.username} · ${distLabel}`, bx, by)
+        ctx.restore()
+      }
     }
   }
   if (gs.mp) {
@@ -977,6 +1392,54 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
     }
   }
   drawBooms(ctx, sim, cam, bodyId)
+  if (v && !v.debris && view.selectedWeapon === 'gun-missile') {
+    const info = view.aimScreen ? aimInfoFromScreen(frame, v, view.aimScreen.x, view.aimScreen.y) : undefined
+    const lock = findLockTarget(gs, v, info?.angle, info?.dist)
+    if (lock) {
+      const lp = toScreen(cam, getVisualPos(lock))
+      ctx.save()
+      ctx.strokeStyle = '#f43f5e'
+      ctx.fillStyle = '#f43f5e'
+      ctx.lineWidth = 1.8
+      ctx.setLineDash([4, 3])
+      ctx.beginPath()
+      ctx.arc(lp.x, lp.y, 26, 0, 6.283)
+      ctx.stroke()
+      ctx.setLineDash([])
+      ctx.font = 'bold 10px "DM Mono", monospace'
+      ctx.textAlign = 'center'
+      ctx.fillText('🎯 KİLİT', lp.x, lp.y - 32)
+      ctx.restore()
+    }
+  }
+  if (v && !v.debris && view.aimScreen && vesselStats(v.parts).weaponCount > 0) {
+    const ax = view.aimScreen.x
+    const ay = view.aimScreen.y
+    const vp = toScreen(cam, getVisualPos(v))
+    ctx.save()
+    ctx.strokeStyle = 'rgba(251,191,36,.28)'
+    ctx.lineWidth = 1
+    ctx.setLineDash([4, 5])
+    ctx.beginPath()
+    ctx.moveTo(vp.x, vp.y)
+    ctx.lineTo(ax, ay)
+    ctx.stroke()
+    ctx.setLineDash([])
+    ctx.strokeStyle = 'rgba(251,191,36,.85)'
+    ctx.lineWidth = 1.4
+    ctx.beginPath()
+    ctx.arc(ax, ay, 10, 0, 6.283)
+    ctx.moveTo(ax - 15, ay)
+    ctx.lineTo(ax - 5, ay)
+    ctx.moveTo(ax + 5, ay)
+    ctx.lineTo(ax + 15, ay)
+    ctx.moveTo(ax, ay - 15)
+    ctx.lineTo(ax, ay - 5)
+    ctx.moveTo(ax, ay + 5)
+    ctx.lineTo(ax, ay + 15)
+    ctx.stroke()
+    ctx.restore()
+  }
   return frame
 }
 
@@ -1182,7 +1645,11 @@ export function renderMap(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): Map
     })()
     drawSphere(ctx, b, p.x, p.y, rpx, sd, 0, b.radius * z > 9)
     const cap = gs.mp?.captures[b.id]
-    if (gs.mp && cap) {
+    if (gs.mp && isWarfareMode(gs)) {
+      const cols = allColoniesOnBody(gs, b.id).filter((c) => !c.base.destroyed)
+      ctx.fillStyle = cols.length ? 'rgba(255,255,255,.88)' : 'rgba(255,255,255,.6)'
+      ctx.fillText(cols.length ? `${b.name} 🏰${cols.length}` : b.name, p.x, p.y + rpx + 16)
+    } else if (gs.mp && cap) {
       const owner = cap.ownerId ? gs.mp.players[cap.ownerId] : null
       const capturer = cap.capturerId ? gs.mp.players[cap.capturerId] : null
       const haloR = rpx + 5

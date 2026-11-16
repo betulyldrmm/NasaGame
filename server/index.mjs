@@ -6,13 +6,13 @@
  */
 import { createServer } from 'node:http'
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
-import { readFile, writeFile, mkdir } from 'node:fs/promises'
+import { readFile, writeFile, rename, mkdir } from 'node:fs/promises'
 import { extname, join, normalize, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { attachMultiplayerWs, listPublicRooms } from './mp.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
-const dist = join(root, 'dist')
+const dist = resolve(root, 'dist')
 const dataDir = join(root, 'server', 'data')
 const savesDir = join(dataDir, 'saves')
 const usersFile = join(dataDir, 'users.json')
@@ -30,6 +30,11 @@ const types = {
   '.jpg': 'image/jpeg',
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
+  '.webp': 'image/webp',
+  '.ico': 'image/x-icon',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+  '.txt': 'text/plain; charset=utf-8',
 }
 
 let writeQueue = Promise.resolve()
@@ -42,7 +47,8 @@ function serialized(fn) {
 async function readJson(file, fallback) {
   try {
     const raw = await readFile(file, 'utf8')
-    return JSON.parse(raw)
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? Object.assign(Object.create(null), parsed) : fallback
   } catch {
     return fallback
   }
@@ -50,7 +56,9 @@ async function readJson(file, fallback) {
 
 async function writeJson(file, value) {
   await mkdir(dataDir, { recursive: true })
-  await writeFile(file, JSON.stringify(value, null, 2), 'utf8')
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`
+  await writeFile(tmp, JSON.stringify(value, null, 2), 'utf8')
+  await rename(tmp, file)
 }
 
 function hashPassword(password, salt) {
@@ -83,12 +91,15 @@ function sendJson(res, status, data, extraHeaders = {}) {
 }
 
 async function readBody(req, maxBytes) {
-  let body = ''
+  const chunks = []
+  let total = 0
   for await (const chunk of req) {
-    body += chunk
-    if (body.length > maxBytes) throw new HttpError(413, 'İstek boyutu çok büyük.')
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    total += buf.length
+    if (total > maxBytes) throw new HttpError(413, 'İstek boyutu çok büyük.')
+    chunks.push(buf)
   }
-  return body
+  return Buffer.concat(chunks).toString('utf8')
 }
 
 class HttpError extends Error {
@@ -113,11 +124,11 @@ function makeCookie(token, maxAgeSec) {
 async function getSessionUser(req) {
   const token = parseCookies(req)[SESSION_COOKIE]
   if (!token) return null
-  const sessions = await readJson(sessionsFile, {})
-  const sess = sessions[token]
+  const sessions = await readJson(sessionsFile, Object.create(null))
+  const sess = Object.hasOwn(sessions, token) ? sessions[token] : null
   if (!sess || sess.expiresAt < Date.now()) return null
-  const users = await readJson(usersFile, {})
-  const u = users[sess.key]
+  const users = await readJson(usersFile, Object.create(null))
+  const u = Object.hasOwn(users, sess.key) ? users[sess.key] : null
   if (!u) return null
   return { key: sess.key, username: u.username, token }
 }
@@ -155,8 +166,8 @@ const server = createServer(async (req, res) => {
       }
       const key = username.toLowerCase()
       const token = await serialized(async () => {
-        const users = await readJson(usersFile, {})
-        if (users[key]) throw new HttpError(409, 'Bu kullanıcı adı zaten alınmış.')
+        const users = await readJson(usersFile, Object.create(null))
+        if (Object.hasOwn(users, key)) throw new HttpError(409, 'Bu kullanıcı adı zaten alınmış.')
         const salt = randomBytes(16).toString('hex')
         users[key] = {
           username,
@@ -165,7 +176,7 @@ const server = createServer(async (req, res) => {
           createdAt: Date.now(),
         }
         await writeJson(usersFile, users)
-        const sessions = await readJson(sessionsFile, {})
+        const sessions = await readJson(sessionsFile, Object.create(null))
         const tok = randomBytes(32).toString('hex')
         sessions[tok] = { key, expiresAt: Date.now() + SESSION_TTL_MS }
         await writeJson(sessionsFile, sessions)
@@ -185,14 +196,15 @@ const server = createServer(async (req, res) => {
       }
       const username = typeof parsed?.username === 'string' ? parsed.username.trim() : ''
       const password = typeof parsed?.password === 'string' ? parsed.password : ''
+      if (password.length > 128) throw new HttpError(401, 'Kullanıcı adı veya şifre hatalı.')
       const key = username.toLowerCase()
-      const users = await readJson(usersFile, {})
-      const user = users[key]
+      const users = await readJson(usersFile, Object.create(null))
+      const user = Object.hasOwn(users, key) ? users[key] : null
       if (!user || !verifyPassword(password, user.salt, user.passwordHash)) {
         throw new HttpError(401, 'Kullanıcı adı veya şifre hatalı.')
       }
       const token = await serialized(async () => {
-        const sessions = await readJson(sessionsFile, {})
+        const sessions = await readJson(sessionsFile, Object.create(null))
         const now = Date.now()
         for (const [k, s] of Object.entries(sessions)) {
           if (!s || s.expiresAt < now) delete sessions[k]
@@ -202,11 +214,17 @@ const server = createServer(async (req, res) => {
         await writeJson(sessionsFile, sessions)
         return tok
       })
-      const save = await readFile(savePathForUser(key), 'utf8').catch(() => 'null')
+      const rawSave = await readFile(savePathForUser(key), 'utf8').catch(() => 'null')
+      let parsedSave = null
+      try {
+        parsedSave = JSON.parse(rawSave)
+      } catch {
+        parsedSave = null
+      }
       sendJson(
         res,
         200,
-        { user: { username: user.username }, save: JSON.parse(save) },
+        { user: { username: user.username }, save: parsedSave },
         { 'Set-Cookie': makeCookie(token, Math.floor(SESSION_TTL_MS / 1000)) },
       )
       return
@@ -216,7 +234,7 @@ const server = createServer(async (req, res) => {
       const token = parseCookies(req)[SESSION_COOKIE]
       if (token) {
         await serialized(async () => {
-          const sessions = await readJson(sessionsFile, {})
+          const sessions = await readJson(sessionsFile, Object.create(null))
           delete sessions[token]
           await writeJson(sessionsFile, sessions)
         })
@@ -231,20 +249,34 @@ const server = createServer(async (req, res) => {
       const saveFile = savePathForUser(user.key)
       if (req.method === 'POST') {
         const body = await readBody(req, 5_000_000)
+        let parsed
         try {
-          JSON.parse(body)
+          parsed = JSON.parse(body)
         } catch {
+          throw new HttpError(400, 'Geçersiz kayıt verisi.')
+        }
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
           throw new HttpError(400, 'Geçersiz kayıt verisi.')
         }
         await serialized(async () => {
           await mkdir(savesDir, { recursive: true })
-          await writeFile(saveFile, body, 'utf8')
+          const tmp = `${saveFile}.${process.pid}.${Date.now()}.tmp`
+          await writeFile(tmp, body, 'utf8')
+          await rename(tmp, saveFile)
         })
         res.writeHead(204).end()
         return
       }
+      if (req.method !== 'GET') throw new HttpError(405, 'Desteklenmeyen yöntem.')
       const data = await readFile(saveFile, 'utf8').catch(() => 'null')
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' }).end(data)
+      let safeJson = 'null'
+      try {
+        JSON.parse(data)
+        safeJson = data
+      } catch {
+        safeJson = 'null'
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' }).end(safeJson)
       return
     }
 
@@ -253,10 +285,24 @@ const server = createServer(async (req, res) => {
     }
 
     const rel = normalize(decodeURIComponent(url.pathname)).replace(/^(\.\.[/\\])+/, '')
-    const file = join(dist, rel === '/' || rel === '\\' ? 'index.html' : rel)
-    if (!file.startsWith(dist)) throw new HttpError(403, 'Forbidden')
-    const data = await readFile(file).catch(() => readFile(join(dist, 'index.html')))
-    res.writeHead(200, { 'Content-Type': types[extname(file)] ?? 'text/html; charset=utf-8' }).end(data)
+    const file = resolve(dist, rel === '/' || rel === '\\' ? 'index.html' : rel.replace(/^[/\\]+/, ''))
+    if (file !== dist && !file.startsWith(dist + sep)) throw new HttpError(403, 'Forbidden')
+    const ext = extname(file)
+    try {
+      const data = await readFile(file)
+      res.writeHead(200, { 'Content-Type': types[ext] ?? 'application/octet-stream' }).end(data)
+    } catch {
+      if (ext && ext !== '.html') {
+        res.writeHead(404).end('Not found')
+        return
+      }
+      const html = await readFile(join(dist, 'index.html')).catch(() => null)
+      if (!html) {
+        res.writeHead(404).end('Build missing (npm run build)')
+        return
+      }
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }).end(html)
+    }
   } catch (err) {
     if (err instanceof HttpError) {
       sendJson(res, err.status, { error: err.message })

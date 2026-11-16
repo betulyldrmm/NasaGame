@@ -42,6 +42,76 @@ export const PARTS: PartDef[] = [
   // Kargo
   { id: 'cargo', name: 'Kargo Gövdesi', kind: 'cargo', category: 'Kargo', w: 2, h: 2, mass: 0.4, cargoCap: 4, cost: 600, desc: '4 t üs modülü veya maden taşır.' },
   { id: 'cargo-lg', name: 'Büyük Kargo Gövdesi', kind: 'cargo', category: 'Kargo', w: 2, h: 3, mass: 0.8, cargoCap: 10, cost: 1400, desc: '10 t modül veya maden taşır; büyük koloniler kurmak için.' },
+  // Silahlar (12 özgün FTL tarzı uzay & koloni kuşatma silahı)
+  {
+    id: 'gun-vulcan', name: 'Vulcan Zincir Topu', kind: 'weapon', category: 'Silahlar', w: 1, h: 2, mass: 0.25, cost: 900, hp: 90,
+    desc: 'FTL zincir mekanizması: 0.42 sn ile başlar, basılı tuttukça dönüp 0.065 sn seri ateşe çıkar (240 mermi).',
+    weapon: { kind: 'ballistic', group: 1, dmg: 11, cooldown: 0.42, minCooldown: 0.065, spinRate: 0.24, speed: 820, ttl: 2.3, spread: 0.04, ammo: 240, ecUse: 0.2, recoil: 0.35, gimbal: 2.35, color: '#fbbf24' },
+  },
+  {
+    id: 'gun-twin', name: 'İkili Seri Top', kind: 'weapon', category: 'Silahlar', w: 2, h: 2, mass: 0.55, cost: 1600, hp: 130,
+    desc: '3 atışlık seri salvoyla (Burst) ateşlenen 30mm çift namlu top (150 mermi).',
+    weapon: { kind: 'ballistic', group: 1, dmg: 22, colonyMult: 1.2, cooldown: 1.35, burstCount: 3, burstInterval: 0.09, speed: 860, ttl: 2.8, splash: 4, spread: 0.018, ammo: 150, ecUse: 0.5, recoil: 0.7, gimbal: 2.2, color: '#fb923c' },
+  },
+  {
+    id: 'gun-heavy', name: '120mm Kuşatma Topu', kind: 'weapon', category: 'Silahlar', w: 2, h: 3, mass: 1.2, cost: 2800, hp: 180,
+    desc: 'Yerçekimiyle yay çizen dev patlayıcı obüs: koloni binalarına 1.8× hasar ve sert geri tepme (24 mermi).',
+    weapon: { kind: 'ballistic', group: 3, dmg: 185, colonyMult: 1.8, cooldown: 1.6, speed: 580, ttl: 5.5, splash: 34, spread: 0.006, ammo: 24, ecUse: 1.5, recoil: 22, gimbal: 0.65, gravityScale: 1.0, color: '#f97316' },
+  },
+  {
+    id: 'gun-flak', name: 'Şarapnel Topu (Flak)', kind: 'weapon', category: 'Silahlar', w: 2, h: 2, mass: 0.65, cost: 1900, hp: 140,
+    desc: 'FTL tarzı 9 parçacıklı hava patlamalı top: nişan alınan noktada ve yaklaşmada infilak eder (45 mermi).',
+    weapon: { kind: 'flak', group: 1, dmg: 18, cooldown: 1.75, speed: 670, ttl: 2.0, splash: 15, pellets: 9, spread: 0.22, ammo: 45, ecUse: 0.9, recoil: 5.5, gimbal: 2.1, proximity: 26, color: '#fde047' },
+  },
+  {
+    id: 'gun-railgun', name: 'Elektromanyetik Raylı Top', kind: 'weapon', category: 'Silahlar', w: 2, h: 4, mass: 1.5, cost: 4200, hp: 170,
+    desc: '0.9 sn bobin şarjıyla 2.800 m/s hipersonik mızrak atar! Kalkanın %65\'ini ve 3 parçayı birden deler (16 mermi).',
+    weapon: { kind: 'railgun', group: 1, dmg: 260, colonyMult: 1.35, shieldPierce: 0.65, overpenetrate: 3, chargeTime: 0.9, cooldown: 1.6, speed: 2800, ttl: 2.2, splash: 8, spread: 0.001, ammo: 16, ecUse: 24, recoil: 14, gimbal: 0.35, color: '#38d9e8' },
+  },
+  {
+    id: 'gun-laser', name: 'Odak Lazeri', kind: 'weapon', category: 'Silahlar', w: 1, h: 2, mass: 0.35, cost: 2400, hp: 100,
+    desc: 'Sınırsız cephane! Basılı tuttukça kesintisiz yakan odak ışını çıkarır (elektrik harcar).',
+    weapon: { kind: 'beam', group: 1, dmg: 11, cooldown: 0.1, chargeTime: 0.2, beamSustain: true, beamWidth: 2.4, speed: 0, range: 2500, ttl: 0.18, ecUse: 1.9, gimbal: 2.4, color: '#fb7185' },
+  },
+  {
+    id: 'gun-beam', name: 'Dev Ölüm Lazeri', kind: 'weapon', category: 'Silahlar', w: 2, h: 3, mass: 1.15, cost: 4600, hp: 160,
+    desc: '1.1 sn reaktör şarjıyla 1.4 sn boyunca 3,5 km dev süpürücü ölüm ışını ateşler! Zırh ve kolonileri biçer (∞).',
+    weapon: { kind: 'beam', group: 3, dmg: 32, colonyMult: 1.6, overpenetrate: 4, chargeTime: 1.1, beamDuration: 1.4, beamWidth: 9.5, cooldown: 2.0, speed: 0, range: 3500, ttl: 0.24, splash: 14, ecUse: 24, gimbal: 1.15, color: '#e879f9' },
+  },
+  {
+    id: 'gun-plasma', name: 'Plazma Topu', kind: 'weapon', category: 'Silahlar', w: 2, h: 2, mass: 0.75, cost: 3100, hp: 140,
+    desc: 'Kalkanlara 2.4× hasar veren aşırı sıcak plazma küresi ve gövdede süren yanma hasarı (50 atış).',
+    weapon: { kind: 'plasma', group: 1, dmg: 95, shieldMult: 2.4, colonyMult: 1.15, burnDot: 2.4, cooldown: 1.0, speed: 490, ttl: 4.0, splash: 18, spread: 0.01, ammo: 50, ecUse: 9, recoil: 3.0, gimbal: 2.2, color: '#4ade80' },
+  },
+  {
+    id: 'gun-rocketpod', name: 'Roket Salvo Podu', kind: 'weapon', category: 'Silahlar', w: 1, h: 3, mass: 0.5, cost: 2100, hp: 110,
+    desc: 'Tek tetikte peş peşe 5 patlayıcı mini roket salvosu yağdırır (45 roket).',
+    weapon: { kind: 'rocket', group: 2, dmg: 44, colonyMult: 1.3, cooldown: 1.6, burstCount: 5, burstInterval: 0.08, speed: 500, ttl: 4.4, splash: 20, spread: 0.08, ammo: 45, ecUse: 0.4, recoil: 1.1, gimbal: 0.45, gravityScale: 0.25, color: '#ff8a3d' },
+  },
+  {
+    id: 'gun-missile', name: 'Güdümlü Füze Rampası', kind: 'weapon', category: 'Silahlar', w: 2, h: 3, mass: 0.95, cost: 3800, hp: 145,
+    desc: 'Sınırlı 8 füze! Kalkanların %75\'ini deler, imlece yakın düşmana kilitlenip sert manevrayla kovalar.',
+    weapon: { kind: 'missile', group: 2, dmg: 195, shieldPierce: 0.75, colonyMult: 1.2, cooldown: 1.9, speed: 560, ttl: 8.5, splash: 26, spread: 0.02, ammo: 8, ecUse: 2, recoil: 1.5, gimbal: 0.85, turnRate: 3.4, gravityScale: 0.15, proximity: 8, color: '#f43f5e' },
+  },
+  {
+    id: 'gun-torpedo', name: 'Nükleer Kuşatma Torpidosu', kind: 'weapon', category: 'Silahlar', w: 2, h: 3, mass: 1.4, cost: 4400, hp: 175,
+    desc: 'Sınırlı 4 ağır savaş başlığı: koloni binalarına 2.8× yıkım ve 56 m nükleer şok dalgası!',
+    weapon: { kind: 'torpedo', group: 3, dmg: 420, colonyMult: 2.8, cooldown: 3.2, speed: 240, ttl: 12.0, splash: 56, spread: 0.008, ammo: 4, ecUse: 3.0, recoil: 4.5, gimbal: 0.5, gravityScale: 0.9, color: '#ef4444' },
+  },
+  {
+    id: 'gun-emp', name: 'EMP İyon Topu', kind: 'weapon', category: 'Silahlar', w: 2, h: 2, mass: 0.7, cost: 2900, hp: 130,
+    desc: 'Gövdeyi az çizer ama kalkana +120 iyon şoku vurur, silah şarjını sıfırlar ve taretleri 4.5 sn kilitler (20 atış).',
+    weapon: { kind: 'emp', group: 3, dmg: 10, shieldMult: 3.2, shieldFlat: 120, resetCharge: true, cooldown: 1.5, speed: 720, ttl: 3.2, splash: 38, spread: 0.01, ammo: 20, ecUse: 12, recoil: 1.5, gimbal: 2.2, empDrain: 90, empStun: 4.5, color: '#60a5fa' },
+  },
+  // Savunma
+  {
+    id: 'armor-plate', name: 'Titanyum Zırh Plakası', kind: 'armor', category: 'Savunma', w: 2, h: 1, mass: 0.35, cost: 420, hp: 320,
+    desc: 'Yüksek dayanımlı zırh (320 HP): tankları, komuta kapsülünü ve kritik parçaları korur.',
+  },
+  {
+    id: 'shield-gen', name: 'Enerji Kalkanı Jeneratörü', kind: 'shield', category: 'Savunma', w: 2, h: 1, mass: 0.45, cost: 2600, hp: 140, shieldCap: 200,
+    desc: 'Roket çevresinde +200 HP yenilenen plazma kalkanı oluşturur (elektrik harcar).',
+  },
 ]
 
 /** ISS parçaları: montaj paletinde görünmez, yalnızca istasyonu oluşturur. */
@@ -155,3 +225,109 @@ export const SHIP_PRESETS: ShipPreset[] = [
   { id: 'pioneer', name: 'Pioneer', desc: 'Ucuz ve hafif: Dünya yörüngesi, Ay yakın geçişi.', design: PIONEER_DESIGN },
   { id: 'atlas', name: 'Atlas Kargo', desc: 'Ağır yük taşıyıcı: Ay\'a 8 t üs modülü indirir.', design: ATLAS_DESIGN },
 ]
+
+const INTERCEPTOR_DESIGN: PartInst[] = [
+  { def: 'nose', x: 6, y: 5 },
+  { def: 'capsule', x: 6, y: 7 },
+  { def: 'gun-laser', x: 5, y: 7 },
+  { def: 'gun-laser', x: 8, y: 7 },
+  { def: 'shield-gen', x: 6, y: 9 },
+  { def: 'battery', x: 6, y: 10 },
+  { def: 'solar', x: 5, y: 9 },
+  { def: 'solar', x: 8, y: 9 },
+  { def: 'tank-xl', x: 6, y: 11 },
+  { def: 'gun-vulcan', x: 5, y: 11 },
+  { def: 'gun-vulcan', x: 8, y: 11 },
+  { def: 'rcs', x: 5, y: 14 },
+  { def: 'rcs', x: 8, y: 14 },
+  { def: 'hawk', x: 6, y: 15 },
+  { def: 'decoupler', x: 6, y: 17 },
+  { def: 'tank-xl', x: 6, y: 18 },
+  { def: 'tank-xl', x: 6, y: 22 },
+  { def: 'titan', x: 6, y: 26 },
+  { def: 'radial', x: 5, y: 22 },
+  { def: 'radial', x: 8, y: 22 },
+  { def: 'nose', x: 3, y: 18 },
+  { def: 'tank-l', x: 3, y: 20 },
+  { def: 'hawk', x: 3, y: 23 },
+  { def: 'nose', x: 9, y: 18 },
+  { def: 'tank-l', x: 9, y: 20 },
+  { def: 'hawk', x: 9, y: 23 },
+]
+
+const GUNSHIP_DESIGN: PartInst[] = [
+  { def: 'nose', x: 6, y: 5 },
+  { def: 'armor-plate', x: 6, y: 7 },
+  { def: 'capsule', x: 6, y: 8 },
+  { def: 'gun-twin', x: 4, y: 8 },
+  { def: 'gun-twin', x: 8, y: 8 },
+  { def: 'shield-gen', x: 6, y: 10 },
+  { def: 'battery', x: 6, y: 11 },
+  { def: 'rtg', x: 5, y: 10 },
+  { def: 'rtg', x: 8, y: 10 },
+  { def: 'tank-xl', x: 6, y: 12 },
+  { def: 'gun-plasma', x: 4, y: 12 },
+  { def: 'gun-plasma', x: 8, y: 12 },
+  { def: 'gun-flak', x: 4, y: 14 },
+  { def: 'gun-flak', x: 8, y: 14 },
+  { def: 'armor-plate', x: 6, y: 16 },
+  { def: 'aerospike', x: 6, y: 17 },
+  { def: 'decoupler', x: 6, y: 19 },
+  { def: 'tank-xl', x: 6, y: 20 },
+  { def: 'tank-xl', x: 6, y: 24 },
+  { def: 'titan', x: 6, y: 28 },
+  { def: 'radial', x: 5, y: 22 },
+  { def: 'radial', x: 8, y: 22 },
+  { def: 'nose', x: 3, y: 18 },
+  { def: 'tank-xl', x: 3, y: 20 },
+  { def: 'titan', x: 3, y: 24 },
+  { def: 'nose', x: 9, y: 18 },
+  { def: 'tank-xl', x: 9, y: 20 },
+  { def: 'titan', x: 9, y: 24 },
+]
+
+const SIEGE_DESIGN: PartInst[] = [
+  { def: 'nose', x: 6, y: 5 },
+  { def: 'capsule', x: 6, y: 7 },
+  { def: 'gun-emp', x: 4, y: 7 },
+  { def: 'gun-beam', x: 8, y: 7 },
+  { def: 'shield-gen', x: 6, y: 9 },
+  { def: 'cargo', x: 6, y: 10 },
+  { def: 'solar', x: 5, y: 10 },
+  { def: 'solar', x: 8, y: 10 },
+  { def: 'battery', x: 6, y: 12 },
+  { def: 'tank-xl', x: 6, y: 13 },
+  { def: 'gun-torpedo', x: 4, y: 13 },
+  { def: 'gun-missile', x: 8, y: 13 },
+  { def: 'heavy-leg', x: 5, y: 16 },
+  { def: 'heavy-leg', x: 8, y: 16 },
+  { def: 'aerospike', x: 6, y: 17 },
+  { def: 'decoupler', x: 6, y: 19 },
+  { def: 'tank-xxl', x: 6, y: 20 },
+  { def: 'titan', x: 6, y: 25 },
+  { def: 'radial', x: 5, y: 21 },
+  { def: 'radial', x: 8, y: 21 },
+  { def: 'nose', x: 3, y: 18 },
+  { def: 'tank-xl', x: 3, y: 20 },
+  { def: 'titan', x: 3, y: 24 },
+  { def: 'nose', x: 9, y: 18 },
+  { def: 'tank-xl', x: 9, y: 20 },
+  { def: 'titan', x: 9, y: 24 },
+]
+
+export const COMBAT_PRESETS: ShipPreset[] = [
+  { id: 'interceptor', name: 'Avcı Mk-II', desc: 'FTL Vulcan + Sürekli Odak Lazeri + Kalkan + Ay menzili.', design: INTERCEPTOR_DESIGN },
+  { id: 'gunship', name: 'Savaş Gemisi', desc: 'Seri İkili Top + Plazma Yanığı + Hava Patlamalı Flak + Zırh.', design: GUNSHIP_DESIGN },
+  { id: 'siege', name: 'Kuşatma Gemisi', desc: 'Dev Ölüm Lazeri + Güdümlü Füze + EMP + Nükleer Torpido.', design: SIEGE_DESIGN },
+]
+
+export function partMaxHp(defId: string): number {
+  const d = partDef(defId)
+  if (d.hp !== undefined) return d.hp
+  if (d.kind === 'command') return d.id === 'capsule' ? 240 : 110
+  if (d.kind === 'tank') return Math.round(75 + (d.fuel ?? 2) * 10)
+  if (d.kind === 'engine') return Math.round(85 + d.mass * 35)
+  if (d.kind === 'cargo') return 150
+  if (d.kind === 'station') return 600
+  return Math.max(55, Math.round(50 + d.w * d.h * 20))
+}

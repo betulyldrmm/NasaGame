@@ -3,7 +3,7 @@
  * ayrı bir görsel dosyasına gerek kalmadan her ölçekte keskin kalır.
  * Her parça kendi (0,0)-(w·c, h·c) kutusuna, burun yukarı bakacak şekilde çizilir.
  */
-import { partDef } from '../game/data'
+import { partDef, partMaxHp } from '../game/data'
 import type { PartDef, PartInst } from '../game/types'
 import { vesselStats } from '../game/vessel'
 
@@ -524,11 +524,348 @@ function drawStation(ctx: Ctx, id: string, w: number, h: number, c: number) {
   }
 }
 
+function drawArmor(ctx: Ctx, w: number, h: number, c: number) {
+  ctx.beginPath()
+  ctx.moveTo(w * 0.06, 0)
+  ctx.lineTo(w * 0.94, 0)
+  ctx.lineTo(w - 0.02 * c, h * 0.28)
+  ctx.lineTo(w - 0.02 * c, h)
+  ctx.lineTo(0.02 * c, h)
+  ctx.lineTo(0.02 * c, h * 0.28)
+  ctx.closePath()
+  ctx.fillStyle = metal(ctx, 0, w, STEEL)
+  ctx.fill()
+  outline(ctx, c)
+  ctx.strokeStyle = 'rgba(18,24,34,.55)'
+  ctx.lineWidth = Math.max(0.6, c * 0.04)
+  ctx.beginPath()
+  ctx.moveTo(w * 0.14, h * 0.28)
+  ctx.lineTo(w * 0.86, h * 0.28)
+  ctx.moveTo(w * 0.5, 0)
+  ctx.lineTo(w * 0.5, h)
+  ctx.stroke()
+  ctx.fillStyle = '#dbe2ea'
+  for (const x of [0.22, 0.78]) {
+    ctx.beginPath()
+    ctx.arc(w * x, h * 0.65, c * 0.055, 0, Math.PI * 2)
+    ctx.fill()
+  }
+}
+
+function drawShieldGen(ctx: Ctx, w: number, h: number, c: number, t: number) {
+  rr(ctx, 0.03 * c, h * 0.12, w - 0.06 * c, h * 0.88, c * 0.14)
+  ctx.fillStyle = metal(ctx, 0, w, DARK)
+  ctx.fill()
+  outline(ctx, c)
+  ctx.fillStyle = metal(ctx, w * 0.15, w * 0.7, STEEL)
+  ctx.fillRect(w * 0.16, 0, w * 0.68, h * 0.2)
+  const cx = w * 0.5
+  const cy = h * 0.56
+  const pulse = 0.78 + 0.22 * Math.sin(t * 5)
+  const g = ctx.createRadialGradient(cx, cy, c * 0.02, cx, cy, c * 0.36)
+  g.addColorStop(0, `rgba(220,255,255,${pulse.toFixed(2)})`)
+  g.addColorStop(0.45, `rgba(56,217,232,${(0.9 * pulse).toFixed(2)})`)
+  g.addColorStop(1, 'rgba(30,120,200,0)')
+  ctx.fillStyle = g
+  ctx.beginPath()
+  ctx.arc(cx, cy, c * 0.36, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.strokeStyle = '#7bf0ff'
+  ctx.lineWidth = Math.max(0.7, c * 0.05)
+  ctx.beginPath()
+  ctx.arc(cx, cy, c * 0.22, 0, Math.PI * 2)
+  ctx.stroke()
+}
+
+function drawWeapon(
+  ctx: Ctx,
+  d: PartDef,
+  p: PartInst,
+  w: number,
+  h: number,
+  c: number,
+  flip: boolean,
+  aimDelta: number,
+  t: number,
+) {
+  const wpn = d.weapon
+  const accent = wpn?.color ?? '#fbbf24'
+  const gimbal = wpn?.gimbal ?? 0
+  const swivel = -Math.max(-gimbal, Math.min(gimbal, aimDelta))
+  const cx = w * 0.5
+  const cy = h * 0.52
+  const ch = Math.max(0, Math.min(1, p.charge ?? 0))
+  const fireAge = p.fireAt !== undefined ? Math.max(0, t - p.fireAt) : 99
+  const recoil = fireAge < 0.28 ? Math.exp(-fireAge * 14) : 0
+  const beaming = !!(p.beamUntil && t < p.beamUntil)
+  const emptyAmmo = wpn?.ammo !== undefined && (p.ammo ?? wpn.ammo) <= 0
+
+  // Roket gövdesine tutunma konsolu (tek kare geniş silahlar kenara yaslı görünür)
+  if (d.w === 1) {
+    const bx = flip ? w * 0.58 : w * 0.02
+    ctx.fillStyle = metal(ctx, bx, w * 0.4, DARK)
+    ctx.fillRect(bx, h * 0.22, w * 0.4, h * 0.56)
+  }
+
+  // Taret kaidesi
+  const baseW = d.w === 1 ? w * 0.84 : w * 0.88
+  const baseH = Math.min(h * 0.78, w * 1.1)
+  rr(ctx, cx - baseW * 0.5, cy - baseH * 0.35, baseW, baseH * 0.78, c * 0.14)
+  ctx.fillStyle = metal(ctx, cx - baseW * 0.5, baseW, d.id === 'gun-railgun' || d.id === 'gun-emp' ? DARK : STEEL)
+  ctx.fill()
+  outline(ctx, c)
+
+  ctx.save()
+  ctx.translate(cx, cy)
+  ctx.rotate(swivel)
+
+  const kick = recoil * (d.id === 'gun-heavy' ? c * 0.38 : d.id === 'gun-railgun' ? c * 0.28 : c * 0.16)
+  ctx.translate(0, kick)
+
+  switch (d.id) {
+    case 'gun-vulcan': {
+      const spinPhase = ch > 0.01 || fireAge < 0.3 ? t * (12 + ch * 34) : 0
+      const offsets = [-0.11, 0, 0.11].map((base) => base + Math.sin(spinPhase + base * 12) * 0.035)
+      for (const o of offsets) {
+        const ox = o * c
+        ctx.fillStyle = metal(ctx, ox - c * 0.04, c * 0.08, DARK)
+        ctx.fillRect(ox - c * 0.035, -h * 0.62, c * 0.07, h * 0.66)
+      }
+      // Kızgın namlu ucu (spin-up arttıkça parlar)
+      ctx.fillStyle = ch > 0.2 || recoil > 0.1 ? `rgba(255,140,40,${(0.35 + ch * 0.65).toFixed(2)})` : accent
+      ctx.fillRect(-c * 0.15, -h * 0.54, c * 0.3, c * 0.09)
+      ctx.fillStyle = accent
+      ctx.fillRect(-c * 0.15, -h * 0.32, c * 0.3, c * 0.08)
+      if (recoil > 0.25) {
+        ctx.fillStyle = '#fff3b0'
+        ctx.beginPath()
+        ctx.ellipse(0, -h * 0.68, c * 0.14, c * 0.26 * recoil, 0, 0, Math.PI * 2)
+        ctx.fill()
+      }
+      break
+    }
+    case 'gun-twin': {
+      const rightFirst = ((p.ammo ?? 0) % 2) === 1
+      const lead = recoil * c * 0.18
+      const lag = (fireAge < 0.25 ? Math.exp(-Math.max(0, fireAge - 0.06) * 14) : 0) * c * 0.1
+      const kL = rightFirst ? lag : lead
+      const kR = rightFirst ? lead : lag
+      for (const [ox, kk] of [
+        [-c * 0.24, kL],
+        [c * 0.24, kR],
+      ] as const) {
+        ctx.save()
+        ctx.translate(0, kk - kick)
+        ctx.fillStyle = metal(ctx, ox - c * 0.07, c * 0.14, DARK)
+        ctx.fillRect(ox - c * 0.065, -h * 0.64, c * 0.13, h * 0.68)
+        outline(ctx, c)
+        if (recoil > 0.35) {
+          ctx.fillStyle = '#fed7aa'
+          ctx.beginPath()
+          ctx.arc(ox, -h * 0.68, c * 0.13 * recoil, 0, Math.PI * 2)
+          ctx.fill()
+        }
+        ctx.restore()
+      }
+      ctx.fillStyle = accent
+      ctx.fillRect(-c * 0.36, -h * 0.22 - kick, c * 0.72, c * 0.09)
+      break
+    }
+    case 'gun-heavy': {
+      ctx.fillStyle = metal(ctx, -c * 0.18, c * 0.36, DARK)
+      ctx.fillRect(-c * 0.17, -h * 0.76, c * 0.34, h * 0.8)
+      outline(ctx, c)
+      ctx.fillStyle = metal(ctx, -c * 0.24, c * 0.48, STEEL)
+      ctx.fillRect(-c * 0.23, -h * 0.8, c * 0.46, c * 0.18)
+      ctx.fillStyle = accent
+      ctx.fillRect(-c * 0.22, -h * 0.12, c * 0.44, c * 0.12)
+      if (recoil > 0.25) {
+        ctx.fillStyle = `rgba(255,180,70,${(recoil * 0.9).toFixed(2)})`
+        ctx.beginPath()
+        ctx.moveTo(-c * 0.32 * recoil, -h * 0.82)
+        ctx.lineTo(0, -h * (0.95 + 0.55 * recoil))
+        ctx.lineTo(c * 0.32 * recoil, -h * 0.82)
+        ctx.closePath()
+        ctx.fill()
+      }
+      break
+    }
+    case 'gun-flak': {
+      ctx.beginPath()
+      ctx.moveTo(-c * 0.14, 0)
+      ctx.lineTo(-c * 0.26, -h * 0.6)
+      ctx.lineTo(c * 0.26, -h * 0.6)
+      ctx.lineTo(c * 0.14, 0)
+      ctx.closePath()
+      ctx.fillStyle = metal(ctx, -c * 0.26, c * 0.52, DARK)
+      ctx.fill()
+      outline(ctx, c)
+      ctx.fillStyle = recoil > 0.3 ? '#fef08a' : accent
+      ctx.fillRect(-c * 0.22, -h * 0.58, c * 0.44, c * 0.11)
+      break
+    }
+    case 'gun-railgun': {
+      for (const ox of [-c * 0.2, c * 0.2]) {
+        ctx.fillStyle = metal(ctx, ox - c * 0.09, c * 0.18, WHITE)
+        ctx.fillRect(ox - c * 0.085, -h * 0.74, c * 0.17, h * 0.78)
+        outline(ctx, c)
+      }
+      // 4 sıralı kapasitör bobini (şarj arttıkça aşağıdan yukarı parlar!)
+      for (let b = 0; b < 4; b += 1) {
+        const lit = ch > b * 0.22 || recoil > 0.25
+        const by = -h * (0.16 + b * 0.16)
+        ctx.fillStyle = lit ? '#e0f2fe' : '#1e3a5f'
+        ctx.fillRect(-c * 0.11, by, c * 0.22, c * 0.1)
+      }
+      if (ch > 0.05 || recoil > 0.2) {
+        ctx.fillStyle = `rgba(56,217,232,${Math.min(1, ch + recoil).toFixed(2)})`
+        ctx.beginPath()
+        ctx.arc(0, -h * 0.75, c * (0.18 + ch * 0.28 + recoil * 0.35), 0, Math.PI * 2)
+        ctx.fill()
+      }
+      break
+    }
+    case 'gun-laser':
+    case 'gun-beam': {
+      const giant = d.id === 'gun-beam'
+      const bw = giant ? c * 0.28 : c * 0.16
+      const bh = giant ? h * 0.66 : h * 0.58
+      rr(ctx, -bw, -bh, bw * 2, bh, c * 0.06)
+      ctx.fillStyle = metal(ctx, -bw, bw * 2, WHITE)
+      ctx.fill()
+      outline(ctx, c)
+      const energy = beaming ? 1 : Math.max(ch, recoil)
+      ctx.fillStyle = energy > 0.3 ? '#ffffff' : accent
+      ctx.fillRect(-bw * 0.35, -bh * 0.88, bw * 0.7, bh * 0.76)
+      // Şarj olurken veya Dev Ölüm Lazeri yakarken odak kristali parlar ve döner!
+      const orbR = bw * (0.68 + energy * (giant ? 1.35 : 0.7))
+      if (energy > 0.05) {
+        ctx.save()
+        ctx.globalCompositeOperation = 'lighter'
+        ctx.fillStyle = accent
+        ctx.globalAlpha = 0.35 + energy * 0.55
+        ctx.beginPath()
+        ctx.arc(0, -bh, orbR * 1.45, 0, Math.PI * 2)
+        ctx.fill()
+        ctx.strokeStyle = '#ffffff'
+        ctx.lineWidth = Math.max(1, c * 0.07)
+        ctx.beginPath()
+        ctx.arc(0, -bh, orbR * 0.9, t * 9, t * 9 + Math.PI * 1.35)
+        ctx.stroke()
+        ctx.restore()
+      }
+      ctx.fillStyle = energy > 0.5 ? '#ffffff' : accent
+      ctx.beginPath()
+      ctx.arc(0, -bh, bw * 0.62, 0, Math.PI * 2)
+      ctx.fill()
+      break
+    }
+    case 'gun-plasma': {
+      rr(ctx, -c * 0.24, -h * 0.56, c * 0.48, h * 0.58, c * 0.1)
+      ctx.fillStyle = metal(ctx, -c * 0.24, c * 0.48, STEEL)
+      ctx.fill()
+      outline(ctx, c)
+      const pulse = 0.6 + 0.4 * Math.sin(t * 11) + recoil * 0.5
+      ctx.fillStyle = accent
+      for (const y of [-h * 0.18, -h * 0.34, -h * 0.48]) {
+        ctx.fillRect(-c * 0.28, y, c * 0.56, c * 0.07)
+      }
+      ctx.globalAlpha = Math.min(1, pulse)
+      ctx.beginPath()
+      ctx.arc(0, -h * 0.6, c * 0.2, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.globalAlpha = 1
+      break
+    }
+    case 'gun-rocketpod': {
+      rr(ctx, -c * 0.34, -h * 0.46, c * 0.68, h * 0.76, c * 0.08)
+      ctx.fillStyle = metal(ctx, -c * 0.34, c * 0.68, DARK)
+      ctx.fill()
+      outline(ctx, c)
+      ctx.fillStyle = '#d9534f'
+      ctx.beginPath()
+      ctx.moveTo(-c * 0.34, -h * 0.46)
+      ctx.lineTo(0, -h * 0.62)
+      ctx.lineTo(c * 0.34, -h * 0.46)
+      ctx.closePath()
+      ctx.fill()
+      ctx.fillStyle = emptyAmmo ? '#334155' : recoil > 0.2 ? '#fef08a' : accent
+      for (const ox of [-c * 0.15, c * 0.15]) {
+        for (const oy of [-h * 0.32, -h * 0.08, h * 0.14]) {
+          ctx.beginPath()
+          ctx.arc(ox, oy, c * 0.08, 0, Math.PI * 2)
+          ctx.fill()
+        }
+      }
+      break
+    }
+    case 'gun-missile': {
+      ctx.fillStyle = metal(ctx, -c * 0.42, c * 0.84, DARK)
+      ctx.fillRect(-c * 0.42, -c * 0.14, c * 0.84, c * 0.28)
+      const count = p.ammo ?? wpn?.ammo ?? 8
+      const slots = [
+        { ox: -c * 0.3, min: 1 },
+        { ox: c * 0.3, min: 2 },
+      ]
+      for (const sl of slots) {
+        ctx.fillStyle = metal(ctx, sl.ox - c * 0.12, c * 0.24, WHITE)
+        ctx.fillRect(sl.ox - c * 0.1, -h * 0.48, c * 0.2, h * 0.72)
+        if (count >= sl.min) {
+          ctx.fillStyle = accent
+          ctx.beginPath()
+          ctx.moveTo(sl.ox - c * 0.1, -h * 0.48)
+          ctx.lineTo(sl.ox, -h * 0.66)
+          ctx.lineTo(sl.ox + c * 0.1, -h * 0.48)
+          ctx.closePath()
+          ctx.fill()
+        }
+      }
+      break
+    }
+    case 'gun-torpedo': {
+      rr(ctx, -c * 0.4, -h * 0.42, c * 0.8, h * 0.78, c * 0.12)
+      ctx.fillStyle = metal(ctx, -c * 0.4, c * 0.8, GOLD)
+      ctx.fill()
+      outline(ctx, c)
+      ctx.fillStyle = emptyAmmo ? '#475569' : accent
+      ctx.beginPath()
+      ctx.moveTo(-c * 0.28, -h * 0.42)
+      ctx.lineTo(0, -h * 0.7)
+      ctx.lineTo(c * 0.28, -h * 0.42)
+      ctx.closePath()
+      ctx.fill()
+      ctx.fillStyle = '#22262c'
+      ctx.fillRect(-c * 0.3, -h * 0.1, c * 0.6, c * 0.14)
+      break
+    }
+    case 'gun-emp': {
+      ctx.fillStyle = metal(ctx, -c * 0.1, c * 0.2, STEEL)
+      ctx.fillRect(-c * 0.08, -h * 0.56, c * 0.16, h * 0.58)
+      ctx.strokeStyle = recoil > 0.2 ? '#ffffff' : accent
+      ctx.lineWidth = Math.max(0.8, c * 0.08)
+      for (const [idx, oy] of [-h * 0.2, -h * 0.36, -h * 0.52].entries()) {
+        const pulseR = c * (0.24 + (recoil > 0.1 ? 0.08 * Math.sin(t * 25 + idx) : 0.03 * Math.sin(t * 7 + idx)))
+        ctx.beginPath()
+        ctx.arc(0, oy, pulseR, 0, Math.PI * 2)
+        ctx.stroke()
+      }
+      ctx.fillStyle = '#e0f2fe'
+      ctx.beginPath()
+      ctx.arc(0, -h * 0.6, c * (0.16 + recoil * 0.12), 0, Math.PI * 2)
+      ctx.fill()
+      break
+    }
+  }
+  ctx.restore()
+}
+
 export interface PartDrawOpts {
   /** parça gövdenin solunda mı (yan parçalar aynalanır) */
   flip?: boolean
   time?: number
   rcsPulse?: boolean
+  /** namlu yönü farkı (rad, roket burnuna göre CCW) */
+  aimDelta?: number
 }
 
 export function drawPart(ctx: Ctx, p: PartInst, c: number, opts: PartDrawOpts = {}) {
@@ -556,6 +893,17 @@ export function drawPart(ctx: Ctx, p: PartInst, c: number, opts: PartDrawOpts = 
     case 'battery': drawBattery(ctx, w, h, c); break
     case 'cargo': drawCargo(ctx, w, h, c); break
     case 'station': drawStation(ctx, d.id, w, h, c); break
+    case 'armor': drawArmor(ctx, w, h, c); break
+    case 'shield': drawShieldGen(ctx, w, h, c, opts.time ?? 0); break
+    case 'weapon': drawWeapon(ctx, d, p, w, h, c, !!opts.flip, opts.aimDelta ?? 0, opts.time ?? 0); break
+  }
+  if (p.hp !== undefined) {
+    const maxHp = partMaxHp(p.def)
+    if (p.hp < maxHp * 0.85) {
+      const dmgFrac = Math.min(1, Math.max(0, 1 - p.hp / maxHp))
+      ctx.fillStyle = `rgba(248,113,113,${(0.14 + dmgFrac * 0.34).toFixed(2)})`
+      ctx.fillRect(0.04 * c, 0.04 * c, w - 0.08 * c, h - 0.08 * c)
+    }
   }
   ctx.restore()
 }
@@ -612,6 +960,8 @@ export interface VesselDrawOpts {
   vacuum?: number
   /** yanal hareket varken hava akışı görselini tetikler */
   rcsTx?: number
+  /** roket burnuna göre hedef yönü (rad) */
+  aimDelta?: number
 }
 
 /** Aracı kütle merkezine göre, burun yukarı çizer. c = 1 grid karesinin piksel boyu. */
@@ -656,7 +1006,7 @@ export function drawVesselParts(ctx: Ctx, parts: PartInst[], c: number, opts: Ve
     ctx.save()
     ctx.translate((p.x - st.comX) * c, (p.y - st.comY) * c)
     const flip = p.x + d.w / 2 < mid
-    drawPart(ctx, p, c, { flip, time: opts.time, rcsPulse: d.kind === 'rcs' && !!opts.rcsTx })
+    drawPart(ctx, p, c, { flip, time: opts.time, rcsPulse: d.kind === 'rcs' && !!opts.rcsTx, aimDelta: opts.aimDelta })
     ctx.restore()
   }
 }

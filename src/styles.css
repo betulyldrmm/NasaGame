@@ -936,3 +936,63 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 /* Ayar köşesi */
 .corner-settings button { border-radius: 9px; border: 1px solid var(--ui-line); background: var(--ui-glass); backdrop-filter: blur(8px); }
 .mp-shell { background: radial-gradient(ellipse at 50% 0, #17305a 0, #0a1630 65%, #070f22 100%); min-height: 100vh; }
+
+/* Uzay Savaşı & Koloni Baskını */
+.mp-mode-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.mp-mode-btn { display: flex; flex-direction: column; gap: 2px; text-align: left; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--ui-line); background: rgba(255,255,255,.04); color: var(--color-text); cursor: pointer; transition: border-color .15s, background .15s, transform .1s; }
+.mp-mode-btn:hover { background: rgba(255,255,255,.08); }
+.mp-mode-btn.is-active { border-color: var(--color-turquoise); background: rgba(56,217,232,.14); box-shadow: 0 0 0 1px rgba(56,217,232,.35) inset; }
+.mp-mode-btn strong { font-size: 13px; }
+.mp-mode-btn small { font-size: 11px; color: var(--color-muted); }
+.mp-mode-chip { display: inline-block; padding: 1px 6px; border-radius: 6px; font-size: 10.5px; font-weight: 700; background: rgba(56,217,232,.14); border: 1px solid rgba(56,217,232,.4); color: #7fe8f5; }
+.mp-mode-chip.is-war { background: rgba(244,63,94,.16); border-color: rgba(244,63,94,.5); color: #fda4af; }
+.mp-warfare-strip { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: center; }
+.mp-war-pill { padding: 4px 10px; border-radius: 999px; font: 700 11px 'DM Mono', monospace; background: rgba(244,63,94,.18); border: 1px solid rgba(244,63,94,.5); color: #fecdd3; backdrop-filter: blur(8px); }
+.mp-war-pill.is-elim { background: rgba(20,10,14,.85); border-color: #ef4444; color: #fca5a5; }
+.mp-war-pill.is-emp { background: rgba(30,64,175,.45); border-color: #60a5fa; color: #bfdbfe; animation: alarmBlink .6s steps(2) infinite; }
+.mp-score-row.is-elim { opacity: .55; text-decoration: line-through; }
+.gauge.hull em { background: linear-gradient(90deg, #ef4444, #4ade80); }
+.gauge.shield em { background: linear-gradient(90deg, #0ea5e9, #67e8f9); }
+.weapon-rack { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: center; background: var(--ui-glass); border: 1px solid var(--ui-line); border-radius: 10px; padding: 5px 8px; margin-bottom: 6px; backdrop-filter: blur(10px); }
+.weapon-fire-btn { background: linear-gradient(135deg, #ef4444, #f97316) !important; border-color: rgba(254,202,202,.6) !important; color: #fff !important; font-weight: 800; }
+.weapon-fire-btn:active { transform: scale(.97); }
+.colony-slot-hp { position: absolute; bottom: 2px; left: 8%; right: 8%; height: 4px; background: rgba(0,0,0,.72); border-radius: 3px; overflow: hidden; }
+.colony-slot-hp i { display: block; height: 100%; background: linear-gradient(90deg, #f87171, #4ade80); }
+
+/* FTL Silah Paneli & Gemi Sağlığı Şeması */
+.gauge.is-clickable { cursor: pointer; padding: 3px 6px; margin: -3px -6px; border-radius: 8px; transition: background .15s; }
+.gauge.is-clickable:hover { background: rgba(255,255,255,.08); }
+.ftl-rack { gap: 7px; padding: 6px 9px; max-width: min(88vw, 760px); }
+.ftl-weapon-card { display: flex; flex-direction: column; gap: 4px; min-width: 138px; padding: 5px 8px; border-radius: 9px; border: 1.5px solid rgba(148,163,184,.28); background: rgba(12,24,46,.78); color: var(--color-text); cursor: pointer; transition: transform .1s, border-color .15s, background .15s, box-shadow .15s; text-align: left; }
+.ftl-weapon-card:hover { background: rgba(26,48,84,.88); transform: translateY(-1px); }
+.ftl-weapon-card.is-selected { background: rgba(30,56,98,.94); box-shadow: 0 0 0 1px rgba(255,255,255,.22) inset, 0 4px 16px rgba(0,0,0,.4); }
+.ftl-weapon-card.is-beaming { animation: alarmBlink .28s steps(2) infinite; }
+.ftl-weapon-card.is-empty { opacity: .55; }
+.ftl-w-top { display: flex; align-items: center; gap: 5px; font-size: 11px; }
+.ftl-w-top kbd { font: 700 10px 'DM Mono', monospace; background: rgba(255,255,255,.12); padding: 1px 5px; border-radius: 4px; color: #e2e8f0; }
+.ftl-w-top canvas, .ftl-w-top svg { width: 16px; height: 16px; flex-shrink: 0; }
+.ftl-w-name { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 96px; }
+.ftl-w-ammo { margin-left: auto; font: 700 10px 'DM Mono', monospace; color: #bae6fd; white-space: nowrap; }
+.ftl-w-ammo.is-out { color: #f87171; }
+.ftl-w-bar { position: relative; height: 13px; border-radius: 4px; background: rgba(2,8,18,.8); overflow: hidden; display: block; border: 1px solid rgba(255,255,255,.1); }
+.ftl-w-bar i { position: absolute; left: 0; top: 0; bottom: 0; transition: width .07s linear; opacity: .82; }
+.ftl-w-bar em { position: relative; z-index: 1; display: block; text-align: center; font: 700 9.5px/13px 'DM Mono', monospace; font-style: normal; color: #fff; text-shadow: 0 1px 2px #000; }
+.ftl-fire-controls { display: flex; flex-direction: column; gap: 4px; }
+.mp-warp-reason { font: 600 10.5px 'DM Mono', monospace; color: #bae6fd; background: rgba(8,20,40,.65); padding: 2px 7px; border-radius: 6px; border: 1px solid var(--ui-line); }
+.mp-warp-reason.mode-combat { border-color: rgba(244,63,94,.55); color: #fda4af; }
+.ship-health-panel { width: min(440px, 92vw); display: flex; flex-direction: column; gap: 10px; }
+.sh-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.sh-stat { background: rgba(255,255,255,.04); border: 1px solid var(--ui-line); border-radius: 8px; padding: 6px 9px; display: flex; flex-direction: column; gap: 2px; font-size: 11px; }
+.sh-stat span { color: var(--color-muted); }
+.sh-stat b { font: 700 12px 'DM Mono', monospace; }
+.sh-alerts { display: flex; flex-wrap: wrap; gap: 6px; }
+.sh-blueprint-wrap { display: flex; justify-content: center; align-items: center; background: rgba(4,10,22,.72); border: 1px solid var(--ui-line-strong); border-radius: 10px; padding: 12px; max-height: 300px; overflow: auto; }
+.sh-blueprint-grid { display: grid; gap: 2px; }
+.sh-part { position: relative; display: flex; align-items: center; justify-content: center; border-radius: 5px; border: 1.5px solid #4ade80; background: rgba(22,163,74,.2); cursor: pointer; padding: 1px; overflow: hidden; transition: transform .1s, box-shadow .1s; }
+.sh-part:hover { transform: scale(1.04); z-index: 2; }
+.sh-part.is-sel { box-shadow: 0 0 0 2px #fff; z-index: 3; }
+.sh-part.is-warn { border-color: #fbbf24; background: rgba(217,119,6,.25); }
+.sh-part.is-crit { border-color: #ef4444; background: rgba(220,38,38,.36); animation: alarmBlink .65s steps(2) infinite; }
+.sh-part-pct { position: absolute; bottom: 1px; right: 2px; font: 700 8.5px 'DM Mono', monospace; color: #fff; background: rgba(0,0,0,.68); padding: 0 3px; border-radius: 3px; pointer-events: none; }
+.sh-inspector { background: rgba(255,255,255,.04); border: 1px solid var(--ui-line); border-radius: 8px; padding: 8px 10px; font-size: 11.5px; color: #cbd5e1; }
+.sh-insp-head { display: flex; justify-content: space-between; margin-bottom: 3px; font-size: 12.5px; color: #fff; }

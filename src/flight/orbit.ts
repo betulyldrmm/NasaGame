@@ -57,31 +57,34 @@ export function solveKepler(M: number, e: number): number {
 
 /** Hiperbolik Kepler denklemi M = e·sinhH − H. */
 export function solveKeplerHyperbolic(M: number, e: number): number {
-  let H = Math.asinh(M / e)
+  let H = Math.max(-650, Math.min(650, Math.asinh(M / e)))
   for (let i = 0; i < 50; i += 1) {
-    const d = (e * Math.sinh(H) - H - M) / (e * Math.cosh(H) - 1)
-    H -= d
+    const clamped = Math.max(-650, Math.min(650, H))
+    const d = (e * Math.sinh(clamped) - clamped - M) / Math.max(1e-9, e * Math.cosh(clamped) - 1)
+    if (!Number.isFinite(d)) break
+    H = Math.max(-650, Math.min(650, clamped - d))
     if (Math.abs(d) < 1e-12) break
   }
   return H
 }
 
 export function elementsFromState(r: Vec, v: Vec, mu: number): Elements {
-  const rl = len(r)
+  const rl = Math.max(1e-6, len(r))
+  const safeMu = Math.max(1e-6, mu)
   const v2 = v.x * v.x + v.y * v.y
   const h = r.x * v.y - r.y * v.x
   const dir = h >= 0 ? 1 : -1
-  const ex = (v.y * h) / mu - r.x / rl
-  const ey = (-v.x * h) / mu - r.y / rl
+  const ex = (v.y * h) / safeMu - r.x / rl
+  const ey = (-v.x * h) / safeMu - r.y / rl
   const e = Math.hypot(ex, ey)
-  const energy = v2 / 2 - mu / rl
-  const a = -mu / (2 * energy)
-  const p = (h * h) / mu
+  const energy = v2 / 2 - safeMu / rl
+  const a = -safeMu / (2 * energy)
+  const p = (h * h) / safeMu
   const argp = e > 1e-9 ? Math.atan2(ey, ex) : 0
   const nu = wrapPi(dir * (Math.atan2(r.y, r.x) - argp))
   const rp = p / (1 + e)
   const ra = e < 1 ? p / (1 - e) : Infinity
-  const period = e < 1 && a > 0 ? 2 * Math.PI * Math.sqrt((a * a * a) / mu) : Infinity
+  const period = e < 1 && a > 0 ? 2 * Math.PI * Math.sqrt((a * a * a) / safeMu) : Infinity
   return { a, e, argp, nu, dir, p, rp, ra, period, energy }
 }
 
@@ -97,7 +100,7 @@ export function stateAtAnomaly(el: Pick<Elements, 'e' | 'argp' | 'dir' | 'p'>, n
 }
 
 function gravityAccel(r: Vec, mu: number): Vec {
-  const rl = len(r)
+  const rl = Math.max(1e-6, len(r))
   const k = -mu / (rl * rl * rl)
   return { x: r.x * k, y: r.y * k }
 }
@@ -132,7 +135,7 @@ export function propagate(r: Vec, v: Vec, mu: number, dt: number): StateVec {
   if (dt === 0) return { r, v }
   const el = elementsFromState(r, v, mu)
   const rl = len(r)
-  if (el.p < 1e-7 * rl || Math.abs(el.e - 1) < 1e-5 || !Number.isFinite(el.a)) {
+  if (el.p < 1e-7 * rl || Math.abs(el.e - 1) < 1e-5 || !Number.isFinite(el.a) || Math.abs(el.a) < 1e-6) {
     return propagateNumeric(r, v, mu, dt)
   }
   if (el.e < 1) {
@@ -147,6 +150,7 @@ export function propagate(r: Vec, v: Vec, mu: number, dt: number): StateVec {
   const k = Math.sqrt((el.e - 1) / (el.e + 1))
   const H0 = 2 * Math.atanh(Math.max(-0.999999999, Math.min(0.999999999, k * Math.tan(el.nu / 2))))
   const M = el.e * Math.sinh(H0) - H0 + n * dt
+  if (!Number.isFinite(M)) return propagateNumeric(r, v, mu, dt)
   const H = solveKeplerHyperbolic(M, el.e)
   const nu = 2 * Math.atan(Math.tanh(H / 2) / k)
   return stateAtAnomaly(el, nu, mu)

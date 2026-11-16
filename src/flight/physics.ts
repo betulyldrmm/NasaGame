@@ -17,6 +17,15 @@ export interface Controls {
   /** RCS öteleme, gemi ekseninde: tx sağ, ty ileri */
   tx: number
   ty: number
+  /** Silah ateşi (F veya Sağ Tık / Sol Tık Nişan) */
+  fire?: boolean
+  /** FTL stili seçili silah anahtarı (def.id — aynı türdeki tüm bağlı tareti ateşler) */
+  weaponKey?: string
+  /** Aktif silah grubu (geriye dönük uyumluluk için tutulur) */
+  fireGroup?: 0 | 1 | 2 | 3
+  /** Dünya ekseninde nişan açısı (rad) ve imleç mesafesi (m) */
+  aimAngle?: number
+  aimDist?: number
   /** Çok oyunculu: istemcinin kendi aracında yerelde hesapladığı burun yönü (anında tepki için) */
   vid?: number
   angle?: number
@@ -64,7 +73,7 @@ export function terrainHeight(id: BodyId, theta: number): number {
     return 32 * s(11 * theta + 1.3) + 18 * s(39 * theta + 0.9) + 9 * s(180 * theta + 2) + 3 * s(1200 * theta) + 1.1 * s(4300 * theta + 0.6)
   }
   if (id === 'earth') {
-    const f = smooth(0.004, 0.03, Math.abs(wrapPi(theta - PAD_ANGLE)))
+    const f = smooth(0.008, 0.035, Math.abs(wrapPi(theta - PAD_ANGLE)))
     return f * (40 * s(23 * theta) + 22 * s(61 * theta + 1) + 9 * s(410 * theta + 2) + 3.5 * s(1900 * theta) + 1.6 * s(9000 * theta + 1))
   }
   return 0
@@ -95,9 +104,9 @@ export interface Situation {
 
 export function situation(v: Vessel, st: VesselStats = vesselStats(v.parts, v.cargo)): Situation {
   const body = BODIES[v.bodyId]
-  const r = len(v.pos)
+  const r = Math.max(1e-6, len(v.pos))
   const theta = Math.atan2(v.pos.y, v.pos.x)
-  const bottom = st.maxY - st.comY
+  const bottom = v.parts.length > 0 ? st.maxY - st.comY : 0
   return {
     r,
     theta,
@@ -138,9 +147,9 @@ export function rotateVessel(
   const maxManualVel = 1.15 * (v.rcsOn && st.rcs > 0 ? 1.2 : 1)
   const maxAutoVel = 1.65
 
-  if (!forcedTarget && ctrl && ctrl.rotate !== 0) {
+  if (forcedTarget === null && ctrl && ctrl.rotate !== 0) {
     const mdt = dt * manualScale
-    const acc = -ctrl.rotate * manualMaxAcc
+    const acc = -Math.max(-1, Math.min(1, ctrl.rotate)) * manualMaxAcc
     v.angVel = Math.max(-maxManualVel, Math.min(maxManualVel, v.angVel + acc * mdt))
     v.angle = wrapPi(v.angle + v.angVel * mdt)
     return
@@ -268,7 +277,7 @@ function autoOrbitGuidance(
   if (maxAccel <= 0.05) {
     v.throttle = 0
     v.autopilotNote = 'Yörünge otopilotu: bu kademede yakıt yok!'
-    return Math.atan2(v.vel.y || up.y, v.vel.x || up.x)
+    return s.speed > 0.1 ? Math.atan2(v.vel.y, v.vel.x) : Math.atan2(up.y, up.x)
   }
 
   // Güvenli ama eliptik yörünge (varış sonrası): enberide geri yönde yakıp daireselleştir.
@@ -326,7 +335,7 @@ function autoOrbitGuidance(
   const vCirc = Math.sqrt(body.mu / Math.max(s.r, body.radius + 1))
   const vtAbs = Math.abs(vt)
   const raAlt = el.e < 1 && Number.isFinite(el.ra) && !v.landed ? el.ra - body.radius : 0
-  if (v.landed || (raAlt < targetAlt * 0.985 && s.vr > -2 && el.rp < safePeri)) {
+  if (v.landed || (raAlt < targetAlt * 0.985 && s.vr > -15 && el.rp < safePeri)) {
     const startTurn = body.atmoHeight > 0 ? 450 : 90
     const endTurn = Math.max(startTurn + 1200, targetAlt * (body.atmoHeight > 0 ? 0.55 : 0.38))
     const tiltAlt = s.alt < startTurn ? 0 : smooth(startTurn, endTurn, Math.max(0, s.altSea)) * 1.46
@@ -344,7 +353,7 @@ function autoOrbitGuidance(
   const need = Math.max(0, vCirc - vtAbs)
   const burnTime = need / Math.max(0.1, maxAccel)
   const toAp = s.vr > 0 ? (el.ra - s.r) / Math.max(5, s.vr) : 0
-  if (s.vr > 0 && toAp > burnTime * 0.5 + 4 && el.rp < safePeri && s.altSea >= body.atmoHeight * 0.9) {
+  if (s.vr > 0 && toAp > burnTime * 0.5 + 4 && el.rp < safePeri && s.altSea >= body.atmoHeight * (parkingOnly ? 1 : 0.9)) {
     v.throttle = 0
     v.autopilotNote = 'Öte noktaya süzülüyor (daireselleştirme beklemede)…'
     return tanAngle
@@ -354,7 +363,8 @@ function autoOrbitGuidance(
   const pitch = Math.max(-0.5, Math.min(0.7, -s.vr * 0.012))
   const targetAngle = tanAngle - spin * pitch
   const align = Math.cos(wrapPi(v.angle - targetAngle))
-  v.throttle = align > 0.5 ? Math.max(0.2, Math.min(1, need / 25 + (s.vr < -3 ? 0.5 : 0))) : 0
+  const circNeed = need > 0.5 ? Math.max(0.2, Math.min(1, need / 25)) : 0
+  v.throttle = align > 0.5 ? Math.max(circNeed, s.vr < -3 ? 0.5 : 0) : 0
   v.autopilotNote = `${body.name} yörüngesi daireselleştiriliyor…`
   return targetAngle
 }
@@ -496,11 +506,13 @@ export function stepPhysics(
   let ay = (fwd.y * out.thrust) / mass
   v.dvUsed += (out.thrust / mass) * dt
 
-  if (ctrl && v.rcsOn && st.rcs > 0 && (ctrl.tx !== 0 || ctrl.ty !== 0)) {
+  const tx = ctrl ? Math.max(-1, Math.min(1, ctrl.tx || 0)) : 0
+  const ty = ctrl ? Math.max(-1, Math.min(1, ctrl.ty || 0)) : 0
+  if (ctrl && v.rcsOn && st.rcs > 0 && (tx !== 0 || ty !== 0)) {
     const acc = 0.6 * Math.min(2, st.rcs / 2)
     const right = { x: fwd.y, y: -fwd.x }
-    ax += (right.x * ctrl.tx + fwd.x * ctrl.ty) * acc
-    ay += (right.y * ctrl.tx + fwd.y * ctrl.ty) * acc
+    ax += (right.x * tx + fwd.x * ty) * acc
+    ay += (right.y * tx + fwd.y * ty) * acc
     v.dvUsed += acc * dt
   }
 
@@ -520,21 +532,21 @@ export function stepPhysics(
   ax -= up.x * g
   ay -= up.y * g
 
-  // Paraşüt açıkken araç hız vektörünün tersine (burun yukarı) döner; oto-inişte motor
-  // çalışırken veya son alçalışta düzleşme hedefi önceliklidir.
+  // Paraşüt açıkken araç hız vektörünün tersine (burun yukarı) döner; oto-inişte ise iniş
+  // rehberliği zaten süzülürken ters yönü, yanış gerekiyorsa fren yönünü verir.
   const chuting = st.chutesDeployed > 0 && rho > 0.0005 && s.speed > 2
   let chuteAngle: number | null = chuting ? Math.atan2(-v.vel.y, -v.vel.x) : null
   if (chuteAngle !== null && s.alt < 25) {
     const tilt = wrapPi(chuteAngle - s.theta)
     chuteAngle = s.theta + Math.max(-0.45, Math.min(0.45, tilt))
   }
-  const forcedTarget = chuteAngle !== null && !(ap === 'land' && (v.throttle > 0.05 || s.alt < 60)) ? chuteAngle : autoTarget
+  const forcedTarget = chuteAngle !== null && ap !== 'land' ? chuteAngle : autoTarget
   rotateVessel(v, st, dt, ctrl, forcedTarget, manualScale)
 
   v.vel = { x: v.vel.x + ax * dt, y: v.vel.y + ay * dt }
 
   if (rho > 0 && s.speed > 0.05) {
-    const width = st.maxX - st.minX
+    const width = Math.max(0.5, st.maxX - st.minX)
     const cdA = (st.hasNose ? 0.3 : 0.6) * width * 1.2 + st.chutesDeployed * 420
     const dragAcc = (0.5 * rho * s.speed * s.speed * cdA) / 1000 / mass
     const sp = len(v.vel)
@@ -544,18 +556,18 @@ export function stepPhysics(
 
   v.pos = { x: v.pos.x + v.vel.x * dt, y: v.pos.y + v.vel.y * dt }
 
-  const r2 = len(v.pos)
+  const r2 = Math.max(1e-6, len(v.pos))
   if (!body.landable) {
     return r2 < body.radius ? { firing: out.firing, crash: `${body.name} atmosferinde yok oldu` } : { firing: out.firing }
   }
   const theta2 = Math.atan2(v.pos.y, v.pos.x)
-  const bottom = st.maxY - st.comY
+  const bottom = v.parts.length > 0 ? st.maxY - st.comY : 0
   const groundR = body.radius + terrainHeight(body.id, theta2) + bottom
   if (r2 <= groundR) {
     const up2 = { x: v.pos.x / r2, y: v.pos.y / r2 }
     const vr = v.vel.x * up2.x + v.vel.y * up2.y
     v.pos = { x: up2.x * groundR, y: up2.y * groundR }
-    if (vr <= 0) {
+    if (vr <= 1) {
       const speed = len(v.vel)
       const tilt = Math.abs(wrapPi(v.angle - theta2))
       if (speed > landingTolerance(st)) return { firing: out.firing, crash: `${speed.toFixed(0)} m/s hızla yüzeye çarptı`, crashSpeed: speed }
@@ -590,7 +602,10 @@ export function orbitCoastWait(v: Vessel, body: BodyDef, s: Situation): number |
     if (open && captureWantsBurn(body, s, el)) return null
     const lim = open ? 0.7 : 0.45
     if (Math.abs(el.nu) < lim) return null
-    if (s.vr < 0) return (s.r - el.p / (1 + el.e * Math.cos(lim))) / Math.max(1, -s.vr) - 15
+    if (s.vr < 0) {
+      const wait = (s.r - el.p / (1 + el.e * Math.cos(lim))) / Math.max(1, -s.vr) - 15
+      return wait > 0 ? wait : null
+    }
     return el.e < 1 ? el.period * 0.3 : 600
   }
   if (el.ra < targetR * 0.985 || s.vr <= 0) return null
