@@ -16,7 +16,8 @@ import {
   tickBase,
   WARFARE_STARTER_EARTH_SITES,
 } from '../game/base'
-import { COMBAT_PRESETS, DEFAULT_DESIGN, partDef } from '../game/data'
+import { COMBAT_PRESETS,
+  LOOT_PRESETS, DEFAULT_DESIGN, partDef } from '../game/data'
 import { INITIAL_TECH } from '../game/tech'
 import type {
   Base,
@@ -26,13 +27,14 @@ import type {
   MultiplayerConfig,
   MultiplayerMode,
   MultiplayerPlayer,
-  PartInst,
   PlanetCapture,
   Vessel,
 } from '../game/types'
-import { cargoMass, components, vesselStats } from '../game/vessel'
+import { vesselStats } from '../game/vessel'
 import { BODIES, type BodyId, solarFlux } from '../nasa/bodies'
-import { isWarfareMode, stepWarfareRules } from './combat'
+import { applyImpactDamage, isWarfareMode, stepWarfareRules } from './combat'
+import type { Fx } from './world'
+import { ensureLootSetup, LOOT_START_MONEY } from './loot'
 import { bodyAbsState, elementsFromState, len } from './orbit'
 import {
   type Controls,
@@ -122,12 +124,14 @@ export function newMultiplayerGame(
   playersList: { id: string; username: string; color: string; slot: number }[],
   config: Partial<MultiplayerConfig> = {},
 ): GameState {
-  const mode: MultiplayerMode = config.mode === 'orbital-warfare' ? 'orbital-warfare' : 'colony-race'
+  const mode: MultiplayerMode =
+    config.mode === 'orbital-warfare' ? 'orbital-warfare' : config.mode === 'loot-raid' ? 'loot-raid' : 'colony-race'
   const cfg: MultiplayerConfig = {
     mode,
     warfareGoal: config.warfareGoal ?? 'siege',
+    lootGoal: config.lootGoal ?? 60,
     targetPlanets: config.targetPlanets ?? 4,
-    startingMoney: config.startingMoney ?? (mode === 'orbital-warfare' ? 100_000 : 50_000),
+    startingMoney: config.startingMoney ?? (mode === 'orbital-warfare' ? 100_000 : mode === 'loot-raid' ? LOOT_START_MONEY : 50_000),
     passiveBonusPerPlanet: config.passiveBonusPerPlanet ?? 12_000,
     allowAutoWarp: config.allowAutoWarp ?? true,
   }
@@ -154,12 +158,16 @@ export function newMultiplayerGame(
     }
   }
   const earth = makeStarterEarthBase(0, hostId, mode)
-  const initialDesign = (mode === 'orbital-warfare' ? COMBAT_PRESETS[0]!.design : DEFAULT_DESIGN).map((p) => ({ ...p }))
+  const initialDesign = (
+    mode === 'orbital-warfare' ? COMBAT_PRESETS[0]!.design : mode === 'loot-raid' ? LOOT_PRESETS[0]!.design : DEFAULT_DESIGN
+  ).map((p) => ({ ...p }))
   const welcomeText =
-    mode === 'orbital-warfare'
+    mode === 'loot-raid'
+      ? '🏴‍☠️ Yağma başladı! Kaynak sahalarından sandık topla, üssüne taşı, gemini ve üssünü geliştir, rakiplerini yağmala!'
+      : mode === 'orbital-warfare'
       ? '⚔️ Uzay Savaşı başladı! Roketine silahlar ekle, rakiplerle çarpış ve düşman kolonilerini yok et!'
       : '🚀 Koloni yarışı başladı! Gezegenlere in, kargodan Uzay İstasyonu kur; en çok koloni kuran kazanır.'
-  return {
+  const game: GameState = {
     time: 0,
     tick: 0,
     protocolVersion: 1,
@@ -192,9 +200,11 @@ export function newMultiplayerGame(
         nearestInterceptM: null,
       },
       feed: [{ id: 1, time: 0, text: welcomeText }],
-      ...(mode === 'orbital-warfare' ? { projectiles: [], nextProjId: 1 } : {}),
+      ...(mode !== 'colony-race' ? { projectiles: [], nextProjId: 1 } : {}),
     },
   }
+  ensureLootSetup(game)
+  return game
 }
 
 export function addMultiplayerPlayer(gs: GameState, id: string, username: string, color: string, slot: number) {
@@ -211,6 +221,8 @@ export function removeMultiplayerPlayer(gs: GameState, id: string) {
   const p = gs.mp.players[id]
   if (!p) return
   delete gs.mp.players[id]
+  // Yağma modu: ayrılan oyuncunun üssü de kaldırılır.
+  gs.vessels = gs.vessels.filter((v) => !(v.outpost && v.ownerId === id))
   pushMpFeed(gs, `${p.username} ayrıldı.`, p.color)
 }
 
@@ -356,16 +368,9 @@ export function stepMultiplayerIncome(gs: GameState, incomeDt: number) {
 
 export function vesselRadius(v: Vessel): number {
   if (v.station) return 4.2
+  if (v.outpost) return 5.5
   const st = vesselStats(v.parts)
   return Math.max(1.2, Math.hypot(st.maxX - st.minX, st.maxY - st.minY) * 0.44)
-}
-
-function partWorldPos(v: Vessel, st: ReturnType<typeof vesselStats>, p: PartInst) {
-  const d = partDef(p.def)
-  const lx = p.x + d.w / 2 - st.comX
-  const lf = -(p.y + d.h / 2 - st.comY)
-  const fwd = { x: Math.cos(v.angle), y: Math.sin(v.angle) }
-  return { x: v.pos.x + fwd.y * lx + fwd.x * lf, y: v.pos.y - fwd.x * lx + fwd.y * lf }
 }
 
 function spawnBoomFx(
@@ -384,15 +389,6 @@ function spawnBoomFx(
   events.push({ type: 'explosion', size, bodyId, x, y })
 }
 
-function clearOwnershipPointers(gs: GameState, vesselId: number) {
-  if (gs.activeId === vesselId) gs.activeId = null
-  if (gs.mp) {
-    for (const p of Object.values(gs.mp.players)) {
-      if (p.activeVesselId === vesselId) p.activeVesselId = null
-    }
-  }
-}
-
 /**
  * Uzayda / havada veya yüzeydeki rakibe çarpışma hasarı:
  * Yüzeydeki `shatter()`'ın aksine aracı yüzeye ışınlamaz — uçuyorsa yörüngede kalır!
@@ -407,6 +403,8 @@ function shatterMidAir(
   firing: Map<number, Map<number, number>>,
   fxOut: FxEventLike[] | undefined,
   events: GameEvent[],
+  hitX: number,
+  hitY: number,
 ) {
   if (v.debris) {
     const d = partDef(v.parts[0]?.def ?? 'tank-s')
@@ -416,88 +414,19 @@ function shatterMidAir(
     return
   }
 
-  const st = vesselStats(v.parts)
-  const tol = landingTolerance(st)
-  const severity = shockSpeed / Math.max(1, tol)
-  const total = v.parts.length
-  const totalDestroy = total <= 1 || severity >= 2.2
-  const breakCount = totalDestroy
-    ? total
-    : Math.max(1, Math.min(total - 1, Math.round(total * 0.34 * Math.max(0.25, severity - 0.55))))
-
-  // Çarpışmada kopacak parçalar (ağır darbede tümü)
-  const order = v.parts.map((_, i) => i).sort((a, b) => Math.abs(v.parts[b]!.y - st.comY) - Math.abs(v.parts[a]!.y - st.comY))
-  const lost = new Set(order.slice(0, breakCount))
-  const keep = v.parts.filter((_, i) => !lost.has(i))
-  const group = components(keep)
-  const cmd = keep.findIndex((p) => partDef(p.def).kind === 'command')
-  const survivors = !totalDestroy && cmd >= 0 ? keep.filter((_, i) => group[i] === group[cmd]) : []
-  const debris = v.parts.filter((p) => !survivors.includes(p))
-
-  const kick = Math.min(48, 5 + shockSpeed * 0.35)
-  debris.forEach((p, k) => {
-    const w = partWorldPos(v, st, p)
-    const ang = Math.atan2(w.y - v.pos.y, w.x - v.pos.x) + (k - debris.length / 2) * 0.35
-    const id = gs.nextId
-    gs.nextId += 1
-    gs.vessels.push({
-      id,
-      name: `Enkaz ${id}`,
-      ownerId: v.ownerId,
-      parts: [{ ...p, x: 0, y: 0 }],
-      bodyId: v.bodyId,
-      pos: { x: w.x, y: w.y },
-      vel: { x: v.vel.x + Math.cos(ang) * kick, y: v.vel.y + Math.sin(ang) * kick },
-      angle: v.angle,
-      angVel: v.angVel + ((k % 2 ? 1 : -1) * 4.5),
-      landed: false,
-      throttle: 0,
-      ec: 0,
-      cargo: { modules: {}, ore: 0, oreFrom: null },
-      rcsOn: false,
-      sas: 'off',
-      visited: [],
-      assist: null,
-      dvUsed: 0,
-      noCollideUntil: gs.time + 0.8,
-      debris: { ttl: 4.5 + (k % 4) },
-    })
-    if (k % 4 === 0) spawnBoomFx(fxOut, events, v.bodyId, w.x, w.y, clock, 2.2 + Math.max(partDef(p.def).w, partDef(p.def).h) * 0.6)
-  })
-
-  if (!survivors.length) {
-    const wasActive = gs.activeId === v.id
-    gs.vessels = gs.vessels.filter((o) => o.id !== v.id)
-    firing.delete(v.id)
-    clearOwnershipPointers(gs, v.id)
-    if (isWarfareMode(gs) && gs.mp && st.hasCommand && attackerId && attackerId !== v.ownerId) {
-      const atk = gs.mp.players[attackerId]
-      if (atk) {
-        atk.kills += 1
-        atk.score = (atk.score ?? 0) + 1
-        atk.money += 1500
-        if (gs.ownerId === atk.id) gs.money = atk.money
-      }
-    }
-    spawnBoomFx(fxOut, events, v.bodyId, v.pos.x, v.pos.y, clock, 7.5)
-    events.push({ type: 'crash', name: v.name, wasActive, reason, ownerId: v.ownerId, vesselId: v.id })
-    return
+  // Darbe yalnızca temas noktasının çevresini ezer: gemi bütün hâlde parçalanmaz.
+  const res = applyImpactDamage(gs, v, hitX, hitY, shockSpeed, { attackerId, clock, firing, fxOut: fxOut as Fx[] | undefined, events })
+  if (res.destroyed || !gs.vessels.includes(v)) return
+  if (!v.outpost) {
+    v.landed = false
+    v.autopilot = 'off'
+    v.autoLand = false
+    v.autopilotNote = undefined
+    v.approachWarn = null
   }
-
-  v.parts = survivors
-  v.landed = false
-  v.throttle = 0
-  v.autopilot = 'off'
-  v.autoLand = false
-  v.autopilotNote = undefined
-  v.approachWarn = null
   v.noCollideUntil = gs.time + 0.6
   if (attackerId && attackerId !== v.ownerId) v.lastAttackerId = attackerId
-  const st2 = vesselStats(v.parts)
-  v.ec = Math.min(v.ec, st2.ecCap)
-  if (v.shield !== undefined) v.shield = Math.min(v.shield, st2.shieldCap)
-  if (cargoMass(v.cargo) > st2.cargoCap + 1e-9) v.cargo = { modules: {}, ore: 0, oreFrom: null }
-  events.push({ type: 'toast', text: `${v.name}: ${reason} (hasarlı)!` })
+  events.push({ type: 'toast', ownerId: v.ownerId, text: `${v.name}: ${reason} (hasarlı)!` })
 }
 
 /**
@@ -524,6 +453,8 @@ export function resolveVesselCollisions(
       if (a.debris && b.debris) continue
       if (a.cruise || b.cruise) continue
       if (a.landed && b.landed) continue
+      // Kendi üssüne yanaşan gemi çarpışmaz (ikmal için içinden geçebilir).
+      if ((a.outpost || b.outpost) && a.ownerId === b.ownerId) continue
       if ((a.spawnShieldUntil && clock < a.spawnShieldUntil) || (b.spawnShieldUntil && clock < b.spawnShieldUntil)) continue
       if (a.ownerId && a.ownerId === b.ownerId && (a.noCollideUntil ?? 0) > gs.time && (b.noCollideUntil ?? 0) > gs.time) {
         continue
@@ -560,21 +491,24 @@ export function resolveVesselCollisions(
       let ny = dist > 1e-6 ? cy / dist : vRel > 1e-6 ? rvy / vRel : 0
       const mA = Math.max(0.2, vesselStats(a.parts, a.cargo).mass)
       const mB = Math.max(0.2, vesselStats(b.parts, b.cargo).mass)
-      const kA = mB / (mA + mB)
-      const kB = mA / (mA + mB)
+      // Uzay üsleri yerinden oynamaz: çarpan gemi tüm tepkiyi alır.
+      const aFixed = a.landed || !!a.outpost
+      const bFixed = b.landed || !!b.outpost
+      const kA = b.outpost ? 1 : a.outpost ? 0 : mB / (mA + mB)
+      const kB = a.outpost ? 1 : b.outpost ? 0 : mA / (mA + mB)
 
       // Çarpışma anındaki konuma al + ayır (yerdeki durağan aracı kaydırma)
       const overlap = Math.max(0.15, rSum - dist + 0.15)
-      if (!a.landed) a.pos = { x: a.pos.x + nx * overlap * kA, y: a.pos.y + ny * overlap * kA }
-      if (!b.landed) b.pos = { x: b.pos.x - nx * overlap * kB, y: b.pos.y - ny * overlap * kB }
+      if (!aFixed) a.pos = { x: a.pos.x + nx * overlap * kA, y: a.pos.y + ny * overlap * kA }
+      if (!bFixed) b.pos = { x: b.pos.x - nx * overlap * kB, y: b.pos.y - ny * overlap * kB }
 
       if (vRel < 3.5) {
         // Yavaş temas: kenetlenme için hasarsız yumuşak itme
         const vn = rvx * nx + rvy * ny
         if (vn < 0) {
           const jImp = -1.25 * vn
-          if (!a.landed) a.vel = { x: a.vel.x + nx * jImp * kA, y: a.vel.y + ny * jImp * kA }
-          if (!b.landed) b.vel = { x: b.vel.x - nx * jImp * kB, y: b.vel.y - ny * jImp * kB }
+          if (!aFixed) a.vel = { x: a.vel.x + nx * jImp * kA, y: a.vel.y + ny * jImp * kA }
+          if (!bFixed) b.vel = { x: b.vel.x - nx * jImp * kB, y: b.vel.y - ny * jImp * kB }
         }
         continue
       }
@@ -586,8 +520,8 @@ export function resolveVesselCollisions(
 
       const vn = rvx * nx + rvy * ny
       const jImp = Math.max(2, -1.35 * vn)
-      a.vel = { x: a.vel.x + nx * jImp * kA * 0.55, y: a.vel.y + ny * jImp * kA * 0.55 }
-      b.vel = { x: b.vel.x - nx * jImp * kB * 0.55, y: b.vel.y - ny * jImp * kB * 0.55 }
+      if (!a.outpost) a.vel = { x: a.vel.x + nx * jImp * kA * 0.55, y: a.vel.y + ny * jImp * kA * 0.55 }
+      if (!b.outpost) b.vel = { x: b.vel.x - nx * jImp * kB * 0.55, y: b.vel.y - ny * jImp * kB * 0.55 }
 
       const shockA = Math.max(vRel * (0.45 + 0.8 * kA), 6)
       const shockB = Math.max(vRel * (0.45 + 0.8 * kB), 6)
@@ -597,13 +531,13 @@ export function resolveVesselCollisions(
       if (!a.station) {
         const tolA = landingTolerance(vesselStats(a.parts))
         if (shockA >= tolA * 0.85 || a.debris || vRel >= 16) {
-          shatterMidAir(gs, a, shockA, reasonA, b.ownerId, clock, firing, fxOut, events)
+          shatterMidAir(gs, a, shockA, reasonA, b.ownerId, clock, firing, fxOut, events, hitX, hitY)
         }
       }
       if (!b.station) {
         const tolB = landingTolerance(vesselStats(b.parts))
         if (shockB >= tolB * 0.85 || b.debris || vRel >= 16) {
-          shatterMidAir(gs, b, shockB, reasonB, a.ownerId, clock, firing, fxOut, events)
+          shatterMidAir(gs, b, shockB, reasonB, a.ownerId, clock, firing, fxOut, events, hitX, hitY)
         }
       }
     }

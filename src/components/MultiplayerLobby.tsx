@@ -32,17 +32,31 @@ const WARFARE_GOALS: { val: WarfareGoal; label: string; short: string }[] = [
   { val: 'endless', label: 'Sonsuz Savaş', short: 'Sonsuz' },
 ]
 
-const MONEY_CHOICES = [30_000, 50_000, 100_000, 200_000]
+const LOOT_GOALS = [
+  { val: 30, label: '30 t ganimet (Hızlı)' },
+  { val: 60, label: '60 t ganimet (Standart)' },
+  { val: 120, label: '120 t ganimet (Uzun)' },
+  { val: 0, label: 'Sonsuz Yağma' },
+]
+
+const MONEY_CHOICES = [30_000, 40_000, 50_000, 100_000, 200_000]
+
+const MODE_LABEL: Record<MultiplayerMode, string> = {
+  'loot-raid': '🏴‍☠️ Yağma',
+  'orbital-warfare': '⚔️ Uzay Savaşı',
+  'colony-race': '🪐 Koloni Yarışı',
+}
 
 export default function MultiplayerLobby({ defaultName, onBack }: Props) {
   const mp = useMultiplayer()
   const [pilotName, setPilotName] = useState(defaultName || 'Pilot')
-  const [mode, setMode] = useState<MultiplayerMode>('orbital-warfare')
-  const [roomName, setRoomName] = useState(`${defaultName || 'Pilot'} Savaş Odası`)
+  const [mode, setMode] = useState<MultiplayerMode>('loot-raid')
+  const [roomName, setRoomName] = useState(`${defaultName || 'Pilot'} Yağma Odası`)
   const [joinCode, setJoinCode] = useState('')
   const [targetPlanets, setTargetPlanets] = useState(4)
   const [warfareGoal, setWarfareGoal] = useState<WarfareGoal>('siege')
-  const [startingMoney, setStartingMoney] = useState(100_000)
+  const [startingMoney, setStartingMoney] = useState(40_000)
+  const [lootGoal, setLootGoal] = useState(60)
   const [allowAutoWarp] = useState(true)
   const [chatText, setChatText] = useState('')
   const [copied, setCopied] = useState(false)
@@ -57,12 +71,10 @@ export default function MultiplayerLobby({ defaultName, onBack }: Props) {
 
   const selectMode = (next: MultiplayerMode) => {
     setMode(next)
-    if (next === 'orbital-warfare') {
-      if (startingMoney < 100_000) setStartingMoney(100_000)
-      if (roomName.endsWith('Koloni Odası')) setRoomName(`${pilotName || 'Pilot'} Savaş Odası`)
-    } else {
-      if (startingMoney === 100_000) setStartingMoney(50_000)
-      if (roomName.endsWith('Savaş Odası')) setRoomName(`${pilotName || 'Pilot'} Koloni Odası`)
+    setStartingMoney(next === 'orbital-warfare' ? 100_000 : next === 'loot-raid' ? 40_000 : 50_000)
+    if (/(Savaş|Koloni|Yağma) Odası$/.test(roomName)) {
+      const suffix = next === 'orbital-warfare' ? 'Savaş' : next === 'loot-raid' ? 'Yağma' : 'Koloni'
+      setRoomName(`${pilotName || 'Pilot'} ${suffix} Odası`)
     }
   }
 
@@ -71,6 +83,7 @@ export default function MultiplayerLobby({ defaultName, onBack }: Props) {
     void createRoom(pilotName.trim() || defaultName || 'Host', roomName.trim() || `${pilotName} Odası`, {
       mode,
       warfareGoal,
+      lootGoal,
       targetPlanets,
       startingMoney,
       allowAutoWarp,
@@ -98,17 +111,19 @@ export default function MultiplayerLobby({ defaultName, onBack }: Props) {
 
   const activeMode: MultiplayerMode = mp.room?.config.mode ?? mode
   const isWarfare = activeMode === 'orbital-warfare'
+  const isLoot = activeMode === 'loot-raid'
   const roomGoalLabel = (g?: WarfareGoal) => WARFARE_GOALS.find((x) => x.val === g)?.short ?? 'Son Sağ Kalan'
+  const lootGoalLabel = (g?: number) => ((g ?? 60) === 0 ? 'Sonsuz Yağma' : `${g ?? 60} t ganimet`)
 
   return (
     <main className="mp-shell">
       <div className="stars" aria-hidden="true" />
       <header className="topbar">
         <div className="wordmark">
-          <span className="wordmark-icon" aria-hidden="true">{isWarfare ? '⚔️' : '🪐'}</span>
-          <span>{isWarfare ? 'UZAY SAVAŞI' : 'KOLONİ YARIŞI'}</span>
+          <span className="wordmark-icon" aria-hidden="true">{isLoot ? '🏴‍☠️' : isWarfare ? '⚔️' : '🪐'}</span>
+          <span>{isLoot ? 'YAĞMA' : isWarfare ? 'UZAY SAVAŞI' : 'KOLONİ YARIŞI'}</span>
           <small className="mp-sub-badge">
-            {isWarfare ? 'ÇOK OYUNCULU · SİLAHLI ROKETLER & KOLONİ BASKINI' : 'ÇOK OYUNCULU · İLK KOLONİYİ KUR'}
+            {isLoot ? 'ÇOK OYUNCULU · TOPLA, GELİŞTİR, YAĞMALA' : isWarfare ? 'ÇOK OYUNCULU · SİLAHLI ROKETLER & KOLONİ BASKINI' : 'ÇOK OYUNCULU · İLK KOLONİYİ KUR'}
           </small>
         </div>
         <div className="topbar-account">
@@ -148,7 +163,15 @@ export default function MultiplayerLobby({ defaultName, onBack }: Props) {
             <form className="mp-form" onSubmit={handleCreate}>
               <div className="mp-field">
                 <span>Oyun Modu</span>
-                <div className="mp-mode-switch" role="group" aria-label="Oyun Modu">
+                <div className="mp-mode-switch is-three" role="group" aria-label="Oyun Modu">
+                  <button
+                    type="button"
+                    className={`mp-mode-btn ${mode === 'loot-raid' ? 'is-active' : ''}`}
+                    onClick={() => selectMode('loot-raid')}
+                  >
+                    <strong>🏴‍☠️ Yağma</strong>
+                    <small>Uzay üsleri, ganimet & PvP</small>
+                  </button>
                   <button
                     type="button"
                     className={`mp-mode-btn ${mode === 'orbital-warfare' ? 'is-active' : ''}`}
@@ -188,7 +211,16 @@ export default function MultiplayerLobby({ defaultName, onBack }: Props) {
                 />
               </label>
               <div className="mp-form-row">
-                {mode === 'orbital-warfare' ? (
+                {mode === 'loot-raid' ? (
+                  <label className="mp-field">
+                    <span>Yağma Hedefi</span>
+                    <select value={lootGoal} onChange={(e) => setLootGoal(Number(e.target.value))}>
+                      {LOOT_GOALS.map((g) => (
+                        <option key={g.val} value={g.val}>{g.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                ) : mode === 'orbital-warfare' ? (
                   <label className="mp-field">
                     <span>Savaş Hedefi</span>
                     <select value={warfareGoal} onChange={(e) => setWarfareGoal(e.target.value as WarfareGoal)}>
@@ -266,14 +298,16 @@ export default function MultiplayerLobby({ defaultName, onBack }: Props) {
                     <div>
                       <div className="mp-room-title">
                         <b>{r.name}</b>{' '}
-                        <span className={`mp-mode-chip ${r.config.mode === 'orbital-warfare' ? 'is-war' : ''}`}>
-                          {r.config.mode === 'orbital-warfare' ? '⚔️ Uzay Savaşı' : '🪐 Koloni Yarışı'}
+                        <span className={`mp-mode-chip ${r.config.mode === 'colony-race' || !r.config.mode ? '' : 'is-war'}`}>
+                          {MODE_LABEL[r.config.mode ?? 'colony-race']}
                         </span>{' '}
                         <span className="mp-code-chip">{r.code}</span>
                       </div>
                       <small>
                         Ev sahibi: {r.hostName} · {r.playerCount}/{r.maxPlayers} oyuncu ·{' '}
-                        {r.config.mode === 'orbital-warfare'
+                        {r.config.mode === 'loot-raid'
+                          ? lootGoalLabel(r.config.lootGoal)
+                          : r.config.mode === 'orbital-warfare'
                           ? roomGoalLabel(r.config.warfareGoal)
                           : r.config.targetPlanets === 0
                             ? 'Sonsuz'
@@ -298,12 +332,14 @@ export default function MultiplayerLobby({ defaultName, onBack }: Props) {
         <section className="panel-card mp-room-card">
           <div className="mp-room-head">
             <div>
-              <p className="eyebrow"><span /> {isWarfare ? 'UZAY SAVAŞI LOBİSİ' : 'KOLONİ YARIŞI LOBİSİ'}</p>
+              <p className="eyebrow"><span /> {isLoot ? 'YAĞMA LOBİSİ' : isWarfare ? 'UZAY SAVAŞI LOBİSİ' : 'KOLONİ YARIŞI LOBİSİ'}</p>
               <h2>{mp.room.name}</h2>
               <small>
                 Hedef:{' '}
                 <b>
-                  {isWarfare
+                  {isLoot
+                    ? lootGoalLabel(mp.room.config.lootGoal)
+                    : isWarfare
                     ? roomGoalLabel(mp.room.config.warfareGoal)
                     : mp.room.config.targetPlanets === 0
                       ? 'Sonsuz Mod'
@@ -329,12 +365,20 @@ export default function MultiplayerLobby({ defaultName, onBack }: Props) {
                     <span className="mp-pname">
                       {p.username} {p.id === mp.you?.id ? <small>(Sen)</small> : null}
                     </span>
-                    <span className="mp-pad-tag">Rampa #{p.slot + 1}</span>
+                    <span className="mp-pad-tag">{isLoot ? 'Üs' : 'Rampa'} #{p.slot + 1}</span>
                     {p.isHost && <span className="mp-host-tag">👑 Ev Sahibi</span>}
                   </li>
                 ))}
               </ul>
-              {isWarfare ? (
+              {isLoot ? (
+                <ul className="mp-rules">
+                  <li>🛰️ Her oyuncunun uzayda taretli bir üssü var; gemin üssünün rıhtımından doğar.</li>
+                  <li>📦 Kaynak sahalarına uç, sandıkları kargona al ve üssüne taşı: her ton 2.500 ₡.</li>
+                  <li>🔧 Üssünün yanında yakıt, onarım ve cephane bedava; kazandığınla gemini ve üssünü geliştir.</li>
+                  <li>🏴‍☠️ Vurduğun gemi kargosunu saçar; çekirdeğini yok ettiğin üs kasasının %30&apos;unu bırakır.</li>
+                  <li>🕹️ Arcade uçuş: yerçekimi yok. W/S itki, A/D dönüş, fare ile nişan, Sol Tık ateş.</li>
+                </ul>
+              ) : isWarfare ? (
                 <ul className="mp-rules">
                   <li>🔫 <b>12 Özgün Silah + Zırh & Kalkan:</b> Montajda <i>Silahlar</i> ve <i>Savunma</i> kategorilerinden roketini donat.</li>
                   <li>🎯 <b>FTL Nişan & Ateş:</b> <b>1–9</b> tuşlarıyla silah seç, <b>Sol Tık</b> veya <b>F</b> basılı tutarak Dev Ölüm Lazerini ve silahları ateşle!</li>

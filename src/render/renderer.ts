@@ -6,7 +6,8 @@ import { vesselStats } from '../game/vessel'
 import { bodyAbsState, len, stateAtAnomaly, type Vec, wrapPi } from '../flight/orbit'
 import { airDensity, PAD_ANGLE, situation, terrainHeight } from '../flight/physics'
 import type { Patch } from '../flight/predict'
-import { allColoniesOnBody, colonyCenterWorldPos, colonySlotOffset, findLockTarget, isWarfareMode } from '../flight/combat'
+import { allColoniesOnBody, colonyCenterWorldPos, colonySlotOffset, findLockTarget, isLootMode, isWarfareMode } from '../flight/combat'
+import { findOutpost, outpostPos, PICKUP_RANGE, SERVICE_RANGE } from '../flight/loot'
 import { padAngleForSlot, playerPadAngle } from '../flight/multiplayerSim'
 import { getVisualPos } from '../flight/mpClient'
 import { activeVessel, type Sim } from '../flight/world'
@@ -1025,6 +1026,161 @@ function drawProjectiles(ctx: Ctx, sim: Sim, cam: Cam, bodyId: BodyId) {
   }
 }
 
+/** Yağma modu dünyası: arena sınırı, kaynak sahaları, üs ikmal halkaları ve ganimet sandıkları. */
+function drawLootWorld(ctx: Ctx, sim: Sim, cam: Cam, clock: number) {
+  const gs = sim.gs
+  const loot = gs.mp?.loot
+  if (!loot) return
+  const onScreen = (p: Vec, m: number) => p.x > -m && p.x < cam.w + m && p.y > -m && p.y < cam.h + m
+  ctx.save()
+  // Arena sınırı
+  const c = toScreen(cam, loot.center)
+  const rpx = loot.radius * cam.z
+  if (rpx < 60_000) {
+    ctx.strokeStyle = 'rgba(248,113,113,.4)'
+    ctx.lineWidth = 2
+    ctx.setLineDash([14, 10])
+    ctx.beginPath()
+    ctx.arc(c.x, c.y, rpx, 0, 6.283)
+    ctx.stroke()
+    ctx.setLineDash([])
+  }
+  // Kaynak sahaları
+  loot.sites.forEach((site, idx) => {
+    const p = toScreen(cam, site.pos)
+    const r = (idx === 0 ? 480 : 360) * cam.z
+    if (!onScreen(p, r + 40)) return
+    ctx.strokeStyle = 'rgba(251,191,36,.22)'
+    ctx.fillStyle = 'rgba(251,191,36,.035)'
+    ctx.lineWidth = 1.2
+    ctx.beginPath()
+    ctx.arc(p.x, p.y, r, 0, 6.283)
+    ctx.fill()
+    ctx.stroke()
+    ctx.fillStyle = 'rgba(253,230,138,.8)'
+    ctx.font = 'bold 11px "DM Mono", monospace'
+    ctx.textAlign = 'center'
+    ctx.fillText(site.name, p.x, p.y - r - 6)
+  })
+  // Üs ikmal halkaları
+  for (const o of gs.vessels) {
+    if (!o.outpost) continue
+    const p = toScreen(cam, o.pos)
+    const r = SERVICE_RANGE * cam.z
+    if (!onScreen(p, r + 40)) continue
+    const mine = o.ownerId === gs.ownerId
+    const col = (o.ownerId && gs.mp?.players[o.ownerId]?.color) || '#94a3b8'
+    ctx.strokeStyle = col
+    ctx.globalAlpha = mine ? 0.55 : 0.25
+    ctx.lineWidth = 1.2
+    ctx.setLineDash([6, 8])
+    ctx.beginPath()
+    ctx.arc(p.x, p.y, r, 0, 6.283)
+    ctx.stroke()
+    ctx.setLineDash([])
+    ctx.globalAlpha = 1
+    if (mine) {
+      ctx.fillStyle = col
+      ctx.font = 'bold 10px "DM Mono", monospace'
+      ctx.textAlign = 'center'
+      ctx.fillText('İkmal · Onarım · Teslim', p.x, p.y + r + 14)
+    }
+  }
+  // Sandıklar
+  for (const k of loot.crates) {
+    const p = toScreen(cam, k.pos)
+    if (!onScreen(p, 30)) continue
+    const size = Math.max(7, Math.min(22, (2.2 + k.tons) * cam.z * 1.6))
+    const bob = Math.sin(clock * 1.7 + k.id) * 0.25
+    ctx.save()
+    ctx.translate(p.x, p.y)
+    ctx.rotate(bob + k.id)
+    ctx.fillStyle = k.site < 0 ? '#f59e0b' : '#d4a04a'
+    ctx.strokeStyle = '#3b2a0d'
+    ctx.lineWidth = 1.2
+    ctx.fillRect(-size / 2, -size / 2, size, size)
+    ctx.strokeRect(-size / 2, -size / 2, size, size)
+    ctx.beginPath()
+    ctx.moveTo(-size / 2, 0)
+    ctx.lineTo(size / 2, 0)
+    ctx.moveTo(0, -size / 2)
+    ctx.lineTo(0, size / 2)
+    ctx.stroke()
+    ctx.restore()
+    if (cam.z > 0.5) {
+      ctx.strokeStyle = 'rgba(253,230,138,.18)'
+      ctx.beginPath()
+      ctx.arc(p.x, p.y, PICKUP_RANGE * cam.z, 0, 6.283)
+      ctx.stroke()
+      ctx.fillStyle = 'rgba(253,230,138,.9)'
+      ctx.font = '10px "DM Mono", monospace'
+      ctx.textAlign = 'center'
+      ctx.fillText(`${k.tons.toFixed(1)} t`, p.x, p.y - size / 2 - 5)
+    }
+  }
+  ctx.restore()
+}
+
+/** Yağma modu radarı: arenanın tamamı — üsler, sahalar, sandıklar ve gemiler. */
+function drawLootRadar(ctx: Ctx, sim: Sim, view: View, center: Vec) {
+  const gs = sim.gs
+  const loot = gs.mp?.loot
+  if (!loot) return
+  const R = Math.max(54, Math.min(86, view.h * 0.11))
+  const cx = view.w - R - 18
+  const cy = view.h * 0.5
+  const k = R / (loot.radius * 1.04)
+  // Radar ekran yönüyle aynı bakar (kamera dönmediği için kuzey yukarı).
+  const P = (w: Vec): Vec => ({ x: cx + (w.x - loot.center.x) * k, y: cy - (w.y - loot.center.y) * k })
+  ctx.save()
+  ctx.fillStyle = 'rgba(6,10,18,.72)'
+  ctx.strokeStyle = 'rgba(148,163,184,.5)'
+  ctx.lineWidth = 1.2
+  ctx.beginPath()
+  ctx.arc(cx, cy, R, 0, 6.283)
+  ctx.fill()
+  ctx.stroke()
+  ctx.beginPath()
+  ctx.arc(cx, cy, R, 0, 6.283)
+  ctx.clip()
+  for (const site of loot.sites) {
+    const p = P(site.pos)
+    ctx.fillStyle = 'rgba(251,191,36,.16)'
+    ctx.beginPath()
+    ctx.arc(p.x, p.y, Math.max(4, 420 * k), 0, 6.283)
+    ctx.fill()
+  }
+  ctx.fillStyle = '#fbbf24'
+  for (const c of loot.crates) {
+    const p = P(c.pos)
+    ctx.fillRect(p.x - 1, p.y - 1, 2, 2)
+  }
+  for (const o of gs.vessels) {
+    if (o.bodyId !== 'earth' || o.debris) continue
+    const p = P(o.pos)
+    const col = (o.ownerId && gs.mp?.players[o.ownerId]?.color) || '#94a3b8'
+    ctx.fillStyle = col
+    ctx.strokeStyle = col
+    if (o.outpost) {
+      ctx.lineWidth = 1.5
+      ctx.strokeRect(p.x - 3.5, p.y - 3.5, 7, 7)
+      if (o.ownerId === gs.ownerId) ctx.fillRect(p.x - 2, p.y - 2, 4, 4)
+    } else {
+      ctx.beginPath()
+      ctx.arc(p.x, p.y, o.ownerId === gs.ownerId ? 3 : 2.4, 0, 6.283)
+      ctx.fill()
+    }
+  }
+  // Kameranın baktığı nokta
+  const me = P(center)
+  ctx.strokeStyle = 'rgba(255,255,255,.85)'
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.arc(me.x, me.y, 5.5, 0, 6.283)
+  ctx.stroke()
+  ctx.restore()
+}
+
 function vesselHealthSummary(v: Vessel): { hp: number; maxHp: number } {
   let hp = 0
   let maxHp = 0
@@ -1150,7 +1306,10 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
   if (v && vPos) lastView = { bodyId: v.bodyId, pos: { ...vPos }, until: view.clock + 8 }
   const hold = !v && lastView && view.clock < lastView.until ? lastView : null
   const defPad = gs.mp ? playerPadAngle(gs, gs.ownerId) : PAD_ANGLE
-  let center = vPos ? vPos : hold ? hold.pos : { x: Math.cos(defPad) * padR, y: Math.sin(defPad) * padR }
+  const lootMode = isLootMode(gs)
+  // Yağma modunda gemisi olmayan oyuncunun kamerası kendi uzay üssünde bekler.
+  const lootHome = lootMode && gs.ownerId ? (findOutpost(gs, gs.ownerId)?.pos ?? outpostPos(gs.mp?.players[gs.ownerId]?.slot ?? 0)) : null
+  let center = vPos ? vPos : hold ? hold.pos : lootHome ? lootHome : { x: Math.cos(defPad) * padR, y: Math.sin(defPad) * padR }
   const r = len(center)
   const theta = Math.atan2(center.y, center.x)
   if (v && vPos && body.landable) {
@@ -1230,6 +1389,8 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
     ctx.stroke()
   }
 
+  if (lootMode && bodyId === 'earth') drawLootWorld(ctx, sim, cam, view.clock)
+
   // araçlar
   const vac = 1 - Math.min(1, rho / 1.2)
   for (const o of gs.vessels) {
@@ -1239,7 +1400,7 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
     if (p.x < -400 || p.x > view.w + 400 || p.y < -400 || p.y > view.h + 400) continue
     const st = vesselStats(o.parts)
     const isActive = o === v
-    const cell = o.debris ? Math.max(cam.z, 2.2) : vesselCell(st, cam.z, isActive ? 40 : 18)
+    const cell = o.debris ? Math.max(cam.z, 2.2) : vesselCell(st, cam.z, o.outpost ? 60 : isActive ? 40 : 18)
     if (o.bodyId === bodyId && cam.z > 0.8) {
       const vo = oPos === o.pos ? o : { ...o, pos: oPos }
       const s = situation(vo, st)
@@ -1343,12 +1504,15 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
   if (gs.mp) {
     for (const o of gs.vessels) {
       if (o.bodyId !== bodyId || o === v || o.debris || o.station) continue
-      if (!o.ownerId || o.ownerId === gs.ownerId) continue
+      // Yağma modunda kendi üssün de işaretlenir (eve dönüş oku).
+      const ownBase = !!o.outpost && o.ownerId === gs.ownerId
+      if (!o.ownerId || (o.ownerId === gs.ownerId && !ownBase)) continue
       const owner = gs.mp.players[o.ownerId]
       if (!owner) continue
       const oPos = getVisualPos(o)
       const dist = Math.hypot(oPos.x - center.x, oPos.y - center.y)
       if (dist > 80_000) continue
+      if (o.outpost && dist < 400) continue
       const p = toScreen(cam, oPos)
       const distLabel = dist >= 1000 ? `${(dist / 1000).toFixed(1)} km` : `${Math.round(dist)} m`
       const inView = p.x >= 28 && p.x <= view.w - 28 && p.y >= 28 && p.y <= view.h - 28
@@ -1386,12 +1550,13 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
         ctx.restore()
         ctx.font = 'bold 10px "DM Mono", monospace'
         ctx.textAlign = 'center'
-        ctx.fillText(`${owner.username} · ${distLabel}`, bx, by + 16)
+        ctx.fillText(`${ownBase ? '🏠 Üssün' : o.outpost ? `🛰️ ${owner.username}` : owner.username} · ${distLabel}`, bx, by + 16)
       }
       ctx.restore()
     }
   }
   drawBooms(ctx, sim, cam, bodyId)
+  if (lootMode) drawLootRadar(ctx, sim, view, center)
   if (v && !v.debris && view.selectedWeapon === 'gun-missile') {
     const info = view.aimScreen ? aimInfoFromScreen(frame, v, view.aimScreen.x, view.aimScreen.y) : undefined
     const lock = findLockTarget(gs, v, info?.angle, info?.dist)

@@ -119,6 +119,8 @@ export interface PartDef {
   shieldCap?: number
   /** silah özellikleri */
   weapon?: WeaponSpec
+  /** zırh: komşu parçalara gelen hasarın `absorb` oranını üstlenir; her isabetten `hardness` kadar hasarı siler */
+  armor?: { absorb: number; hardness: number }
   /** tank: yakıt kapasitesi (t) */
   fuel?: number
   /** motor: vakum itkisi (kN) */
@@ -150,7 +152,10 @@ export interface PartInst {
   deployed?: boolean
   /** İniş ayağı açılma animasyonunun 0..1 ilerlemesi. */
   deployProgress?: number
-  /** kalan parça canı (undefined = tam) */
+  /**
+   * kalan parça canı (undefined = tam). 0 veya altı: parça devre dışıdır (motor itmez, tank boşalır,
+   * silah susar) ama iskelet olarak gövdede kalır; −maxHp·0.75 altına inerse gövdeden kopar.
+   */
   hp?: number
   /** kalan cephane */
   ammo?: number
@@ -213,6 +218,8 @@ export interface Vessel {
   station?: boolean
   /** çarpışmadan kopan parça: kendi fiziğiyle savrulur, yere değince patlar */
   debris?: { ttl: number }
+  /** Yağma modu: oyuncunun uzay üssü (kontrol edilemez, taretleri kendiliğinden ateş eder) */
+  outpost?: { level: number; rebuildAt?: number }
   /** yörünge yakalama yanışı başladı: bitene kadar kesilmez (titreşimi önler) */
   captureLatch?: boolean
   /** çok oyunculu modda her aracın/oyuncunun kendi hedef gök cismi */
@@ -304,7 +311,40 @@ export interface PlayerMeta {
   color?: string
 }
 
-export type MultiplayerMode = 'colony-race' | 'orbital-warfare'
+export type MultiplayerMode = 'colony-race' | 'orbital-warfare' | 'loot-raid'
+
+/** Yağma modunda uzayda süzülen kargo sandığı. */
+export interface LootCrate {
+  id: number
+  pos: { x: number; y: number }
+  vel: { x: number; y: number }
+  /** içindeki ganimet (t) */
+  tons: number
+  /** hangi kaynak sahasından çıktı (−1: gemi/üs enkazı) */
+  site: number
+  born: number
+}
+
+export interface LootSite {
+  pos: { x: number; y: number }
+  name: string
+  /** saniyede üretilen ganimet (t/s) ve aynı anda bulunabilecek sandık sayısı */
+  rate: number
+  max: number
+  /** bir sonraki sandığa kadar birikmiş üretim */
+  acc: number
+}
+
+export interface LootState {
+  /** arena merkezi (Dünya çerçevesi) ve yarıçapı (m) */
+  center: { x: number; y: number }
+  radius: number
+  sites: LootSite[]
+  crates: LootCrate[]
+  nextCrateId: number
+  /** çekirdeği yok edilen üslerin yeniden kurulacağı saat (sim.clock), oyuncu kimliğine göre */
+  rebuild?: Record<string, number>
+}
 export type WarfareGoal = 'siege' | 'score15' | 'score30' | 'endless'
 
 export interface MultiplayerConfig {
@@ -312,6 +352,8 @@ export interface MultiplayerConfig {
   mode?: MultiplayerMode
   /** Uzay Savaşı modunda zafer koşulu */
   warfareGoal?: WarfareGoal
+  /** Yağma modunda kazanmak için üsse taşınması gereken ganimet (t); 0 = sonsuz */
+  lootGoal?: number
   /** Kazanmak için gereken gezegen sayısı (0 = sınırsız fetih) */
   targetPlanets: number
   startingMoney: number
@@ -388,6 +430,9 @@ export interface MultiplayerPlayer {
   earthBase?: Base
   /** Uzay Savaşı modunda her oyuncunun kendi gezegen kolonileri */
   colonies?: Partial<Record<BodyId, Base>>
+  /** Yağma modu: üsse teslim edilen toplam ganimet (t) ve üs seviyesi */
+  looted?: number
+  outpostLevel?: number
 }
 
 export interface DynamicWarpInfo {
@@ -418,6 +463,8 @@ export interface MultiplayerState {
   feed: MultiplayerFeedItem[]
   projectiles?: Projectile[]
   nextProjId?: number
+  /** Yağma modu durumu: arena, kaynak sahaları ve sandıklar */
+  loot?: LootState
 }
 
 export interface GameState {
@@ -481,6 +528,8 @@ export type GameCommand =
   | { type: 'removeGridModule'; bodyId: BodyId; x: number }
   | { type: 'rendezvous'; vesselId: number }
   | { type: 'repairVessel'; vesselId: number }
+  | { type: 'upgradeOutpost' }
+  | { type: 'jettisonCargo'; vesselId: number }
 
 export type GameEvent =
   | { type: 'toast'; text: string; ownerId?: string }

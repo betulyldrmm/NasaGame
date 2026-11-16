@@ -23,9 +23,10 @@ import { DEFAULT_DESIGN, GRID_H, GRID_W, INITIAL_MONEY, ISS_ALTITUDE_M, ISS_DESI
 import { MISSION_BY_ID, MISSIONS } from '../game/missions'
 import { baseIncomeMultiplier, hasAutoLandTech, INITIAL_TECH, isModuleUnlocked, isPartUnlocked, orePriceMultiplier, requiredTechForModule, requiredTechForPart } from '../game/tech'
 import type { AutopilotMode, Base, GameCommand, GameEvent, GameState, PartInst, Vessel } from '../game/types'
-import { activeEngines, cargoMass, components, estimateDeltaV, freshParts, fuelGroups, isCombatPart, isConnected, nextStage, setIspBoost, splitParts, vesselStats } from '../game/vessel'
+import { activeEngines, arcade, cargoMass, components, estimateDeltaV, freshParts, fuelGroups, isCombatPart, isConnected, nextStage, setIspBoost, splitParts, vesselStats } from '../game/vessel'
 import { BODIES, childrenOf, solarFlux, type BodyId } from '../nasa/bodies'
-import { damageNearbyColoniesOnCrash, isWarfareMode, stepCombatSystems, stepProjectiles, stepVesselWeapons } from './combat'
+import { damageNearbyColoniesOnCrash, isLootMode, isWarfareMode, stepCombatSystems, stepProjectiles, stepVesselWeapons } from './combat'
+import { findLootShip, jettisonCargo, lootSpawn, nearOwnOutpost, outpostControls, stepLoot, tradeInValue, upgradeOutpost } from './loot'
 import { bodyAbsState, bodyRelState, elementsFromState, hohmann, len, wrapPi } from './orbit'
 import {
   orbitCoastWait,
@@ -1101,7 +1102,10 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
   const autopilotWanted = isMp ? new Map<number, number>() : undefined
   const prevPos = isMp ? new Map(gs.vessels.map((v) => [v.id, { x: v.pos.x, y: v.pos.y }])) : null
   sim.clock = (sim.clock ?? 0) + real
-  if ((gs.tick ?? 0) % 120 === 0) ensureStation(gs)
+  // Yağma modu arcade uçar: yerçekimi yok, zaman hep 1×, ISS yok.
+  const loot = isLootMode(gs)
+  arcade.on = loot
+  if (!loot && (gs.tick ?? 0) % 120 === 0) ensureStation(gs)
   stepEggs(sim, active, real, events)
 
   // İniş ayakları yüzeye yaklaşırken kendiliğinden açılır.
@@ -1206,8 +1210,9 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
       effCtrlMap,
       autopilotWanted,
     )
-    sim.warpIdx = dyn.warpIdx
+    sim.warpIdx = loot ? 0 : dyn.warpIdx
     sim.warpRampTimer = dyn.rampTimer
+    if (loot && gs.mp.warpInfo.warpIdx !== 0) gs.mp.warpInfo = { ...gs.mp.warpInfo, warpIdx: 0, warp: 1 }
   } else if (!isMp && active) {
     // "Hedefe git" hedefte yörüngeye oturdu: kısa bir 1× molası ve ardından otomatik iniş.
     if (active.landAt && effectiveAutopilot(active) === 'off' && !active.landed) {
@@ -1326,6 +1331,11 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
       if (stepCruise(gs, sim.clock ?? 0, v) === 'arrived') {
         events.push({ type: 'toast', ownerId: v.ownerId, text: `Hedefe varıldı: ${BODIES[v.bodyId].name} — normal hıza dönüldü, inişi sen yap!` })
       }
+      sim.firing.delete(v.id)
+      continue
+    }
+    if (v.outpost) {
+      // Uzay üsleri sabittir: fizik adımı yok.
       sim.firing.delete(v.id)
       continue
     }
@@ -1454,7 +1464,9 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
 
   for (const v of [...gs.vessels]) {
     const isAct = isMp ? isAnyActivePlayerVessel(gs, v) : v === active
-    const vc = isMp ? (isAct && v.ownerId ? (effCtrlMap!.get(v.ownerId) ?? null) : null) : (isAct ? singleCtrl : null)
+    const vc = v.outpost
+      ? outpostControls(gs, v, sim.clock)
+      : isMp ? (isAct && v.ownerId ? (effCtrlMap!.get(v.ownerId) ?? null) : null) : (isAct ? singleCtrl : null)
     if (stepVesselWeapons(gs, v, real, vc, sim.clock, sim.firing, (sim.fx ??= []), events)) {
       sim.colonyDirty = true
     }
@@ -1465,6 +1477,8 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
   if (stepCombatSystems(gs, real, sim.clock, sim.firing, (sim.fx ??= []), events)) {
     sim.colonyDirty = true
   }
+
+  if (loot) stepLoot(gs, real, sim.clock, (sim.fx ??= []), events)
 
   const actualWarp = real > 0 ? simDt / real : 1
   const incomeDt = effectiveIncomeDt(real, actualWarp)
@@ -1582,6 +1596,7 @@ export function launchDesign(
   if (err) return err
   const cost = designCost(design, designCargo)
   if (cost > getPlayerMoney(gs, ownerId)) return `Bütçe yetersiz: ${cost.toLocaleString('tr-TR')} ₡ gerekli.`
+  if (isLootMode(gs)) return launchLootShip(sim, ownerId, design, designCargo, cost)
   const padTheta = playerPadAngle(gs, ownerId)
   const clearance = gs.mp ? 25 : 60
   const onPad = gs.vessels.find(
@@ -1628,6 +1643,57 @@ export function launchDesign(
   } else {
     sim.warpIdx = 0
   }
+  return null
+}
+
+/** Yağma modu: gemi rampadan değil, oyuncunun uzay üssünün rıhtımından doğar. */
+function launchLootShip(sim: Sim, ownerId: string, design: PartInst[], designCargo: Record<string, number>, cost: number): string | null {
+  const gs = sim.gs
+  const old = findLootShip(gs, ownerId)
+  let refund = 0
+  if (old) {
+    if (!nearOwnOutpost(gs, old, 600)) return 'Zaten uzayda bir gemin var: önce üssüne dön (yeni gemi alırken eskisi takas edilir) ya da gemini sil.'
+    refund = tradeInValue(old) + Math.round(old.cargo.ore * 2500)
+    if (cost > getPlayerMoney(gs, ownerId) + refund) return `Bütçe yetersiz: ${cost.toLocaleString('tr-TR')} ₡ gerekli.`
+    gs.vessels = gs.vessels.filter((o) => o !== old)
+    sim.firing.delete(old.id)
+  }
+  const parts = freshParts(design)
+  // Uzayda doğan geminin güneş panelleri açık gelir.
+  for (const q of parts) if (partDef(q.def).kind === 'solar') q.deployed = true
+  const st = vesselStats(parts)
+  const spawn = lootSpawn(gs, ownerId)
+  const id = gs.nextId
+  gs.nextId += 1
+  const ownerName = gs.mp?.players[ownerId]?.username
+  gs.vessels.push({
+    id,
+    name: ownerName ? `${ownerName} #${id}` : `Akıncı ${id}`,
+    ownerId,
+    parts,
+    bodyId: 'earth',
+    pos: spawn.pos,
+    vel: { x: 0, y: 0 },
+    angle: spawn.angle,
+    angVel: 0,
+    landed: false,
+    throttle: 0,
+    ec: st.ecCap,
+    cargo: { modules: { ...designCargo }, ore: 0, oreFrom: null },
+    rcsOn: false,
+    sas: 'off',
+    autopilot: 'off',
+    approachWarn: null,
+    visited: ['earth'],
+    assist: null,
+    dvUsed: 0,
+    ...(st.shieldCap > 0 ? { shield: st.shieldCap } : {}),
+    spawnShieldUntil: (sim.clock ?? 0) + 4,
+  })
+  addPlayerMoney(gs, refund - cost, ownerId)
+  setActiveVesselForPlayer(gs, ownerId, id)
+  const p = gs.mp?.players[ownerId]
+  if (p) p.lastManualAt = sim.clock ?? 0
   return null
 }
 
@@ -2003,7 +2069,7 @@ export function toggleKind(v: Vessel, kind: 'solar' | 'leg' | 'chute') {
 export function deleteVessel(sim: Sim, id: number, actorId = sim.gs.ownerId ?? 'local'): boolean {
   const gs = sim.gs
   const target = gs.vessels.find((v) => v.id === id)
-  if (!target || target.station) return false
+  if (!target || target.station || target.outpost) return false
   if (gs.mp && !canControlVessel(target, actorId)) return false
   const before = gs.vessels.length
   gs.vessels = gs.vessels.filter((v) => v.id !== id)
@@ -2118,11 +2184,13 @@ export function dockVessels(sim: Sim, v: Vessel, other: Vessel): GameEvent[] {
 // ───────────────────────── Çok oyunculu hazırlığı: yetki & komut dağıtıcısı ─────────────────────────
 
 export function canControlVessel(v: Vessel, actorId = 'local'): boolean {
+  if (v.outpost) return false
   if (!v.ownerId || v.ownerId === 'local' || actorId === 'local') return true
   return v.ownerId === actorId
 }
 
 export function setVesselAutopilot(sim: Sim, v: Vessel, mode: AutopilotMode): string | null {
+  if (mode !== 'off' && isLootMode(sim.gs)) return 'Yağma modunda otopilot yok: gemiyi sen uçurursun.'
   if (v.cruise) return 'Hızlı yolculuk sırasında otopilot değiştirilemez.'
   if (mode === 'land' && !hasAutoLandTech(sim.gs)) {
     return 'Otomatik İniş için Teknoloji Ağacından "Gelişmiş İniş" araştırmasını açmalısın.'
@@ -2213,6 +2281,10 @@ export function dispatchCommand(
       setActive(sim, cmd.vesselId, actorId)
       return { events }
     }
+    case 'upgradeOutpost': {
+      const err = upgradeOutpost(gs, actorId)
+      return err ? { events, error: err } : { events }
+    }
     case 'setWarpPref': {
       if (gs.mp) {
         const p = gs.mp.players[actorId]
@@ -2280,6 +2352,10 @@ export function dispatchCommand(
           if (vst.shieldCap > 0) v.shield = vst.shieldCap
           events.push({ type: 'toast', ownerId: v.ownerId, text: `🔧 ${v.name} tamir edildi (${damagedCount} parça onarıldı)!` })
           return { events }
+        }
+        case 'jettisonCargo': {
+          const err = jettisonCargo(gs, v, sim.clock ?? 0)
+          return err ? { events, error: err } : { events }
         }
         case 'togglePartKind': {
           const o = toggleKind(v, cmd.kind)

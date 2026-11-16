@@ -6,6 +6,27 @@ import type { Cargo, PartDef, PartInst } from './types'
 
 const key = (x: number, y: number) => x * 1000 + y
 
+/**
+ * Arcade uçuş (Yağma modu): yerçekimi yok, uzay sürtünmesi var, yakıt 4 kat idareli.
+ * Dünya adımı (`stepWorld`) ve istemci tahmini her karede moda göre ayarlar.
+ */
+export const arcade = { on: false }
+export const ARCADE_FUEL_FACTOR = 4
+export const ARCADE_DRAG = 0.085
+
+/** Parça çalışır durumda mı? Canı 0'a inen parça gövdede iskelet olarak kalır ama işlev görmez. */
+export function partAlive(p: PartInst): boolean {
+  return p.hp === undefined || p.hp > 0
+}
+
+/** Hasarlı motorun itki oranı: %60 canın altında doğrusal düşer (en az %25). */
+export function engineHealth(p: PartInst): number {
+  if (p.hp === undefined) return 1
+  if (p.hp <= 0) return 0
+  const f = p.hp / partMaxHp(p.def)
+  return f >= 0.6 ? 1 : Math.max(0.25, f / 0.6)
+}
+
 export function cellMap(parts: PartInst[]): Map<number, number> {
   const map = new Map<number, number>()
   parts.forEach((p, i) => {
@@ -149,16 +170,13 @@ export function vesselStats(parts: PartInst[], cargo?: Cargo | null): VesselStat
   let hasCombatParts = false
   for (const p of parts) {
     const d = partDef(p.def)
-    const f = d.kind === 'tank' ? (p.fuel ?? d.fuel ?? 0) : 0
+    const alive = partAlive(p)
+    const f = d.kind === 'tank' && alive ? (p.fuel ?? d.fuel ?? 0) : 0
     const m = d.mass + f
     mass += m
-    fuel += f
-    fuelCap += d.fuel ?? 0
     mx += m * (p.x + d.w / 2)
     my += m * (p.y + d.h / 2)
     cost += d.cost
-    ecCap += d.ecCap ?? 0
-    cargoCap += d.cargoCap ?? 0
     minX = Math.min(minX, p.x)
     maxX = Math.max(maxX, p.x + d.w)
     minY = Math.min(minY, p.y)
@@ -166,8 +184,14 @@ export function vesselStats(parts: PartInst[], cargo?: Cargo | null): VesselStat
     const pMax = partMaxHp(d.id)
     maxHp += pMax
     hp += Math.max(0, Math.min(pMax, p.hp ?? pMax))
-    shieldCap += d.shieldCap ?? 0
     if (d.kind === 'weapon' || d.kind === 'armor' || d.kind === 'shield') hasCombatParts = true
+    // Devre dışı (canı bitmiş) parça yalnızca kütle ve iskelettir: hiçbir işlevi sayılmaz.
+    if (!alive) continue
+    fuel += f
+    fuelCap += d.fuel ?? 0
+    ecCap += d.ecCap ?? 0
+    cargoCap += d.cargoCap ?? 0
+    shieldCap += d.shieldCap ?? 0
     if (d.weapon) {
       weaponCount += 1
       weaponDps += (d.weapon.dmg * (d.weapon.pellets ?? 1)) / Math.max(0.05, d.weapon.cooldown)
@@ -205,7 +229,7 @@ export function activeEngines(parts: PartInst[]): number[] {
   const out: number[] = []
   parts.forEach((p, i) => {
     const d = partDef(p.def)
-    if (d.kind !== 'engine' || p.on === false) return
+    if (d.kind !== 'engine' || p.on === false || !partAlive(p)) return
     for (let dx = 0; dx < d.w; dx += 1) if (map.has(key(p.x + dx, p.y + d.h))) return
     out.push(i)
   })
@@ -239,8 +263,11 @@ export function runEngines(parts: PartInst[], throttle: number, pressure: number
   const groups = fuelGroups(parts)
   for (const i of activeEngines(parts)) {
     const d = partDef(parts[i]!.def)
-    const flow = (d.thrust! / (d.ispVac! * ispBoost * G0)) * throttle
-    const tanks = parts.filter((p, j) => groups[j] === groups[i] && partDef(p.def).kind === 'tank' && (p.fuel ?? 0) > 0)
+    // Hasarlı motor daha az yakıt yakar ve daha az iter.
+    const boost = ispBoost * (arcade.on ? ARCADE_FUEL_FACTOR : 1)
+    const health = engineHealth(parts[i]!)
+    const flow = (d.thrust! / (d.ispVac! * boost * G0)) * throttle * health
+    const tanks = parts.filter((p, j) => groups[j] === groups[i] && partDef(p.def).kind === 'tank' && partAlive(p) && (p.fuel ?? 0) > 0)
     const avail = tanks.reduce((s, t) => s + (t.fuel ?? 0), 0)
     if (avail <= 0) continue
     let frac = 1
@@ -254,9 +281,9 @@ export function runEngines(parts: PartInst[], throttle: number, pressure: number
     if (need <= 0) continue
     const used = Math.min(need, avail)
     for (const t of tanks) t.fuel = Math.max(0, (t.fuel ?? 0) - used * ((t.fuel ?? 0) / avail))
-    const power = (used / (flow * dt)) * throttle
+    const power = (used / (flow * dt)) * throttle * health
     const isp = d.ispVac! + (d.ispSL! - d.ispVac!) * Math.min(1, Math.max(0, pressure))
-    thrust += (used / dt) * isp * ispBoost * G0
+    thrust += (used / dt) * isp * boost * G0
     firing.set(i, power)
   }
   return { thrust, firing, ecUsed }

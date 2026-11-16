@@ -5,7 +5,7 @@
  */
 import { useSyncExternalStore } from 'react'
 import { BODIES, type BodyId } from '../nasa/bodies'
-import { COMBAT_PRESETS, DEFAULT_DESIGN } from '../game/data'
+import { COMBAT_PRESETS, DEFAULT_DESIGN, LOOT_PRESETS } from '../game/data'
 import type {
   AutopilotMode,
   GameCommand,
@@ -17,7 +17,8 @@ import type {
   Vessel,
 } from '../game/types'
 import { INITIAL_TECH } from '../game/tech'
-import { isWarfareMode } from './combat'
+import { isLootMode, isWarfareMode } from './combat'
+import { arcade, ARCADE_DRAG } from '../game/vessel'
 import { effectiveAutopilot, stepPhysics, stepRails, type Controls } from './physics'
 import {
   addMultiplayerPlayer,
@@ -483,6 +484,20 @@ export function buildCompactSnapshot(sim: Sim, includeStatic: boolean): Snapshot
       pos: { x: r2(pr.pos.x), y: r2(pr.pos.y) },
       vel: { x: r2(pr.vel.x), y: r2(pr.vel.y) },
     }))
+    // Yağma modu: sandıklar yuvarlanmış gider; değişmeyen kaynak sahaları yalnızca tam karelerde gönderilir.
+    const slimLoot = gs.mp.loot
+      ? {
+          ...gs.mp.loot,
+          sites: includeStatic ? gs.mp.loot.sites : [],
+          crates: gs.mp.loot.crates.map((c) => ({
+            ...c,
+            pos: { x: Math.round(c.pos.x), y: Math.round(c.pos.y) },
+            vel: { x: Math.round(c.vel.x), y: Math.round(c.vel.y) },
+            tons: r2(c.tons),
+            born: Math.round(c.born),
+          })),
+        }
+      : undefined
     if (!includeStatic) {
       const slimPlayers: typeof gs.mp.players = {}
       for (const [pid, p] of Object.entries(gs.mp.players)) {
@@ -494,11 +509,13 @@ export function buildCompactSnapshot(sim: Sim, includeStatic: boolean): Snapshot
         players: slimPlayers,
         feed: gs.mp.feed.slice(-14),
         ...(slimProj ? { projectiles: slimProj } : {}),
+        ...(slimLoot ? { loot: slimLoot } : {}),
       }
-    } else if (slimProj) {
+    } else if (slimProj || slimLoot) {
       mpOut = {
         ...gs.mp,
-        projectiles: slimProj,
+        ...(slimProj ? { projectiles: slimProj } : {}),
+        ...(slimLoot ? { loot: slimLoot } : {}),
       }
     }
   }
@@ -628,6 +645,7 @@ export function hydrateCompactSnapshot(
         }
       }
       cleanGs.mp = { ...cleanGs.mp, players: restored }
+      if (cleanGs.mp.loot && prevGs.mp.loot) cleanGs.mp.loot = { ...cleanGs.mp.loot, sites: prevGs.mp.loot.sites }
     }
   }
 
@@ -890,6 +908,9 @@ function stepClientExtrapolation(dtReal: number) {
   const warpIdx = clientSim.warpIdx ?? 0
   const warp = WARPS[warpIdx] ?? 1
   const simDt = real * warp
+  // Yağma modu: istemci tahmini de arcade (yerçekimsiz, sürtünmeli) uçar.
+  const lootMode = isLootMode(clientSim.gs)
+  arcade.on = lootMode
   clientSim.clock = (clientSim.clock ?? 0) + real
   clientSim.gs.time += simDt
   const own = ownActive(clientSim.gs)
@@ -900,6 +921,7 @@ function stepClientExtrapolation(dtReal: number) {
       stepCruise(clientSim.gs, clientSim.clock ?? 0, v)
       continue
     }
+    if (v.outpost) continue
     const ap = effectiveAutopilot(v)
     // Kendi aracın: yerel tuşlarla tam fizik tahmini (anında tepki).
     if (v === own && ap === 'off' && (warpIdx <= PHYSICS_WARP_MAX_IDX || v.throttle > 0 || localCtrl.rotate !== 0 || localCtrl.tx !== 0 || localCtrl.ty !== 0)) {
@@ -925,7 +947,10 @@ function stepClientExtrapolation(dtReal: number) {
         const body = BODIES[v.bodyId]
         for (let i = 0; i < n; i += 1) {
           const r = Math.hypot(v.pos.x, v.pos.y)
-          if (body && r > 1) {
+          if (lootMode) {
+            const k = Math.exp(-ARCADE_DRAG * h)
+            v.vel = { x: v.vel.x * k, y: v.vel.y * k }
+          } else if (body && r > 1) {
             const gFactor = -(body.mu / (r * r * r))
             v.vel = {
               x: v.vel.x + v.pos.x * gFactor * h,
@@ -941,6 +966,10 @@ function stepClientExtrapolation(dtReal: number) {
     }
   }
 
+  const crates = clientSim.gs.mp?.loot?.crates
+  if (crates?.length) {
+    for (const c of crates) c.pos = { x: c.pos.x + c.vel.x * real, y: c.pos.y + c.vel.y * real }
+  }
   const projs = clientSim.gs.mp?.projectiles
   if (projs?.length) {
     const curClock = clientSim.clock ?? 0
@@ -948,7 +977,7 @@ function stepClientExtrapolation(dtReal: number) {
       if (pr.ttl <= 0 || curClock - pr.born >= pr.ttl) continue
       const pBody = BODIES[pr.bodyId]
       const gScale = pr.gravityScale ?? 1
-      if (gScale !== 0 && pBody) {
+      if (gScale !== 0 && pBody && !lootMode) {
         const r = Math.hypot(pr.pos.x, pr.pos.y)
         if (r > 1) {
           const gFactor = -(pBody.mu / (r * r * r)) * gScale
@@ -1081,7 +1110,13 @@ function handleServerMessage(msg: ServerMessage) {
       error = null
       chat = []
       clearPendingOptimistic()
-      localDesign = (msg.room.config.mode === 'orbital-warfare' ? COMBAT_PRESETS[0].design : DEFAULT_DESIGN).map((p) => ({
+      localDesign = (
+        msg.room.config.mode === 'orbital-warfare'
+          ? COMBAT_PRESETS[0].design
+          : msg.room.config.mode === 'loot-raid'
+            ? LOOT_PRESETS[0].design
+            : DEFAULT_DESIGN
+      ).map((p) => ({
         ...p,
       }))
       localDesignCargo = {}
@@ -1421,7 +1456,11 @@ export function isMpModeActive(): boolean {
 }
 
 export function isMpWarfareActive(): boolean {
-  return active && room?.config.mode === 'orbital-warfare'
+  return active && (room?.config.mode === 'orbital-warfare' || room?.config.mode === 'loot-raid')
+}
+
+export function isMpLootActive(): boolean {
+  return active && room?.config.mode === 'loot-raid'
 }
 
 export function getLocalMpDesign(): { design: PartInst[]; cargo: Record<string, number> } {

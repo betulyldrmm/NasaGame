@@ -939,6 +939,7 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 
 /* Uzay Savaşı & Koloni Baskını */
 .mp-mode-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.mp-mode-switch.is-three { grid-template-columns: 1fr 1fr 1fr; }
 .mp-mode-btn { display: flex; flex-direction: column; gap: 2px; text-align: left; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--ui-line); background: rgba(255,255,255,.04); color: var(--color-text); cursor: pointer; transition: border-color .15s, background .15s, transform .1s; }
 .mp-mode-btn:hover { background: rgba(255,255,255,.08); }
 .mp-mode-btn.is-active { border-color: var(--color-turquoise); background: rgba(56,217,232,.14); box-shadow: 0 0 0 1px rgba(56,217,232,.35) inset; }
@@ -996,3 +997,7 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .sh-part-pct { position: absolute; bottom: 1px; right: 2px; font: 700 8.5px 'DM Mono', monospace; color: #fff; background: rgba(0,0,0,.68); padding: 0 3px; border-radius: 3px; pointer-events: none; }
 .sh-inspector { background: rgba(255,255,255,.04); border: 1px solid var(--ui-line); border-radius: 8px; padding: 8px 10px; font-size: 11.5px; color: #cbd5e1; }
 .sh-insp-head { display: flex; justify-content: space-between; margin-bottom: 3px; font-size: 12.5px; color: #fff; }
+
+/* Yağma modu */
+.mp-war-pill.is-loot { background: rgba(251,191,36,.12); border-color: rgba(251,191,36,.45); color: #fde68a; }
+.mp-war-pill.is-loot.is-full { background: rgba(74,222,128,.16); border-color: rgba(74,222,128,.55); color: #bbf7d0; }

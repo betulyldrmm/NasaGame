@@ -1064,7 +1064,8 @@ describe('multiplayer colony race', () => {
     v2.vel = { x: 0, y: -70 }
     const ramEvents = stepWorld(sim, 0.05, new Map())
     expect(ramEvents.some((e) => e.type === 'kill')).toBe(false)
-    expect(sim.gs.vessels.some((v) => v.id === v2.id)).toBe(false)
+    // Gemi artık bütün hâlde yok olmaz: komutası ezilince kontrolsüz enkaza dönüşür.
+    expect(sim.gs.vessels.some((v) => v.id === v2.id && !v.debris)).toBe(false)
     expect(sim.gs.mp!.players.p1.kills).toBe(0)
     expect(sim.gs.mp!.players.p1.money).toBeLessThan(p1MoneyBefore + 100) // yalnızca pasif gelir, ödül yok
   })

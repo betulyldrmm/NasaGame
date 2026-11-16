@@ -21,11 +21,12 @@ import type {
   GameEvent,
   GameState,
   MultiplayerPlayer,
+  LootCrate,
   PartInst,
   Projectile,
   Vessel,
 } from '../game/types'
-import { cargoMass, components, vesselStats } from '../game/vessel'
+import { adjacency, arcade, cargoMass, components, partAlive, vesselStats } from '../game/vessel'
 import { BODIES, type BodyId, solarFlux } from '../nasa/bodies'
 import { bodyAbsState, len, wrapPi } from './orbit'
 import { type Controls, terrainHeight } from './physics'
@@ -44,11 +45,56 @@ export interface ColonyEntry {
   isEarth: boolean
 }
 
+/** Silahların ve muharebe kurallarının açık olduğu çok oyunculu modlar (Uzay Savaşı ve Yağma). */
 export function isWarfareMode(gs: GameState): boolean {
-  return gs.mp?.config.mode === 'orbital-warfare'
+  return gs.mp?.config.mode === 'orbital-warfare' || gs.mp?.config.mode === 'loot-raid'
+}
+
+/** Yağma modu: uzay üsleri, kaynak sahaları, sandık toplama ve arcade uçuş. */
+export function isLootMode(gs: GameState): boolean {
+  return gs.mp?.config.mode === 'loot-raid'
+}
+
+/** Canı bu oranın altına (−maxHp·oran) inen devre dışı parça gövdeden kopar. */
+export const BREAKOFF_RATIO = 0.75
+/** 1 t ganimetin üsse teslim değeri (₡). */
+export const LOOT_VALUE_PER_TON = 2500
+const MAX_CRATES = 90
+
+/** Yağma modunda uzaya ganimet sandıkları bırakır (en fazla 2 t'luk sandıklara bölünür). */
+export function dropLoot(
+  gs: GameState,
+  pos: { x: number; y: number },
+  vel: { x: number; y: number },
+  tons: number,
+  clock: number,
+  site = -1,
+): LootCrate[] {
+  const loot = gs.mp?.loot
+  if (!loot || tons < 0.05) return []
+  const out: LootCrate[] = []
+  const n = Math.max(1, Math.min(10, Math.ceil(tons / 2)))
+  for (let k = 0; k < n; k += 1) {
+    const ang = (k / n) * Math.PI * 2 + loot.nextCrateId * 1.7
+    const spread = n > 1 ? 10 + 6 * (k % 3) : 0
+    const c: LootCrate = {
+      id: loot.nextCrateId,
+      pos: { x: pos.x + Math.cos(ang) * spread, y: pos.y + Math.sin(ang) * spread },
+      vel: { x: vel.x * 0.5 + Math.cos(ang) * (n > 1 ? 6 : 0), y: vel.y * 0.5 + Math.sin(ang) * (n > 1 ? 6 : 0) },
+      tons: Math.round((tons / n) * 100) / 100,
+      site,
+      born: clock,
+    }
+    loot.nextCrateId += 1
+    loot.crates.push(c)
+    out.push(c)
+  }
+  if (loot.crates.length > MAX_CRATES) loot.crates.splice(0, loot.crates.length - MAX_CRATES)
+  return out
 }
 
 function hasCommandPart(v: Vessel): boolean {
+  if (v.outpost) return true
   return v.parts.some((p) => partDef(p.def).kind === 'command')
 }
 
@@ -284,6 +330,41 @@ function spawnDebrisPiece(gs: GameState, v: Vessel, p: PartInst, wx: number, wy:
   })
 }
 
+/** Ana gövdeden kopan çok parçalı bölüm: parçaları bir arada, kendi kütle merkezinde sürüklenen enkaz. */
+function spawnWreck(gs: GameState, v: Vessel, st: ReturnType<typeof vesselStats>, piece: PartInst[], k: number) {
+  if (!piece.length) return
+  const pst = vesselStats(piece)
+  const lx = pst.comX - st.comX
+  const lf = -(pst.comY - st.comY)
+  const fwd = { x: Math.cos(v.angle), y: Math.sin(v.angle) }
+  const pos = { x: v.pos.x + fwd.y * lx + fwd.x * lf, y: v.pos.y - fwd.x * lx + fwd.y * lf }
+  const ang = Math.atan2(pos.y - v.pos.y, pos.x - v.pos.x)
+  const id = gs.nextId
+  gs.nextId += 1
+  gs.vessels.push({
+    id,
+    name: `Enkaz ${id}`,
+    ownerId: v.ownerId,
+    parts: piece.map((p) => ({ ...p, on: false })),
+    bodyId: v.bodyId,
+    pos,
+    vel: { x: v.vel.x + Math.cos(ang) * 9, y: v.vel.y + Math.sin(ang) * 9 },
+    angle: v.angle,
+    angVel: v.angVel + (k % 2 ? 0.9 : -0.9),
+    landed: false,
+    throttle: 0,
+    ec: 0,
+    cargo: { modules: {}, ore: 0, oreFrom: null },
+    rcsOn: false,
+    sas: 'off',
+    visited: [],
+    assist: null,
+    dvUsed: 0,
+    noCollideUntil: gs.time + 2.5,
+    debris: { ttl: 14 + (k % 3) * 2 },
+  })
+}
+
 export function applyVesselDamage(
   gs: GameState,
   v: Vessel,
@@ -361,7 +442,33 @@ export function applyVesselDamage(
   if (hullDmg <= 1e-4) return { destroyed: false, colonyStaticDirty: false }
 
   const splash = opts.splash ?? 0
-  let anyBroken = false
+  const adj = adjacency(v.parts)
+  const wasAlive = v.parts.map(partAlive)
+  /** Zırh sertliği: her isabetten sabit hasar siler (sürekli yanma hasarında uygulanmaz). */
+  const soak = (i: number, amount: number) => {
+    const p = v.parts[i]!
+    const ar = partDef(p.def).armor
+    if (p.hp === undefined) p.hp = partMaxHp(p.def)
+    const taken = ar && partAlive(p) && !opts.silent ? Math.max(amount * 0.2, amount - ar.hardness) : amount
+    p.hp -= taken
+  }
+  /** Parçaya hasar: bitişikteki sağlam zırh plakaları hasarın bir kısmını üstlenir. */
+  const hurt = (i: number, amount: number) => {
+    if (amount <= 0) return
+    const d = partDef(v.parts[i]!.def)
+    let direct = amount
+    if (!d.armor) {
+      const plates = adj[i]!.filter((j) => partDef(v.parts[j]!.def).armor && partAlive(v.parts[j]!))
+      if (plates.length) {
+        const absorb = Math.max(...plates.map((j) => partDef(v.parts[j]!.def).armor!.absorb))
+        const share = amount * absorb
+        direct = amount - share
+        for (const j of plates) soak(j, share / plates.length)
+      }
+    }
+    soak(i, direct)
+  }
+
   let nearestWasSplashed = false
   const nearest = closestPartOnVessel(v, st, hitX, hitY)
   for (let i = 0; i < v.parts.length; i += 1) {
@@ -372,82 +479,156 @@ export function applyVesselDamage(
     if (splash > 0) {
       if (d <= splash) mult = Math.max(0.25, 1 - (d / splash) * 0.75)
     }
-    const maxHp = partMaxHp(p.def)
-    if (p.hp === undefined) p.hp = maxHp
     if (mult > 0) {
       if (i === nearest.idx) nearestWasSplashed = true
-      p.hp -= hullDmg * mult
-      if (p.hp <= 0) anyBroken = true
+      hurt(i, hullDmg * mult)
     }
   }
   // Doğrudan en yakın parçaya tam darbe (splash dışı veya merkez isabet)
   if (nearest.idx >= 0 && !nearestWasSplashed) {
-    const p = v.parts[nearest.idx]!
-    const maxHp = partMaxHp(p.def)
-    if (p.hp === undefined) p.hp = maxHp
-    if (splash <= 0 || nearest.dist < 2.2) {
-      p.hp -= hullDmg
-      if (p.hp <= 0) anyBroken = true
-    }
+    if (splash <= 0 || nearest.dist < 2.2) hurt(nearest.idx, hullDmg)
   }
 
   if (!opts.silent) {
     pushFx(opts.fxOut, { kind: 'hit', bodyId: v.bodyId, x: hitX, y: hitY, born: opts.clock, size: Math.min(8, 2.5 + hullDmg * 0.03), color: '#ffad57' })
   }
 
-  if (!anyBroken) return { destroyed: false, colonyStaticDirty: false }
-
-  const broken = v.parts.filter((p) => (p.hp ?? 1) <= 0)
-  const intact = v.parts.filter((p) => (p.hp ?? 1) > 0)
-  const group = components(intact)
-  const cmd = intact.findIndex((p) => partDef(p.def).kind === 'command')
-  const survivors = cmd >= 0 ? intact.filter((_, i) => group[i] === group[cmd]) : []
-  const detached = intact.filter((p) => !survivors.includes(p))
-
-  broken.forEach((p, k) => {
-    const w = partWorldPos(v, st, p)
-    pushFx(opts.fxOut, { kind: 'boom', bodyId: v.bodyId, x: w.x, y: w.y, born: opts.clock, size: 3.2 })
-    opts.events.push({ type: 'explosion', size: 3.2, bodyId: v.bodyId, x: w.x, y: w.y })
-    if (k < 4) spawnDebrisPiece(gs, v, p, w.x, w.y, k)
-  })
-  detached.forEach((p, k) => {
-    const w = partWorldPos(v, st, p)
-    if (k < 6) spawnDebrisPiece(gs, v, p, w.x, w.y, k + 2)
-  })
-
-  if (!survivors.length) {
-    const wasActive = gs.activeId === v.id
-    gs.vessels = gs.vessels.filter((o) => o.id !== v.id)
-    opts.firing.delete(v.id)
-    if (wasActive) gs.activeId = null
-    if (gs.mp) {
-      for (const pl of Object.values(gs.mp.players)) {
-        if (pl.activeVesselId === v.id) pl.activeVesselId = null
-      }
-      if (hadCommand && opts.attackerId && opts.attackerId !== v.ownerId) {
-        const atk = gs.mp.players[opts.attackerId]
-        const vic = v.ownerId ? gs.mp.players[v.ownerId] : undefined
-        if (atk) {
-          atk.kills += 1
-          awardScore(gs, atk.id, 2, 3500)
+  // Yeni devre dışı kalan parçalar: işlevini yitirir ama gövdede kalır.
+  // Dolu yakıt tankı patlar: yakıtı yok olur, komşu parçalara ikincil hasar verir (zincirleme en fazla 3 tur).
+  let anyDisabled = false
+  let wave = v.parts.map((_, i) => i).filter((i) => wasAlive[i] && !partAlive(v.parts[i]!))
+  for (let round = 0; round < 3 && wave.length; round += 1) {
+    anyDisabled = true
+    const before = v.parts.map(partAlive)
+    for (const i of wave) {
+      const p = v.parts[i]!
+      const d = partDef(p.def)
+      const w = partWorldPos(v, st, p)
+      p.charge = 0
+      p.beamUntil = 0
+      p.burstLeft = 0
+      if (d.kind === 'tank') {
+        const lost = p.fuel ?? 0
+        p.fuel = 0
+        if (lost > 0.3) {
+          const blast = Math.min(140, 25 + lost * 16)
+          pushFx(opts.fxOut, { kind: 'boom', bodyId: v.bodyId, x: w.x, y: w.y, born: opts.clock, size: 3 + Math.min(5, lost * 0.5) })
+          opts.events.push({ type: 'explosion', size: 3 + Math.min(5, lost * 0.5), bodyId: v.bodyId, x: w.x, y: w.y })
+          for (const j of adj[i]!) hurt(j, blast)
         }
-        const msg = `💥 ${atk?.username ?? opts.attackerId}, ${vic?.username ?? v.name} roketini imha etti (+3.500 ₡)!`
-        pushFeed(gs, msg, atk?.color)
-        opts.events.push({ type: 'kill', attackerId: opts.attackerId, victimId: v.ownerId ?? null, victimName: v.name, speed: 0 })
+      } else {
+        pushFx(opts.fxOut, { kind: 'boom', bodyId: v.bodyId, x: w.x, y: w.y, born: opts.clock, size: 2.4 })
+        opts.events.push({ type: 'explosion', size: 2.4, bodyId: v.bodyId, x: w.x, y: w.y })
       }
     }
-    pushFx(opts.fxOut, { kind: 'boom', bodyId: v.bodyId, x: v.pos.x, y: v.pos.y, born: opts.clock, size: 8.5 })
-    opts.events.push({ type: 'explosion', size: 8.5, bodyId: v.bodyId, x: v.pos.x, y: v.pos.y })
-    opts.events.push({ type: 'crash', name: v.name, wasActive, reason: 'ateş altında imha edildi', ownerId: v.ownerId, vesselId: v.id })
-    return { destroyed: true, colonyStaticDirty: false }
+    wave = v.parts.map((_, i) => i).filter((i) => before[i] && !partAlive(v.parts[i]!))
   }
 
-  v.parts = survivors
+  // Yapısal kopma: yalnızca tamamen ezilen (−maxHp·BREAKOFF_RATIO) parçalar gövdeden ayrılır.
+  const torn = v.parts.filter((p) => (p.hp ?? 1) <= -partMaxHp(p.def) * BREAKOFF_RATIO)
+  if (!anyDisabled && !torn.length) return { destroyed: false, colonyStaticDirty: false }
+
+  if (torn.length) {
+    torn.forEach((p, k) => {
+      const w = partWorldPos(v, st, p)
+      pushFx(opts.fxOut, { kind: 'boom', bodyId: v.bodyId, x: w.x, y: w.y, born: opts.clock, size: 3.2 })
+      opts.events.push({ type: 'explosion', size: 3.2, bodyId: v.bodyId, x: w.x, y: w.y })
+      if (k < 4) spawnDebrisPiece(gs, v, p, w.x, w.y, k)
+    })
+    const rest = v.parts.filter((p) => !torn.includes(p))
+    const group = components(rest)
+    const isCmd = (p: PartInst) => partDef(p.def).kind === 'command'
+    // Çapa: sağlam komuta modülü; üslerde çekirdek; yoksa devre dışı komuta; o da yoksa en büyük gövde.
+    let anchor = rest.findIndex((p) => isCmd(p) && partAlive(p))
+    if (anchor < 0 && v.outpost) anchor = rest.findIndex((p) => p.def === 'base-core')
+    if (anchor < 0) anchor = rest.findIndex(isCmd)
+    let keepGroup = anchor >= 0 ? group[anchor]! : -1
+    if (keepGroup < 0 && rest.length) {
+      const sizes = new Map<number, number>()
+      for (const g of group) sizes.set(g, (sizes.get(g) ?? 0) + 1)
+      keepGroup = [...sizes.entries()].sort((x, y) => y[1] - x[1])[0]![0]
+    }
+    // Ana gövdeden kopan her bölüm tek tek dağılmaz: bütün hâlde sürüklenen bir enkaz olur.
+    const groupIds = [...new Set(group)].filter((g) => g !== keepGroup)
+    groupIds.forEach((g, k) => {
+      const piece = rest.filter((_, i) => group[i] === g)
+      if (k < 5) spawnWreck(gs, v, st, piece, k)
+    })
+    v.parts = rest.filter((_, i) => group[i] === keepGroup)
+  }
+
   const st2 = vesselStats(v.parts, v.cargo)
   v.ec = Math.min(v.ec, st2.ecCap)
   if (v.shield !== undefined) v.shield = Math.min(v.shield, st2.shieldCap)
-  if (cargoMass(v.cargo) > st2.cargoCap + 1e-9) v.cargo = { modules: {}, ore: 0, oreFrom: null }
-  return { destroyed: false, colonyStaticDirty: false }
+  // Kargo gövdesi giderse sığmayan yük uzaya saçılır (Yağma modunda sandık olarak toplanabilir).
+  const over = cargoMass(v.cargo) - st2.cargoCap
+  if (over > 1e-9) {
+    const spill = Math.min(v.cargo.ore, over)
+    if (spill > 0) {
+      v.cargo.ore -= spill
+      dropLoot(gs, { x: hitX, y: hitY }, v.vel, spill, opts.clock)
+    }
+    if (cargoMass(v.cargo) > st2.cargoCap + 1e-9) v.cargo = { modules: {}, ore: v.cargo.ore, oreFrom: v.cargo.oreFrom }
+    if (v.cargo.ore <= 1e-9) v.cargo.oreFrom = null
+  }
+
+  if (v.outpost || !hadCommand || st2.hasCommand) return { destroyed: false, colonyStaticDirty: false }
+
+  // Komuta modülü yok oldu: gemi patlamaz, kontrolsüz bir enkaza dönüşür (kargosu etrafa saçılır).
+  const wasActive = gs.activeId === v.id
+  opts.firing.delete(v.id)
+  if (wasActive) gs.activeId = null
+  if (gs.mp) {
+    for (const pl of Object.values(gs.mp.players)) {
+      if (pl.activeVesselId === v.id) pl.activeVesselId = null
+    }
+    if (isWarfareMode(gs) && opts.attackerId && opts.attackerId !== v.ownerId) {
+      const atk = gs.mp.players[opts.attackerId]
+      const vic = v.ownerId ? gs.mp.players[v.ownerId] : undefined
+      if (atk) {
+        atk.kills += 1
+        awardScore(gs, atk.id, 2, 3500)
+      }
+      const msg = `💥 ${atk?.username ?? opts.attackerId}, ${vic?.username ?? v.name} roketini imha etti (+3.500 ₡)!`
+      pushFeed(gs, msg, atk?.color)
+      opts.events.push({ type: 'kill', attackerId: opts.attackerId, victimId: v.ownerId ?? null, victimName: v.name, speed: 0 })
+    }
+  }
+  if (isLootMode(gs)) {
+    dropLoot(gs, v.pos, v.vel, v.cargo.ore + (st.cost * 0.2) / LOOT_VALUE_PER_TON, opts.clock)
+  }
+  v.cargo = { modules: {}, ore: 0, oreFrom: null }
+  v.debris = { ttl: 22 }
+  v.throttle = 0
+  v.autopilot = 'off'
+  v.autoLand = false
+  v.shield = 0
+  v.angVel += 0.6
+  pushFx(opts.fxOut, { kind: 'boom', bodyId: v.bodyId, x: v.pos.x, y: v.pos.y, born: opts.clock, size: 8.5 })
+  opts.events.push({ type: 'explosion', size: 8.5, bodyId: v.bodyId, x: v.pos.x, y: v.pos.y })
+  opts.events.push({ type: 'crash', name: v.name, wasActive, reason: 'ateş altında imha edildi', ownerId: v.ownerId, vesselId: v.id })
+  return { destroyed: true, colonyStaticDirty: false }
+}
+
+/**
+ * Çarpışma darbesi: tüm gemiyi rastgele parçalamak yerine temas noktasının çevresindeki
+ * parçalara hasar verir. Motor tarafından çarpan gemi motorunu, burundan çarpan burnunu kaybeder.
+ */
+export function applyImpactDamage(
+  gs: GameState,
+  v: Vessel,
+  hitX: number,
+  hitY: number,
+  shockSpeed: number,
+  opts: { attackerId?: string; clock: number; firing: Map<number, Map<number, number>>; fxOut?: Fx[]; events: GameEvent[] },
+): { destroyed: boolean } {
+  const dmg = Math.min(9000, 2.2 * shockSpeed ** 1.6) * (v.outpost ? 0.4 : 1)
+  const res = applyVesselDamage(gs, v, hitX, hitY, dmg, {
+    ...opts,
+    shieldPierce: 0.6,
+    splash: 2.5 + Math.min(14, shockSpeed * 0.09),
+  })
+  return { destroyed: res.destroyed }
 }
 
 /** Bir koloniye (kalkan kubbesine veya belirli yuvadaki binalara) hasar uygular. */
@@ -886,7 +1067,7 @@ export function stepVesselWeapons(
   const wantAim = ctrl?.aimAngle !== undefined && Number.isFinite(ctrl.aimAngle) ? ctrl.aimAngle : v.angle
   v.aimAngle = wantAim
 
-  const mountedWeapons = v.parts.filter((p) => !!partDef(p.def).weapon)
+  const mountedWeapons = v.parts.filter((p) => !!partDef(p.def).weapon && partAlive(p))
   if (!mountedWeapons.length) return false
 
   let selectedDef = mountedWeapons[0]!.def
@@ -905,7 +1086,7 @@ export function stepVesselWeapons(
   for (const p of v.parts) {
     const d = partDef(p.def)
     const w = d.weapon
-    if (!w) continue
+    if (!w || !partAlive(p)) continue
     const isSel = p.def === selectedDef
 
     // Devam eden seri atış (Burst — FTL Burst Laser / Rocket Salvo)
@@ -1155,7 +1336,7 @@ export function stepProjectiles(
     }
 
     const prev = { x: proj.pos.x, y: proj.pos.y }
-    if (proj.gravityScale > 0) {
+    if (proj.gravityScale > 0 && !arcade.on) {
       const r = Math.hypot(proj.pos.x, proj.pos.y)
       if (r > 1) {
         const gF = -(body.mu / (r * r * r)) * proj.gravityScale
@@ -1494,7 +1675,7 @@ export function stepCombatSystems(
 /** Uzay Savaşı'nda aktif gezegen kolonilerini sayar, pasif gelir ve zafer koşullarını denetler. */
 export function stepWarfareRules(gs: GameState, events: GameEvent[]) {
   const mp = gs.mp
-  if (!mp || !mp.started || !isWarfareMode(gs) || mp.winnerId) return
+  if (!mp || !mp.started || !isWarfareMode(gs) || isLootMode(gs) || mp.winnerId) return
 
   const players = Object.values(mp.players)
   for (const p of players) {

@@ -40,7 +40,7 @@ describe('Space Warfare parts, presets and rules', () => {
     const weapons = PARTS.filter((p) => p.kind === 'weapon')
     const defense = PARTS.filter((p) => p.kind === 'armor' || p.kind === 'shield')
     expect(weapons.length).toBe(12)
-    expect(defense.length).toBe(2)
+    expect(defense.length).toBe(5)
     for (const w of weapons) {
       expect(w.weapon).toBeDefined()
       expect(w.weapon!.dmg).toBeGreaterThan(0)

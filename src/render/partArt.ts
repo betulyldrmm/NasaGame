@@ -466,7 +466,7 @@ function drawProbe(ctx: Ctx, d: PartDef, w: number, h: number, c: number) {
 
 /** ISS parçaları: ana modül, kenetlenme kapısı ve güneş kanatları. */
 function drawStation(ctx: Ctx, id: string, w: number, h: number, c: number) {
-  if (id === 'iss-wing') {
+  if (id === 'iss-wing' || id === 'base-wing') {
     ctx.fillStyle = '#8b949f'
     ctx.fillRect(0, h * 0.46, w, h * 0.08)
     for (let i = 0; i < 4; i += 1) {
@@ -491,7 +491,7 @@ function drawStation(ctx: Ctx, id: string, w: number, h: number, c: number) {
     }
     return
   }
-  if (id === 'iss-node') {
+  if (id === 'iss-node' || id === 'base-dock') {
     rr(ctx, w * 0.12, 0, w * 0.76, h * 0.7, c * 0.06)
     ctx.fillStyle = metal(ctx, 0, w, STEEL)
     ctx.fill()
@@ -897,7 +897,20 @@ export function drawPart(ctx: Ctx, p: PartInst, c: number, opts: PartDrawOpts = 
     case 'shield': drawShieldGen(ctx, w, h, c, opts.time ?? 0); break
     case 'weapon': drawWeapon(ctx, d, p, w, h, c, !!opts.flip, opts.aimDelta ?? 0, opts.time ?? 0); break
   }
-  if (p.hp !== undefined) {
+  if (p.hp !== undefined && p.hp <= 0) {
+    // Devre dışı parça: kararmış iskelet + çatlaklar (gövdede durur ama çalışmaz).
+    ctx.fillStyle = 'rgba(12,10,10,.72)'
+    ctx.fillRect(0.03 * c, 0.03 * c, w - 0.06 * c, h - 0.06 * c)
+    ctx.strokeStyle = 'rgba(251,146,60,.75)'
+    ctx.lineWidth = Math.max(0.7, c * 0.06)
+    ctx.beginPath()
+    ctx.moveTo(w * 0.15, h * 0.2)
+    ctx.lineTo(w * 0.45, h * 0.48)
+    ctx.lineTo(w * 0.3, h * 0.8)
+    ctx.moveTo(w * 0.45, h * 0.48)
+    ctx.lineTo(w * 0.85, h * 0.35)
+    ctx.stroke()
+  } else if (p.hp !== undefined) {
     const maxHp = partMaxHp(p.def)
     if (p.hp < maxHp * 0.85) {
       const dmgFrac = Math.min(1, Math.max(0, 1 - p.hp / maxHp))

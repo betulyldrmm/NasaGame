@@ -188,20 +188,21 @@ function handleMessage(client, msg) {
     case 'createRoom': {
       leaveRoom(client)
       const code = makeCode()
-      const mode = msg.config?.mode === 'orbital-warfare' ? 'orbital-warfare' : 'colony-race'
+      const mode = ['orbital-warfare', 'loot-raid'].includes(msg.config?.mode) ? msg.config.mode : 'colony-race'
       const warfareGoal = ['siege', 'score15', 'score30', 'endless'].includes(msg.config?.warfareGoal)
         ? msg.config.warfareGoal
         : 'siege'
       const cfg = {
         mode,
         warfareGoal,
+        lootGoal: [0, 30, 60, 120].includes(Number(msg.config?.lootGoal)) ? Number(msg.config.lootGoal) : 60,
         targetPlanets: [0, 3, 4, 5, 7].includes(Number(msg.config?.targetPlanets)) ? Number(msg.config.targetPlanets) : 4,
-        startingMoney: Math.max(20_000, Math.min(500_000, Number(msg.config?.startingMoney) || (mode === 'orbital-warfare' ? 100_000 : 50_000))),
+        startingMoney: Math.max(20_000, Math.min(500_000, Number(msg.config?.startingMoney) || (mode === 'orbital-warfare' ? 100_000 : mode === 'loot-raid' ? 40_000 : 50_000))),
         passiveBonusPerPlanet: 12_000,
         allowAutoWarp: msg.config?.allowAutoWarp !== false,
       }
       const username = sanitizeName(msg.username, 'Host')
-      const defaultRoomName = mode === 'orbital-warfare' ? `${username} Savaş Odası` : `${username} Fetih Odası`
+      const defaultRoomName = mode === 'orbital-warfare' ? `${username} Savaş Odası` : mode === 'loot-raid' ? `${username} Yağma Odası` : `${username} Fetih Odası`
       const roomName = typeof msg.roomName === 'string' && msg.roomName.trim() ? msg.roomName.trim().slice(0, 32) : defaultRoomName
       client.playerId = username
       client.username = username

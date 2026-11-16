@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { audio } from '../audio'
 import { MODULES, ISS_SUPPLY } from '../game/base'
-import { COMBAT_PRESETS, GRID_H, GRID_W, partDef, PARTS, SHIP_PRESETS, SHIP_SLOT_COUNT } from '../game/data'
+import { COMBAT_PRESETS, LOOT_PRESETS, GRID_H, GRID_W, partDef, PARTS, SHIP_PRESETS, SHIP_SLOT_COUNT } from '../game/data'
 import { bump, saveGame, setIdleWarp, sim, useActiveGame, useAuthState } from '../game/store'
 import { isModuleUnlocked, isPartUnlocked, requiredTechForModule, requiredTechForPart } from '../game/tech'
 import type { PartCategory, PartInst } from '../game/types'
@@ -29,10 +29,11 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
   const auth = useAuthState()
   const mp = useMultiplayer()
   const inMp = mp.active && mp.inMatch
-  const isColonyRace = inMp && mp.room?.config.mode !== 'orbital-warfare'
-  const isWarfare = inMp && mp.room?.config.mode === 'orbital-warfare'
+  const isLoot = inMp && mp.room?.config.mode === 'loot-raid'
+  const isWarfare = inMp && (mp.room?.config.mode === 'orbital-warfare' || isLoot)
+  const isColonyRace = inMp && !isWarfare
   const categories = isColonyRace ? CATEGORIES.filter((c) => c !== 'Silahlar' && c !== 'Savunma') : CATEGORIES
-  const presets = isWarfare ? [...COMBAT_PRESETS, ...SHIP_PRESETS] : isColonyRace ? SHIP_PRESETS : [...SHIP_PRESETS, ...COMBAT_PRESETS]
+  const presets = isLoot ? LOOT_PRESETS : isWarfare ? [...COMBAT_PRESETS, ...SHIP_PRESETS] : isColonyRace ? SHIP_PRESETS : [...SHIP_PRESETS, ...COMBAT_PRESETS]
   const [selected, setSelected] = useState<string | null>(null)
   const [mirror, setMirror] = useState(true)
   const [hover, setHover] = useState<{ x: number; y: number } | null>(null)
@@ -304,7 +305,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
 
   const launch = () => {
     if (inMp) {
-      if (cost > gs.money) {
+      if (!isLoot && cost > gs.money) {
         setError(`Bütçe yetersiz: ${fmt(cost)} ₡ gerekli.`)
         return
       }
@@ -312,7 +313,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
       const onPad = gs.vessels.find(
         (v) => v.bodyId === 'earth' && v.landed && Math.abs(wrapPi(Math.atan2(v.pos.y, v.pos.x) - padTheta)) * BODIES.earth.radius < 25,
       )
-      if (onPad) {
+      if (onPad && !isLoot) {
         setError('Rampa dolu: önce rampadaki aracı kurtar veya sil.')
         return
       }
@@ -359,7 +360,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
     if (window.confirm('Bu slot boşaltılsın mı?')) writeSlots(slots.map((s, j) => (j === i ? null : s)))
   }
   const sel = selected ? partDef(selected) : null
-  const myVesselCount = inMp ? gs.vessels.filter((v) => v.ownerId === gs.ownerId && !v.debris && !v.station).length : gs.vessels.length
+  const myVesselCount = inMp ? gs.vessels.filter((v) => v.ownerId === gs.ownerId && !v.debris && !v.station && !v.outpost).length : gs.vessels.length
 
   return (
     <main className="builder">
@@ -514,10 +515,14 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
               </>
             )}
           </dl>
+          {isLoot ? (
+            <p className="dv-guide">Yağma modu: gemi uzayda üssünden doğar, yerçekimi yok. Kademe ve iniş takımı gerekmez; kargo, zırh ve silaha yatırım yap. Yakıt ve onarım üssünde bedava.</p>
+          ) : (
           <div className="twr-meter" title="1,0 altı kalkamaz · 1,2 ve üstü güvenli">
             <i><em className={twr >= 1.2 ? 'ok' : twr >= 1 ? 'warn' : 'bad'} style={{ width: `${Math.min(100, (twr / 2.4) * 100)}%` }} /></i>
             <small>{twr < 1 ? 'Kalkamaz: daha güçlü motor ekle veya kütleyi azalt' : twr < 1.2 ? 'Yavaş kalkar (önerilen TWR ≥ 1,2)' : 'Kalkış için yeterli itki'}</small>
           </div>
+          )}
           <h3>Kademeler</h3>
           <ol className="stage-list">
             {stages.map((s, i) => (
@@ -528,7 +533,9 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
           <p className="dv-guide">
             Hedef Δv: Yörünge <b>2.400</b> · Ay <b>+1.300</b> · Mars/Venüs <b>+1.100</b> · Uzak gezegenler <b>+2.200+</b> m/s
           </p>
-          {(stats.cargoCap > 0 || cargoT > 0) ? (
+          {isLoot ? (
+            <p className="dv-guide">Kargo kapasitesi: <b>{stats.cargoCap} t</b> ganimet (üste {fmt(stats.cargoCap * 2500)} ₡ eder).</p>
+          ) : (stats.cargoCap > 0 || cargoT > 0) ? (
             <>
               <h3>Kargo <small>{cargoT.toFixed(1)} / {stats.cargoCap} t</small></h3>
               {stats.cargoCap >= 4 && (
@@ -583,7 +590,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
             <p className="dv-guide">Dünya dışına modül götürmek için <b>Kargo Gövdesi</b> ekle ve yükle — uzay kolonilerinde yalnızca getirdiğin yapılar kurulur.</p>
           )}
           {(error ?? problem) && <p className="builder-error">{error ?? problem}</p>}
-          <button className="launch-btn" onClick={launch} disabled={!!problem}>Rampaya çıkar — {fmt(cost)} ₡</button>
+          <button className="launch-btn" onClick={launch} disabled={!!problem}>{isLoot ? 'Üsten fırlat' : 'Rampaya çıkar'} — {fmt(cost)} ₡</button>
         </aside>
       </div>
 

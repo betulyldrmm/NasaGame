@@ -5,7 +5,7 @@
 import { BODIES, type BodyDef, type BodyId, solarFlux } from '../nasa/bodies'
 import { partDef } from '../game/data'
 import type { AutopilotMode, SasMode, Vessel } from '../game/types'
-import { activeEngines, fuelGroups, runEngines, vesselStats, type VesselStats } from '../game/vessel'
+import { activeEngines, arcade, ARCADE_DRAG, fuelGroups, runEngines, vesselStats, type VesselStats } from '../game/vessel'
 import { bodyAbsState, elementsFromState, len, propagate, wrapPi } from './orbit'
 
 /** Fırlatma rampasının Dünya üzerindeki açısı (gezegenin "tepesi"). */
@@ -142,10 +142,12 @@ export function rotateVessel(
   // Büyük roketler daha oturaklı, hafif sondalar daha çevik döner; aşırı savrulma önlenir.
   const massScale = Math.max(0.45, Math.min(1.15, Math.sqrt(10 / Math.max(2.5, st.mass))))
   const rcsBoost = v.rcsOn && st.rcs > 0 ? 1.45 : 1
-  const manualMaxAcc = 0.95 * massScale * rcsBoost
-  const autoMaxAcc = 1.65 * Math.max(0.7, massScale) * rcsBoost
-  const maxManualVel = 1.15 * (v.rcsOn && st.rcs > 0 ? 1.2 : 1)
-  const maxAutoVel = 1.65
+  // Arcade uçuşta gemiler çok daha çevik döner.
+  const agile = arcade.on ? 2.6 : 1
+  const manualMaxAcc = 0.95 * massScale * rcsBoost * agile
+  const autoMaxAcc = 1.65 * Math.max(0.7, massScale) * rcsBoost * agile
+  const maxManualVel = 1.15 * (v.rcsOn && st.rcs > 0 ? 1.2 : 1) * (arcade.on ? 1.9 : 1)
+  const maxAutoVel = 1.65 * (arcade.on ? 1.9 : 1)
 
   if (forcedTarget === null && ctrl && ctrl.rotate !== 0) {
     const mdt = dt * manualScale
@@ -516,7 +518,8 @@ export function stepPhysics(
     v.dvUsed += acc * dt
   }
 
-  const g = body.mu / (s.r * s.r)
+  // Arcade uçuş (Yağma modu): yerçekimi yok.
+  const g = arcade.on ? 0 : body.mu / (s.r * s.r)
 
   if (v.landed) {
     const lift = (out.thrust / mass) * (fwd.x * up.x + fwd.y * up.y)
@@ -544,6 +547,11 @@ export function stepPhysics(
   rotateVessel(v, st, dt, ctrl, forcedTarget, manualScale)
 
   v.vel = { x: v.vel.x + ax * dt, y: v.vel.y + ay * dt }
+  if (arcade.on) {
+    // Uzay sürtünmesi: motor kesilince gemi yavaşça durur, azami hız itkiyle sınırlanır.
+    const k = Math.exp(-ARCADE_DRAG * dt)
+    v.vel = { x: v.vel.x * k, y: v.vel.y * k }
+  }
 
   if (rho > 0 && s.speed > 0.05) {
     const width = Math.max(0.5, st.maxX - st.minX)
@@ -620,7 +628,7 @@ export function needsPhysics(v: Vessel, ctrl: Controls | null): boolean {
   const ap = effectiveAutopilot(v)
   if (v.landed) return burning || ap === 'orbit' || ap === 'transfer'
   if (burning || ap === 'land') return true
-  if (v.debris) return true
+  if (v.debris || arcade.on) return true
   const body = BODIES[v.bodyId]
   const s = situation(v, st)
   if (s.altSea < body.atmoHeight || (body.landable && s.alt < 1500)) return true

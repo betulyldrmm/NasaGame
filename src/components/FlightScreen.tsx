@@ -9,6 +9,7 @@ import type {
   DynamicWarpInfo,
   GameCommand,
   GameEvent,
+  GameState,
   MultiplayerFeedItem,
   MultiplayerPlayer,
   PlanetCapture,
@@ -18,11 +19,12 @@ import type {
   WeaponKind,
 } from '../game/types'
 import { activeEngines, cargoMass, estimateDeltaV, fuelGroups, vesselStats } from '../game/vessel'
-import { partDef, partMaxHp } from '../game/data'
+import { OUTPOST_MAX_LEVEL, OUTPOST_UPGRADE_COST, partDef, partMaxHp } from '../game/data'
 import { bodyAbsState, bodyRelState, elementsFromState, hohmann, len, wrapPi } from '../flight/orbit'
 import { type Controls, effectiveAutopilot, landingTolerance, pressureRatio, situation } from '../flight/physics'
 import { type Patch, predictTrajectory } from '../flight/predict'
-import { allColoniesOnBody, isWarfareMode } from '../flight/combat'
+import { allColoniesOnBody, isLootMode, isWarfareMode } from '../flight/combat'
+import { findOutpost, SERVICE_RANGE } from '../flight/loot'
 import {
   activeVessel,
   clickPart,
@@ -141,6 +143,8 @@ interface Hud {
   mpNearestRival: { username: string; color: string; dist: number } | null
   mpNearestEnemyColony: { username: string; color: string; dist: number } | null
   isWarfare: boolean
+  /** Yağma modu göstergeleri (mod kapalıysa null) */
+  loot: LootHud | null
   warfareGoal: WarfareGoal
   mpEliminated: boolean
   hp: number
@@ -236,6 +240,51 @@ function transferPlan(v: Vessel, t: number, targetBody: BodyId): string[] {
   return out
 }
 
+interface LootHud {
+  goal: number
+  cargo: number
+  cargoCap: number
+  homeDist: number | null
+  nearHome: boolean
+  outside: boolean
+  level: number
+  upgradeCost: number | null
+  rebuildIn: number | null
+  site: { name: string; dist: number; crates: number } | null
+}
+
+function lootSnapshot(gs: GameState, v: Vessel | null, myId: string, clock: number): LootHud | null {
+  const loot = gs.mp?.loot
+  if (!loot || !isLootMode(gs)) return null
+  const me = gs.mp!.players[myId]
+  const home = findOutpost(gs, myId)
+  const level = me?.outpostLevel ?? 1
+  const st = v ? vesselStats(v.parts, v.cargo) : null
+  const homeDist = v && home ? Math.hypot(home.pos.x - v.pos.x, home.pos.y - v.pos.y) : null
+  let site: LootHud['site'] = null
+  if (v) {
+    loot.sites.forEach((sdef, idx) => {
+      const crates = loot.crates.filter((c) => c.site === idx).length
+      if (!crates) return
+      const dist = Math.hypot(sdef.pos.x - v.pos.x, sdef.pos.y - v.pos.y)
+      if (!site || dist < site.dist) site = { name: sdef.name, dist, crates }
+    })
+  }
+  const rebuildAt = loot.rebuild?.[myId]
+  return {
+    goal: gs.mp!.config.lootGoal ?? 60,
+    cargo: v ? v.cargo.ore : 0,
+    cargoCap: st?.cargoCap ?? 0,
+    homeDist,
+    nearHome: homeDist !== null && homeDist <= SERVICE_RANGE,
+    outside: !!v && Math.hypot(v.pos.x - loot.center.x, v.pos.y - loot.center.y) > loot.radius,
+    level,
+    upgradeCost: home && level < OUTPOST_MAX_LEVEL ? OUTPOST_UPGRADE_COST[level]! : null,
+    rebuildIn: !home && rebuildAt !== undefined ? Math.max(0, rebuildAt - clock) : null,
+    site,
+  }
+}
+
 function snapshot(): Hud {
   const curSim = getActiveSim()
   const gs = curSim.gs
@@ -246,9 +295,12 @@ function snapshot(): Hud {
   const v = activeVessel(gs)
   const meMp = gs.mp?.players[myId]
   const targetBody = ((isMp ? meMp?.targetBody : gs.targetBody) ?? gs.targetBody ?? 'moon') as BodyId
+  const isLoot = isLootMode(gs)
   const mpPlayers = gs.mp
     ? Object.values(gs.mp.players).sort((a, b) =>
-        isWarfare
+        isLoot
+          ? (b.looted ?? 0) - (a.looted ?? 0) || b.kills - a.kills
+          : isWarfare
           ? (a.eliminated ? 1 : 0) - (b.eliminated ? 1 : 0) ||
             (b.score ?? 0) - (a.score ?? 0) ||
             (b.coloniesDestroyed ?? 0) - (a.coloniesDestroyed ?? 0)
@@ -259,7 +311,7 @@ function snapshot(): Hud {
   let mpNearestEnemyColony: { username: string; color: string; dist: number } | null = null
   if (gs.mp && v && !v.debris) {
     for (const o of gs.vessels) {
-      if (o.id === v.id || o.bodyId !== v.bodyId || o.debris || o.station || !o.ownerId || o.ownerId === myId) continue
+      if (o.id === v.id || o.bodyId !== v.bodyId || o.debris || o.station || o.outpost || !o.ownerId || o.ownerId === myId) continue
       const p = gs.mp.players[o.ownerId]
       if (!p) continue
       const d = Math.hypot(o.pos.x - v.pos.x, o.pos.y - v.pos.y)
@@ -267,7 +319,7 @@ function snapshot(): Hud {
         mpNearestRival = { username: p.username, color: p.color, dist: d }
       }
     }
-    if (isWarfare) {
+    if (isWarfare && !isLoot) {
       for (const col of allColoniesOnBody(gs, v.bodyId)) {
         if (col.ownerId === myId || col.base.destroyed) continue
         const p = gs.mp.players[col.ownerId]
@@ -316,7 +368,7 @@ function snapshot(): Hud {
     dv: 0,
     tol: 7,
     vessels: gs.vessels
-      .filter((o) => !o.debris && (!isMp || (!o.station && o.ownerId === myId)))
+      .filter((o) => !o.debris && !o.outpost && (!isMp || (!o.station && o.ownerId === myId)))
       .map((o) => ({ id: o.id, name: o.name, body: BODIES[o.bodyId].name + (o.landed ? ' (yüzeyde)' : ''), active: o.id === gs.activeId })),
     plan: [],
     targetBody,
@@ -351,6 +403,7 @@ function snapshot(): Hud {
     mpNearestRival,
     mpNearestEnemyColony,
     isWarfare,
+    loot: lootSnapshot(gs, v, myId, curSim.clock ?? 0),
     warfareGoal,
     mpEliminated: Boolean(meMp?.eliminated),
     hp: 0,
@@ -944,7 +997,7 @@ export default function FlightScreen({ onBuilder }: Props) {
       } else if (k === 'l' && !v.rcsOn) toggleAutoLand()
       else if (k === 'Tab') {
         const list = isMp
-          ? curSim.gs.vessels.filter((o) => o.ownerId === curSim.gs.ownerId && !o.debris && !o.station)
+          ? curSim.gs.vessels.filter((o) => o.ownerId === curSim.gs.ownerId && !o.debris && !o.station && !o.outpost)
           : curSim.gs.vessels
         if (list.length > 1) switchTo(list[(list.findIndex((o) => o.id === v.id) + 1) % list.length]!.id)
       }
@@ -1340,6 +1393,44 @@ export default function FlightScreen({ onBuilder }: Props) {
 
       {hud.isMp && (
         <div className="mp-top-strip">
+          {hud.loot && (
+            <div className="mp-warfare-strip">
+              <span className="mp-war-pill">🏴‍☠️ YAĞMA</span>
+              <span className={`mp-war-pill is-loot${hud.loot.cargoCap > 0 && hud.loot.cargo >= hud.loot.cargoCap - 0.01 ? ' is-full' : ''}`} title="Kargodaki ganimet: üssüne götürünce paraya çevrilir">
+                📦 {hud.loot.cargo.toFixed(1)} / {hud.loot.cargoCap} t
+              </span>
+              {hud.loot.homeDist !== null ? (
+                <span className={`mp-war-pill is-loot${hud.loot.nearHome ? ' is-full' : ''}`}>
+                  {hud.loot.nearHome ? '🔧 Üste: ikmal ve onarım' : `🏠 Üs ${km(hud.loot.homeDist)}`}
+                </span>
+              ) : hud.loot.rebuildIn !== null ? (
+                <span className="mp-war-pill is-elim">🛠️ Üs yeniden kuruluyor: {Math.ceil(hud.loot.rebuildIn)} sn</span>
+              ) : null}
+              {hud.loot.site && !hud.loot.nearHome && (
+                <span className="mp-war-pill is-loot">🧭 {hud.loot.site.name} {km(hud.loot.site.dist)} · {hud.loot.site.crates} sandık</span>
+              )}
+              {hud.loot.outside && <span className="mp-war-pill is-elim">⚠ Arena dışı — geri dön!</span>}
+              {hud.empStunned && <span className="mp-war-pill is-emp">⚡ EMP ŞOKU!</span>}
+              {hud.burning && <span className="mp-war-pill is-emp">🔥 PLAZMA YANIĞI!</span>}
+              {hud.loot.cargo > 0.05 && !hud.loot.nearHome && hud.vesselId !== null && (
+                <button type="button" className="hud-btn" title="Kargodaki ganimeti uzaya bırak" onClick={() => hudCmd({ type: 'jettisonCargo', vesselId: hud.vesselId! })}>
+                  Kargoyu bırak
+                </button>
+              )}
+              {hud.loot.upgradeCost !== null && (
+                <button
+                  type="button"
+                  className="hud-btn"
+                  disabled={hud.money < hud.loot.upgradeCost}
+                  title="Üssüne taret, kalkan ve zırh ekler"
+                  onClick={() => hudCmd({ type: 'upgradeOutpost' })}
+                >
+                  🏗️ Üs Sv.{hud.loot.level + 1} — {hud.loot.upgradeCost.toLocaleString('tr-TR')} ₡
+                </button>
+              )}
+            </div>
+          )}
+          {!hud.loot && (
           <div className="mp-conquest-bar" title="Hedef seçmek için gezegene tıkla">
             {CONQUERABLE_BODIES.map((bid) => {
               const cap = hud.isWarfare ? undefined : hud.mpCaptures[bid]
@@ -1372,7 +1463,8 @@ export default function FlightScreen({ onBuilder }: Props) {
               )
             })}
           </div>
-          {hud.isWarfare && (
+          )}
+          {hud.isWarfare && !hud.loot && (
             <div className="mp-warfare-strip">
               <span className="mp-war-pill">⚔️ UZAY SAVAŞI</span>
               {hud.mpEliminated && <span className="mp-war-pill is-elim">💀 Üssün yıkıldı — izleyici modundasın</span>}
@@ -1494,6 +1586,30 @@ export default function FlightScreen({ onBuilder }: Props) {
         </div>
         {!hud.isMp ? (
           <div className="next-mission">Sıradaki görev: <b>{hud.missionNext}</b></div>
+        ) : hud.loot ? (
+          <div className="mp-scoreboard">
+            <div className="mp-score-head">
+              <span>🏴‍☠️ Yağma ({hud.loot.goal === 0 ? 'Sonsuz' : `Hedef ${hud.loot.goal} t`})</span>
+            </div>
+            {hud.mpPlayers.map((p) => (
+              <div key={p.id} className={`mp-score-row${p.id === hud.myId ? ' is-me' : ''}`}>
+                <i className="mp-dot" style={{ background: p.color }} />
+                <span className="mp-s-name">{p.username}</span>
+                <span className="mp-s-flags" title="Taşınan ganimet · Üs seviyesi · İmha">
+                  📦 {(p.looted ?? 0).toFixed(1)} t · 🏠{p.outpostLevel ?? 1} · 💀{p.kills}
+                </span>
+              </div>
+            ))}
+            {hud.mpFeed.length > 0 && (
+              <div className="mp-feed">
+                {hud.mpFeed.slice(-3).reverse().map((item) => (
+                  <div key={item.id} className="mp-feed-line" style={item.color ? { borderLeftColor: item.color } : undefined}>
+                    {item.text}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         ) : hud.isWarfare ? (
           <div className="mp-scoreboard">
             <div className="mp-score-head">
@@ -2235,7 +2351,7 @@ export default function FlightScreen({ onBuilder }: Props) {
       {hud.isMp && hud.mpWinnerId && (
         <div className="dialog-backdrop">
           <section className="dialog mp-victory-dialog" role="dialog" aria-modal="true">
-            <p className="eyebrow"><span /> {hud.isWarfare ? 'UZAY SAVAŞI SONUCU' : 'GEZEGEN FETİH SONUCU'}</p>
+            <p className="eyebrow"><span /> {hud.loot ? 'YAĞMA SONUCU' : hud.isWarfare ? 'UZAY SAVAŞI SONUCU' : 'GEZEGEN FETİH SONUCU'}</p>
             <h2>
               🏆{' '}
               <span style={{ color: hud.mpPlayers.find((p) => p.id === hud.mpWinnerId)?.color }}>
@@ -2244,7 +2360,11 @@ export default function FlightScreen({ onBuilder }: Props) {
               Kazandı!
             </h2>
             <p>
-              {hud.isWarfare
+              {hud.loot
+                ? hud.mpWinnerId === hud.myId
+                  ? 'Tebrikler! En büyük ganimeti sen topladın!'
+                  : 'Rakibin hedef ganimete ulaştı. Daha iyi bir gemiyle rövanş zamanı!'
+                : hud.isWarfare
                 ? hud.mpWinnerId === hud.myId
                   ? 'Tebrikler! Filoları bozguna uğratıp sistemin hakimi oldun!'
                   : 'Rakibin savaşı kazandı. Daha ağır silahlarla rövanş zamanı!'
@@ -2259,7 +2379,7 @@ export default function FlightScreen({ onBuilder }: Props) {
                   <i className="mp-dot" style={{ background: p.color }} />
                   <span className="mp-s-name">{p.username}</span>
                   <span className="mp-s-flags">
-                    {hud.isWarfare ? `⚔️ ${p.score ?? 0}p · 💥${p.coloniesDestroyed ?? 0} · 💀${p.kills}` : `🚩 ${p.planetsHeld}`}
+                    {hud.loot ? `📦 ${(p.looted ?? 0).toFixed(1)} t · 🏴‍☠️${p.coloniesDestroyed ?? 0} · 💀${p.kills}` : hud.isWarfare ? `⚔️ ${p.score ?? 0}p · 💥${p.coloniesDestroyed ?? 0} · 💀${p.kills}` : `🚩 ${p.planetsHeld}`}
                   </span>
                   <span>{fmt(p.money)} ₡</span>
                 </div>

@@ -106,7 +106,23 @@ export const PARTS: PartDef[] = [
   // Savunma
   {
     id: 'armor-plate', name: 'Titanyum Zırh Plakası', kind: 'armor', category: 'Savunma', w: 2, h: 1, mass: 0.35, cost: 420, hp: 320,
-    desc: 'Yüksek dayanımlı zırh (320 HP): tankları, komuta kapsülünü ve kritik parçaları korur.',
+    armor: { absorb: 0.55, hardness: 4 },
+    desc: 'Yüksek dayanımlı zırh (320 HP): bitişiğindeki parçalara gelen hasarın %55\'ini üstlenir.',
+  },
+  {
+    id: 'armor-side', name: 'Yan Zırh Plakası', kind: 'armor', category: 'Savunma', w: 1, h: 2, mass: 0.3, cost: 400, hp: 300,
+    armor: { absorb: 0.55, hardness: 4 },
+    desc: 'Dikey zırh (300 HP): tankların ve kargonun yanına takılır, komşu hasarın %55\'ini üstlenir.',
+  },
+  {
+    id: 'armor-light', name: 'Hafif Zırh Karosu', kind: 'armor', category: 'Savunma', w: 1, h: 1, mass: 0.12, cost: 180, hp: 140,
+    armor: { absorb: 0.45, hardness: 2 },
+    desc: 'Ucuz ve hafif (140 HP): boşlukları kapatır, komşu hasarın %45\'ini üstlenir.',
+  },
+  {
+    id: 'armor-heavy', name: 'Kompozit Reaktif Zırh', kind: 'armor', category: 'Savunma', w: 2, h: 1, mass: 0.8, cost: 1100, hp: 640,
+    armor: { absorb: 0.7, hardness: 10 },
+    desc: 'Ağır ama çok sağlam (640 HP): komşu hasarın %70\'ini üstlenir, her isabetten 10 hasarı siler.',
   },
   {
     id: 'shield-gen', name: 'Enerji Kalkanı Jeneratörü', kind: 'shield', category: 'Savunma', w: 2, h: 1, mass: 0.45, cost: 2600, hp: 140, shieldCap: 200,
@@ -120,6 +136,44 @@ export const STATION_PARTS: PartDef[] = [
   { id: 'iss-node', name: 'ISS Kenetlenme Kapısı', kind: 'station', category: 'Komuta', w: 2, h: 1, mass: 1, cost: 0, desc: 'Gemilerin kenetlendiği kapı.' },
   { id: 'iss-wing', name: 'ISS Güneş Kanadı', kind: 'station', category: 'Komuta', w: 4, h: 2, mass: 1, cost: 0, desc: 'İstasyonun güneş panelleri.' },
 ]
+
+/** Yağma modu uzay üssü parçaları: montaj paletinde görünmez. */
+export const OUTPOST_PARTS: PartDef[] = [
+  { id: 'base-core', name: 'Üs Çekirdeği', kind: 'station', category: 'Komuta', w: 4, h: 4, mass: 40, cost: 0, hp: 1500, ecCap: 2000, desc: 'Uzay üssünün çekirdeği: yok edilirse üs yağmalanır.' },
+  { id: 'base-wing', name: 'Üs Güneş Kanadı', kind: 'station', category: 'Komuta', w: 4, h: 2, mass: 4, cost: 0, hp: 260, desc: 'Üssün güneş panelleri.' },
+  { id: 'base-dock', name: 'Üs Rıhtımı', kind: 'station', category: 'Komuta', w: 4, h: 1, mass: 6, cost: 0, hp: 420, desc: 'Gemilerin ikmal aldığı rıhtım.' },
+  {
+    id: 'base-turret', name: 'Üs Savunma Tareti', kind: 'weapon', category: 'Silahlar', w: 2, h: 2, mass: 3, cost: 0, hp: 280,
+    desc: 'Üssü kendiliğinden savunan çift namlulu taret.',
+    weapon: { kind: 'ballistic', group: 1, dmg: 11, cooldown: 0.24, speed: 850, ttl: 1.5, spread: 0.035, gimbal: Math.PI, color: '#7dd3fc' },
+  },
+]
+/** Üs seviyesine göre tasarım: 1 çekirdek + 2 taret, 2 kalkan + 4 taret, 3 ağır zırh + 6 taret. */
+export function outpostDesign(level: number): PartInst[] {
+  const d: PartInst[] = [
+    { def: 'armor-heavy', x: 4, y: 0 },
+    { def: 'armor-heavy', x: 6, y: 0 },
+    { def: 'base-core', x: 4, y: 1 },
+    { def: 'base-wing', x: 0, y: 2 },
+    { def: 'base-wing', x: 8, y: 2 },
+    { def: 'base-turret', x: 2, y: 4 },
+    { def: 'base-turret', x: 8, y: 4 },
+    { def: 'base-dock', x: 4, y: 5 },
+  ]
+  if (level >= 2) {
+    d.push({ def: 'base-turret', x: 0, y: 4 }, { def: 'base-turret', x: 10, y: 4 }, { def: 'shield-gen', x: 4, y: 6 }, { def: 'shield-gen', x: 6, y: 6 })
+  }
+  if (level >= 3) {
+    d.push(
+      { def: 'armor-heavy', x: 0, y: 1 }, { def: 'armor-heavy', x: 2, y: 1 }, { def: 'armor-heavy', x: 8, y: 1 }, { def: 'armor-heavy', x: 10, y: 1 },
+      { def: 'base-turret', x: 0, y: 6 }, { def: 'base-turret', x: 10, y: 6 }, { def: 'shield-gen', x: 4, y: 7 }, { def: 'shield-gen', x: 6, y: 7 },
+    )
+  }
+  return d
+}
+export const OUTPOST_MAX_LEVEL = 3
+export const OUTPOST_UPGRADE_COST = [0, 15_000, 35_000]
+
 export const ISS_DESIGN: PartInst[] = [
   { def: 'iss-wing', x: 0, y: 0 },
   { def: 'iss-core', x: 4, y: 0 },
@@ -128,7 +182,7 @@ export const ISS_DESIGN: PartInst[] = [
 ]
 export const ISS_ALTITUDE_M = 75_000
 
-export const PART_BY_ID: Record<string, PartDef> = Object.fromEntries([...PARTS, ...STATION_PARTS].map((p) => [p.id, p]))
+export const PART_BY_ID: Record<string, PartDef> = Object.fromEntries([...PARTS, ...STATION_PARTS, ...OUTPOST_PARTS].map((p) => [p.id, p]))
 
 export function partDef(id: string): PartDef {
   const d = PART_BY_ID[id]
@@ -319,6 +373,59 @@ export const COMBAT_PRESETS: ShipPreset[] = [
   { id: 'interceptor', name: 'Avcı Mk-II', desc: 'FTL Vulcan + Sürekli Odak Lazeri + Kalkan + Ay menzili.', design: INTERCEPTOR_DESIGN },
   { id: 'gunship', name: 'Savaş Gemisi', desc: 'Seri İkili Top + Plazma Yanığı + Hava Patlamalı Flak + Zırh.', design: GUNSHIP_DESIGN },
   { id: 'siege', name: 'Kuşatma Gemisi', desc: 'Dev Ölüm Lazeri + Güdümlü Füze + EMP + Nükleer Torpido.', design: SIEGE_DESIGN },
+]
+
+/** Yağma modu gemileri: uzayda üsten doğar, kademe ve iniş takımı gerekmez. */
+const RAIDER_DESIGN: PartInst[] = [
+  { def: 'nose', x: 6, y: 5 },
+  { def: 'capsule', x: 6, y: 7 },
+  { def: 'gun-vulcan', x: 5, y: 7 },
+  { def: 'gun-vulcan', x: 8, y: 7 },
+  { def: 'cargo', x: 6, y: 9 },
+  { def: 'solar', x: 5, y: 9 },
+  { def: 'solar', x: 8, y: 9 },
+  { def: 'tank-l', x: 6, y: 11 },
+  { def: 'armor-side', x: 5, y: 11 },
+  { def: 'armor-side', x: 8, y: 11 },
+  { def: 'hawk', x: 6, y: 14 },
+]
+const HAULER_DESIGN: PartInst[] = [
+  { def: 'armor-plate', x: 6, y: 4 },
+  { def: 'capsule', x: 6, y: 5 },
+  { def: 'shield-gen', x: 6, y: 7 },
+  { def: 'battery', x: 6, y: 8 },
+  { def: 'rtg', x: 5, y: 7 },
+  { def: 'rtg', x: 8, y: 7 },
+  { def: 'cargo-lg', x: 6, y: 9 },
+  { def: 'gun-vulcan', x: 5, y: 9 },
+  { def: 'gun-vulcan', x: 8, y: 9 },
+  { def: 'cargo', x: 6, y: 12 },
+  { def: 'armor-side', x: 5, y: 12 },
+  { def: 'armor-side', x: 8, y: 12 },
+  { def: 'tank-l', x: 6, y: 14 },
+  { def: 'aerospike', x: 6, y: 17 },
+]
+const BRUISER_DESIGN: PartInst[] = [
+  { def: 'armor-heavy', x: 6, y: 4 },
+  { def: 'capsule', x: 6, y: 5 },
+  { def: 'gun-twin', x: 4, y: 5 },
+  { def: 'gun-twin', x: 8, y: 5 },
+  { def: 'shield-gen', x: 6, y: 7 },
+  { def: 'battery', x: 6, y: 8 },
+  { def: 'rtg', x: 5, y: 7 },
+  { def: 'rtg', x: 8, y: 7 },
+  { def: 'cargo', x: 6, y: 9 },
+  { def: 'gun-plasma', x: 4, y: 9 },
+  { def: 'gun-plasma', x: 8, y: 9 },
+  { def: 'tank-xl', x: 6, y: 11 },
+  { def: 'armor-side', x: 5, y: 11 },
+  { def: 'armor-side', x: 8, y: 11 },
+  { def: 'aerospike', x: 6, y: 15 },
+]
+export const LOOT_PRESETS: ShipPreset[] = [
+  { id: 'raider', name: 'Akıncı', desc: 'Ucuz ve çevik: çift Vulcan, 4 t kargo, yan zırh.', design: RAIDER_DESIGN },
+  { id: 'hauler', name: 'Nakliyeci', desc: '14 t kargo, kalkan ve zırh: az silah, çok ganimet.', design: HAULER_DESIGN },
+  { id: 'bruiser', name: 'Yıkıcı', desc: 'İkili top + plazma + kalkan + ağır zırh: üs baskını için.', design: BRUISER_DESIGN },
 ]
 
 export function partMaxHp(defId: string): number {
