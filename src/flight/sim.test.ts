@@ -696,7 +696,7 @@ describe('multiplayer-ready dispatchCommand & ownerId isolation', () => {
   })
 })
 
-describe('ISS, break-up and easter eggs', () => {
+describe('ISS ve parçalanma', () => {
   it('spawns the ISS, rendezvous + docking delivers supplies and pays out', async () => {
     const { ensureStation, rendezvousStation, dockCandidate, dockVessels, isStationVessel, deleteVessel } = await import('./world')
     const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
@@ -765,20 +765,6 @@ describe('ISS, break-up and easter eggs', () => {
     expect(mild.left).toBeLessThan(mild.n0)
   })
 
-  it('grants Margaret Hamilton on the first landing', () => {
-    const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
-    sim.gs.money = 100_000
-    expect(launchDesign(sim)).toBeNull()
-    const v = activeVessel(sim.gs)!
-    v.landed = false
-    v.pos = { x: 0, y: BODIES.earth.radius + vesselStats(v.parts).maxY - vesselStats(v.parts).comY + 2 }
-    v.vel = { x: 0, y: -1 }
-    let got = false
-    for (let i = 0; i < 200; i += 1) if (stepWorld(sim, 0.05, ctrl).some((e) => e.type === 'achievement' && e.id === 'hamilton')) got = true
-    expect(got).toBe(true)
-    expect(sim.gs.achievements).toContain('hamilton')
-  })
-
   it('hedefe git yörüngeye oturmadan doğrudan Ay yüzeyine iner, 1000 m altında 1×', () => {
     const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
     sim.gs.money = 100_000
@@ -826,34 +812,6 @@ describe('ISS, break-up and easter eggs', () => {
     }
     expect(alt).toBeGreaterThan(2000)
     expect(sim.warpIdx).toBe(7)
-  })
-
-  it('su kulesi yalnızca roket 30 sn boyunca 50 m altında ateşlerse uçar', () => {
-    const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
-    sim.gs.money = 100_000
-    expect(launchDesign(sim)).toBeNull()
-    const v = activeVessel(sim.gs)!
-    // Normal kalkış: kule yerinde kalır.
-    v.throttle = 1
-    for (let i = 0; i < 400 && Math.hypot(v.pos.x, v.pos.y) - BODIES.earth.radius < 300; i += 1) stepWorld(sim, 0.05, ctrl)
-    expect(sim.towerGone).toBeFalsy()
-    // Rampada alçakta oyalanma: motor açık, roket 50 m altında tutulur.
-    const sim2: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
-    sim2.gs.money = 100_000
-    expect(launchDesign(sim2)).toBeNull()
-    const w = activeVessel(sim2.gs)!
-    let flew = false
-    for (let i = 0; i < 700 && !flew; i += 1) {
-      w.throttle = 0.3
-      const r = Math.hypot(w.pos.x, w.pos.y)
-      if (r - BODIES.earth.radius > 20) {
-        w.pos = { x: (w.pos.x / r) * (BODIES.earth.radius + 20), y: (w.pos.y / r) * (BODIES.earth.radius + 20) }
-        w.vel = { x: 0, y: 0 }
-      }
-      if (stepWorld(sim2, 0.05, ctrl).some((e) => e.type === 'achievement' && e.id === 'water-tower')) flew = true
-      if (i === 500) expect(flew).toBe(false)
-    }
-    expect(flew).toBe(true)
   })
 
   it('istasyonu seçmek görev tamamlamaz', async () => {
@@ -988,7 +946,7 @@ describe('multiplayer colony race', () => {
     expect(v.angle).toBeCloseTo(0, 2)
   })
 
-  it('dynamically speeds up time while coasting and slams down on close approach or manual thrust', () => {
+  it('çok oyunculuda zaman hızlandırma yoktur: istek yok sayılır, oyun hep 1× akar', () => {
     const sim = twoPlayerSim()
     expect(dispatchCommand(sim, { type: 'launch', design: DEFAULT_DESIGN }, 'p1').error).toBeUndefined()
     expect(dispatchCommand(sim, { type: 'launch', design: DEFAULT_DESIGN }, 'p2').error).toBeUndefined()
@@ -1004,26 +962,11 @@ describe('multiplayer colony race', () => {
     v2.pos = { x: -r, y: 0 }
     v2.vel = { x: 0, y: -vCirc }
 
-    // Güvenli yörüngede süzülüp hızlandırma talep edildiğinde (kalkış sonrası 2.2 sn koruma bitince) zaman yükselir
     expect(dispatchCommand(sim, { type: 'setWarpPref', warpIdx: 6 }, 'p1').error).toBeUndefined()
-    const emptyCtrls = new Map<string, typeof ctrl>()
-    for (let i = 0; i < 80; i += 1) stepWorld(sim, 0.05, emptyCtrls)
-    expect(sim.warpIdx).toBeGreaterThan(2)
-    expect(WARPS[sim.warpIdx]).toBeGreaterThanOrEqual(10)
-
-    // Elle itki uygulandığında zaman fizik hızlandırma sınırının üstüne çıkamaz / anında düşer
-    const burnCtrls = new Map<string, typeof ctrl>([['p1', { rotate: 0, tx: 0, ty: 1 }]])
-    stepWorld(sim, 0.05, burnCtrls)
-    expect(sim.warpIdx).toBeLessThanOrEqual(PHYSICS_WARP_MAX_IDX)
-
-    // Hızlı konumda iki oyuncu roketi < 3 km mesafeye girince anında 1x'e düşer
-    let ramped = computeDynamicWarp(sim.gs, 5, 10, 0.05, 10, emptyCtrls, new Map())
-    expect(ramped.warpIdx).toBeGreaterThanOrEqual(4)
-    v2.pos = { x: v1.pos.x, y: v1.pos.y + 2_000 }
-    v2.vel = { x: v1.vel.x, y: v1.vel.y }
-    ramped = computeDynamicWarp(sim.gs, ramped.warpIdx, ramped.rampTimer, 0.05, 10.1, emptyCtrls, new Map())
-    expect(ramped.warpIdx).toBe(0)
-    expect(WARPS[ramped.warpIdx]).toBe(1)
+    sim.warpIdx = 5
+    for (let i = 0; i < 80; i += 1) stepWorld(sim, 0.05, new Map())
+    expect(sim.warpIdx).toBe(0)
+    expect(sim.gs.mp!.warpInfo.warp).toBe(1)
   })
 
   it('shatters rockets on high-speed collisions (no bounty) and leaves gentle bumps intact', () => {

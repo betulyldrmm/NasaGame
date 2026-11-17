@@ -408,30 +408,6 @@ describe('Colony defenses, shield domes, colony siege & snapshot delta optimizat
     expect(h3.gs.vessels.find((o) => o.id === v1.id)!.parts[2]!.charge).toBe(0)
   })
 
-  it('restores fast-travel climb & warp during MP transfer while dropping to 1x during active weapon fire', () => {
-    const sim = makeWarSim()
-    expect(dispatchCommand(sim, { type: 'setTarget', bodyId: 'moon' }, 'p1').error).toBeUndefined()
-    expect(dispatchCommand(sim, { type: 'launch', design: COMBAT_PRESETS[0]!.design }, 'p1').error).toBeUndefined()
-    expect(dispatchCommand(sim, { type: 'launch', design: COMBAT_PRESETS[0]!.design }, 'p2').error).toBeUndefined()
-    const v1 = sim.gs.vessels.find((o) => o.ownerId === 'p1')!
-    const v2 = sim.gs.vessels.find((o) => o.ownerId === 'p2')!
-    v1.landed = false
-    v2.landed = false
-    v1.pos = { x: BODIES.earth.radius + 14_000, y: 0 }
-    v1.vel = { x: 0, y: 1200 }
-    v2.pos = { x: -(BODIES.earth.radius + 35_000), y: 0 }
-    v2.vel = { x: 0, y: -1200 }
-
-    // Ay transfer tırmanışında MP hızlı yolculuk yumuşak adımlarla 4× tavanına çıkar
-    expect(dispatchCommand(sim, { type: 'setAutopilot', vesselId: v1.id, mode: 'transfer' }, 'p1').error).toBeUndefined()
-    for (let i = 0; i < 18; i += 1) stepWorld(sim, 0.05, new Map())
-    expect(sim.warpIdx).toBeGreaterThanOrEqual(2)
-
-    // Silah ateşlenince çatışma güvenliği otomatik 1×'e çeker
-    stepWorld(sim, 0.05, new Map([['p1', { rotate: 0, tx: 0, ty: 0, fire: true, weaponKey: 'gun-vulcan', aimAngle: 0 }]]))
-    expect(sim.warpIdx).toBe(0)
-  })
-
   it('score15 warfare goal finishes match when a player accumulates 15 points', () => {
     const sim = makeWarSim('score15')
     sim.gs.mp!.players.p1.score = 15

@@ -569,151 +569,6 @@ function drawBaseSites(
   ctx.imageSmoothingEnabled = true
 }
 
-/** Rampanın yanındaki su kulesi (egzoza 5 sn maruz kalırsa fırlar). */
-function drawWaterTower(ctx: Ctx, flame: number) {
-  ctx.strokeStyle = '#6d7785'
-  ctx.lineWidth = 0.5
-  ctx.beginPath()
-  ctx.moveTo(-2.6, 0)
-  ctx.lineTo(-1.6, -11)
-  ctx.moveTo(2.6, 0)
-  ctx.lineTo(1.6, -11)
-  ctx.moveTo(-2.2, -4)
-  ctx.lineTo(2.2, -8)
-  ctx.moveTo(2.2, -4)
-  ctx.lineTo(-2.2, -8)
-  ctx.stroke()
-  const g = ctx.createLinearGradient(-3.5, 0, 3.5, 0)
-  g.addColorStop(0, '#7d8791')
-  g.addColorStop(0.4, '#ffffff')
-  g.addColorStop(1, '#6a737d')
-  ctx.fillStyle = g
-  ctx.beginPath()
-  ctx.ellipse(0, -14, 3.6, 3.4, 0, 0, 6.283)
-  ctx.fill()
-  ctx.fillStyle = '#3f8fd8'
-  ctx.fillRect(-3.4, -14.6, 6.8, 1.2)
-  if (flame > 0) {
-    const fg = ctx.createLinearGradient(0, 0, 0, 9 * flame)
-    fg.addColorStop(0, 'rgba(255,255,255,.95)')
-    fg.addColorStop(0.3, 'rgba(160,220,255,.8)')
-    fg.addColorStop(1, 'rgba(120,180,255,0)')
-    ctx.fillStyle = fg
-    ctx.beginPath()
-    ctx.moveTo(-2.4, 0)
-    ctx.lineTo(0, 9 * flame)
-    ctx.lineTo(2.4, 0)
-    ctx.closePath()
-    ctx.fill()
-  }
-}
-
-/** Gökyüzü easter egg'leri: düşen balina + petunya saksısı, sürüklenen kırmızı spor araba. */
-function drawSkyEggs(ctx: Ctx, sim: Sim, view: View, v: Vessel | null) {
-  const clock = sim.clock ?? 0
-  for (const f of sim.fx ?? []) {
-    if (f.kind !== 'whale') continue
-    const age = clock - f.born
-    if (age > 11) continue
-    const y = -90 + (view.h + 200) * Math.min(1, (age / 10) ** 1.6)
-    ctx.save()
-    ctx.translate(view.w * 0.74, y)
-    ctx.rotate(0.5 + Math.sin(age * 1.3) * 0.12)
-    ctx.fillStyle = '#5b7fa6'
-    ctx.beginPath()
-    ctx.ellipse(0, 0, 54, 22, 0, 0, 6.283)
-    ctx.fill()
-    ctx.beginPath()
-    ctx.moveTo(-48, 0)
-    ctx.lineTo(-78, -20)
-    ctx.lineTo(-70, 0)
-    ctx.lineTo(-78, 20)
-    ctx.closePath()
-    ctx.fill()
-    ctx.fillStyle = '#dfe8f2'
-    ctx.beginPath()
-    ctx.ellipse(8, 9, 40, 10, 0, 0, Math.PI)
-    ctx.fill()
-    ctx.fillStyle = '#0b1424'
-    ctx.beginPath()
-    ctx.arc(34, -5, 3, 0, 6.283)
-    ctx.fill()
-    ctx.restore()
-    // petunya saksısı
-    ctx.save()
-    ctx.translate(view.w * 0.74 + 110, y - 60)
-    ctx.rotate(age * 2)
-    ctx.fillStyle = '#b5633c'
-    ctx.beginPath()
-    ctx.moveTo(-9, -4)
-    ctx.lineTo(9, -4)
-    ctx.lineTo(6, 10)
-    ctx.lineTo(-6, 10)
-    ctx.closePath()
-    ctx.fill()
-    ctx.fillStyle = '#3f8a4f'
-    ctx.fillRect(-1, -14, 2, 10)
-    ctx.fillStyle = '#e879c6'
-    for (let i = 0; i < 5; i += 1) {
-      ctx.beginPath()
-      ctx.arc(Math.cos(i * 1.257) * 5, -16 + Math.sin(i * 1.257) * 5, 3.4, 0, 6.283)
-      ctx.fill()
-    }
-    ctx.fillStyle = '#fde68a'
-    ctx.beginPath()
-    ctx.arc(0, -16, 2.2, 0, 6.283)
-    ctx.fill()
-    ctx.restore()
-  }
-  // Starman: yüksek irtifada arada bir geçen kırmızı araba
-  // Starman: yalnızca Dünya yörüngesinde ve nadiren (yaklaşık 8 dakikada bir) geçer
-  const inEarthOrbit = !!v && !v.landed && v.bodyId === 'earth' && len(v.pos) - BODIES.earth.radius > BODIES.earth.atmoHeight
-  if (v && inEarthOrbit && hash(Math.floor(view.clock / 60) + 17) < 0.13) {
-    const cycle = view.clock % 60
-    if (cycle < 16) {
-      const x = -80 + (view.w + 160) * (cycle / 16)
-      ctx.save()
-      ctx.translate(x, view.h * 0.2 + Math.sin(cycle * 0.7) * 10)
-      ctx.rotate(-0.12 + Math.sin(cycle * 0.4) * 0.08)
-      ctx.fillStyle = '#d7263d'
-      ctx.beginPath()
-      ctx.moveTo(-26, 4)
-      ctx.lineTo(-24, -4)
-      ctx.lineTo(-8, -6)
-      ctx.lineTo(-2, -12)
-      ctx.lineTo(10, -12)
-      ctx.lineTo(16, -5)
-      ctx.lineTo(27, -2)
-      ctx.lineTo(27, 5)
-      ctx.closePath()
-      ctx.fill()
-      ctx.fillStyle = '#12233f'
-      ctx.beginPath()
-      ctx.moveTo(-1, -10.5)
-      ctx.lineTo(8.5, -10.5)
-      ctx.lineTo(13, -5.5)
-      ctx.lineTo(-4, -5.5)
-      ctx.closePath()
-      ctx.fill()
-      ctx.fillStyle = '#f4f6f8'
-      ctx.beginPath()
-      ctx.arc(3, -11.5, 3.6, 0, 6.283)
-      ctx.fill()
-      ctx.fillStyle = '#1b1e23'
-      ctx.fillRect(3.4, -12.6, 2.6, 2)
-      ctx.beginPath()
-      ctx.arc(-15, 6, 5, 0, 6.283)
-      ctx.arc(16, 6, 5, 0, 6.283)
-      ctx.fill()
-      ctx.fillStyle = '#9aa3ad'
-      ctx.beginPath()
-      ctx.arc(-15, 6, 2, 0, 6.283)
-      ctx.arc(16, 6, 2, 0, 6.283)
-      ctx.fill()
-      ctx.restore()
-    }
-  }
-}
 
 /** Patlamalar ve muharebe efektleri: ateş topu, ışın, kalkan halkası ve isabet kıvılcımları. */
 function drawBooms(ctx: Ctx, sim: Sim, cam: Cam, bodyId: BodyId) {
@@ -1194,18 +1049,6 @@ function drawTerrain(ctx: Ctx, cam: Cam, body: BodyDef, focusTheta: number, sim:
     } else {
       withSurfaceFrame(ctx, cam, body, PAD_ANGLE, () => {
         drawPad(ctx, clock)
-      })
-    }
-    if (!isWarfareMode(sim.gs)) {
-      withSurfaceFrame(ctx, cam, body, PAD_ANGLE, () => {
-        const launch = (sim.fx ?? []).find((f) => f.kind === 'tower')
-        const age = launch ? (sim.clock ?? 0) - launch.born : -1
-        if (!sim.towerGone || (age >= 0 && age < 9)) {
-          ctx.save()
-          ctx.translate(36, age >= 0 ? -4 * age * age : 0)
-          drawWaterTower(ctx, age >= 0 ? 1 + 0.2 * Math.sin(age * 40) : 0)
-          ctx.restore()
-        }
       })
     }
   }
@@ -1871,7 +1714,6 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
     ctx.translate(shakeX, shakeY)
   }
 
-  drawSkyEggs(ctx, sim, view, v)
 
   // gök cisimleri
   const hereAbs = bodyAbsState(bodyId, gs.time).r

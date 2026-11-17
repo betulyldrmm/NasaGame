@@ -537,12 +537,6 @@ export interface GameState {
   shipSlots?: (ShipSlot | null)[]
   targetBody?: BodyId | null
   lastSavedAt?: number
-  /** kazanılan başarımlar (easter egg'ler dahil) */
-  achievements?: string[]
-  /** gizli "Simit & Çay" modu */
-  teaMode?: boolean
-  /** yakıt verimi bonusunun bittiği an (ms, Date.now) */
-  buffUntil?: number
   issDeliveries?: number
   /** Tek oyunculu test atışları için geçici mermiler */
   projectiles?: Projectile[]
@@ -592,7 +586,6 @@ export type GameEvent =
   | { type: 'explosion'; size: number; bodyId?: BodyId; x?: number; y?: number }
   | { type: 'weaponFire'; weaponId: string; kind: WeaponKind; bodyId: BodyId; x: number; y: number; pitch?: number }
   | { type: 'shieldHit'; bodyId: BodyId; x: number; y: number }
-  | { type: 'achievement'; id: string; title: string; text: string }
   | { type: 'capture'; bodyId: BodyId; ownerId: string | null; previousOwnerId: string | null; text: string }
   | { type: 'colonyDestroyed'; bodyId: BodyId; victimId: string; attackerId: string; text: string }
   | { type: 'kill'; attackerId: string | null; victimId: string | null; victimName: string; speed: number }

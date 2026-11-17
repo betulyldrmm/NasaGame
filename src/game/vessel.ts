@@ -298,11 +298,6 @@ export interface EngineOutput {
  * Yakıt akışı sabittir: ṁ = F_vak / (Isp_vak · g0). Atmosferde Isp düşer → itki düşer.
  * Bu yüzden vakum motorları uzayda verimli ama kalkışta güçsüzdür.
  */
-/** Geçici yakıt verimi bonusu ("İstikbal Göklerdedir" selamı): Isp çarpanı. */
-let ispBoost = 1
-export function setIspBoost(mult: number) {
-  ispBoost = mult
-}
 
 export function runEngines(parts: PartInst[], throttle: number, pressure: number, dt: number, ecAvailable: number): EngineOutput {
   const firing = new Map<number, number>()
@@ -326,7 +321,7 @@ export function runEngines(parts: PartInst[], throttle: number, pressure: number
       continue
     }
     // Hasarlı motor daha az yakıt yakar ve daha az iter.
-    const boost = ispBoost * (arcade.on ? ARCADE_FUEL_FACTOR : 1)
+    const boost = arcade.on ? ARCADE_FUEL_FACTOR : 1
     const flow = (d.thrust! / (d.ispVac! * boost * G0)) * throttle * health
     const tanks = parts.filter((p, j) => groups[j] === groups[i] && partDef(p.def).kind === 'tank' && partAlive(p) && (p.fuel ?? 0) > 0)
     const avail = tanks.reduce((s, t) => s + (t.fuel ?? 0), 0)

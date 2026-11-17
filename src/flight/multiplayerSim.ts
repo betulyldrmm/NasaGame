@@ -66,7 +66,7 @@ export const PLAYER_COLORS = ['#38d9e8', '#fb7185', '#4ade80', '#fbbf24', '#c084
 const CAPTURE_NEUTRALIZE_SEC = 5
 
 export interface FxEventLike {
-  kind: 'boom' | 'whale' | 'tower' | 'beam' | 'hit' | 'shield' | 'muzzle' | 'shockwave' | 'debrisBurst' | 'smokePlume'
+  kind: 'boom' | 'beam' | 'hit' | 'shield' | 'muzzle' | 'shockwave' | 'debrisBurst' | 'smokePlume'
   bodyId: BodyId
   x: number
   y: number

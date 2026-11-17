@@ -30,7 +30,7 @@ import { DEFAULT_DESIGN, GRID_H, GRID_W, INITIAL_MONEY, ISS_ALTITUDE_M, ISS_DESI
 import { MISSION_BY_ID, MISSIONS } from '../game/missions'
 import { baseIncomeMultiplier, hasAutoLandTech, INITIAL_TECH, isModuleUnlocked, isPartUnlocked, orePriceMultiplier, requiredTechForModule, requiredTechForPart } from '../game/tech'
 import type { AutopilotMode, Base, GameCommand, GameEvent, GameState, PartInst, Vessel } from '../game/types'
-import { activeEngines, arcade, cargoMass, components, estimateDeltaV, freshParts, fuelGroups, isCombatPart, isConnected, modulesMass, nextStage, partAlive, setIspBoost, splitParts, trimCargoToCap, vesselStats } from '../game/vessel'
+import { activeEngines, arcade, cargoMass, components, estimateDeltaV, freshParts, fuelGroups, isCombatPart, isConnected, modulesMass, nextStage, partAlive, splitParts, trimCargoToCap, vesselStats } from '../game/vessel'
 import { BODIES, childrenOf, solarFlux, type BodyId } from '../nasa/bodies'
 import {
   damageNearbyColoniesOnCrash,
@@ -67,7 +67,6 @@ import {
 import { predictTrajectory } from './predict'
 import {
   addPlayerMoney,
-  computeDynamicWarp,
   getActiveVesselForPlayer,
   getPlayerMoney,
   isAnyActivePlayerVessel,
@@ -86,7 +85,7 @@ export { PHYSICS_WARP_MAX_IDX, WARPS }
 const PHYSICS_DT = 0.02
 
 export interface Fx {
-  kind: 'boom' | 'whale' | 'tower' | 'beam' | 'hit' | 'shield' | 'muzzle' | 'shockwave' | 'debrisBurst' | 'smokePlume'
+  kind: 'boom' | 'beam' | 'hit' | 'shield' | 'muzzle' | 'shockwave' | 'debrisBurst' | 'smokePlume'
   bodyId: BodyId
   x: number
   y: number
@@ -107,10 +106,6 @@ export interface Sim {
   fx?: Fx[]
   /** efekt saati (gerçek saniye) */
   clock?: number
-  towerHeat?: number
-  towerGone?: boolean
-  /** Rampada 50 m altında geçen süre (su kulesi easter egg'i). */
-  padLinger?: number
   /** Otopilot 500 m altında 1×'e kilitlediğinde oyuncunun seçtiği hız. */
   warpLockPrev?: number
   /** Otopilot sırasında oyuncu hızı kendisi düşürdüyse otomatik hızlandırma yapılmaz (otopilot bitince sıfırlanır). */
@@ -947,16 +942,6 @@ function boom(sim: Sim, bodyId: BodyId, x: number, y: number, size: number, even
   events.push({ type: 'explosion', size, bodyId, x, y })
 }
 
-function grant(gs: GameState, id: string, title: string, text: string, events: GameEvent[], bonus = 0) {
-  if (gs.mp) return false
-  const list = (gs.achievements ??= [])
-  if (list.includes(id)) return false
-  list.push(id)
-  gs.money += bonus
-  events.push({ type: 'achievement', id, title, text })
-  return true
-}
-
 /** Parçanın gök cismi çerçevesindeki konumu. */
 function partWorldPos(v: Vessel, st: ReturnType<typeof vesselStats>, p: PartInst) {
   const d = partDef(p.def)
@@ -1121,67 +1106,6 @@ export function rendezvousStation(sim: Sim, v: Vessel): string | null {
   return null
 }
 
-// ───────────────────────── easter egg'ler ─────────────────────────
-
-const padDistance = (v: Vessel) => Math.abs(wrapPi(Math.atan2(v.pos.y, v.pos.x) - PAD_ANGLE)) * BODIES.earth.radius
-
-/** Eski anıt selamı easter egg'i (anıt rampadan kaldırıldı): artık bir şey yapmaz. */
-export function noteRcsPulse(_sim: Sim, _v: Vessel): GameEvent[] {
-  return []
-}
-
-function onTouchdown(sim: Sim, v: Vessel, speed: number, events: GameEvent[]) {
-  const gs = sim.gs
-  if (gs.mp) return
-  const st = vesselStats(v.parts)
-  grant(gs, 'hamilton', 'Margaret Hamilton', 'İlk başarılı inişin! Apollo yazılımının mimarına selam.', events, 2000)
-  const pct = st.fuelCap > 0 ? Math.round((st.fuel / st.fuelCap) * 100) : -1
-  if (pct === 42) {
-    const fresh = grant(gs, 'dont-panic', "Don't Panic", 'Tam %42 yakıtla indin. Gökyüzüne bak…', events, 4200)
-    if (fresh) (sim.fx ??= []).push({ kind: 'whale', bodyId: v.bodyId, x: v.pos.x, y: v.pos.y, born: sim.clock ?? 0, size: 1 })
-  }
-  if (gs.teaMode && speed < 2) {
-    gs.money += 5000
-    if (!grant(gs, 'cay', 'Çaylar Şirketten', 'Çayı dökmeden indin: +5.000 ₡.', events)) events.push({ type: 'toast', text: 'Çaylar şirketten! Çay dökülmedi: +5.000 ₡' })
-  }
-}
-
-function stepEggs(sim: Sim, active: Vessel | null, real: number, events: GameEvent[]) {
-  const gs = sim.gs
-  if (gs.mp) {
-    setIspBoost(1)
-    return
-  }
-  setIspBoost(gs.buffUntil && Date.now() < gs.buffUntil ? 1.15 : 1)
-  // Su kulesi: roket motoru çalışırken rampada 30 sn boyunca 50 m'nin üstüne çıkamazsa kule
-  // egzoza dayanamayıp kendisi fırlar. 50 m'yi aşınca, rampadan uzaklaşınca ya da motor 2 sn'den
-  // uzun susunca sayaç sıfırlanır.
-  if (!sim.towerGone && active && active.bodyId === 'earth' && padDistance(active) < 70) {
-    const alt = Math.hypot(active.pos.x, active.pos.y) - BODIES.earth.radius
-    const firing = active.throttle > 0 && (sim.firing.get(active.id)?.size ?? 0) > 0
-    if (alt > 50) {
-      sim.padLinger = 0
-      sim.towerHeat = 0
-    } else if (firing) {
-      sim.padLinger = (sim.padLinger ?? 0) + real
-      sim.towerHeat = 0
-    } else {
-      sim.towerHeat = (sim.towerHeat ?? 0) + real
-      if (sim.towerHeat > 2) sim.padLinger = 0
-    }
-    if ((sim.padLinger ?? 0) >= 30) {
-      sim.towerGone = true
-      sim.padLinger = 0
-      const r = BODIES.earth.radius
-      ;(sim.fx ??= []).push({ kind: 'tower', bodyId: 'earth', x: Math.cos(PAD_ANGLE) * r, y: Math.sin(PAD_ANGLE) * r, born: sim.clock ?? 0, size: 1 })
-      grant(gs, 'water-tower', 'Su Kulesi Fırlatıldı', 'Rampada 30 saniye oyalandın; su kulesi egzoza dayanamadı ve kendi yoluna gitti.', events, 1500)
-    }
-  } else {
-    sim.padLinger = 0
-    sim.towerHeat = 0
-  }
-}
-
 /** Dünyayı dtReal gerçek saniye ilerletir. */
 export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string, Controls>): GameEvent[] {
   const gs = sim.gs
@@ -1199,7 +1123,6 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
   const loot = isLootMode(gs)
   arcade.on = loot
   if (!loot && (gs.tick ?? 0) % 120 === 0) ensureStation(gs)
-  stepEggs(sim, active, real, events)
 
   // İniş ayakları yüzeye yaklaşırken kendiliğinden açılır.
   if (isMp) {
@@ -1355,19 +1278,11 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
     }
   }
 
-  if (gs.mp && effCtrlMap && autopilotWanted) {
-    const dyn = computeDynamicWarp(
-      gs,
-      sim.warpIdx,
-      sim.warpRampTimer ?? 0,
-      real,
-      sim.clock ?? 0,
-      effCtrlMap,
-      autopilotWanted,
-    )
-    sim.warpIdx = loot ? 0 : dyn.warpIdx
-    sim.warpRampTimer = dyn.rampTimer
-    if (loot && gs.mp.warpInfo.warpIdx !== 0) gs.mp.warpInfo = { ...gs.mp.warpInfo, warpIdx: 0, warp: 1 }
+  if (gs.mp) {
+    // Çok oyunculuda zaman hızlandırma yok: herkes her zaman 1× oynar.
+    sim.warpIdx = 0
+    sim.warpRampTimer = 0
+    if (gs.mp.warpInfo.warpIdx !== 0) gs.mp.warpInfo = { ...gs.mp.warpInfo, warpIdx: 0, warp: 1 }
   } else if (!isMp && active) {
     // "Hedefe git" hedefte yörüngeye oturdu: kısa bir 1× molası ve ardından otomatik iniş.
     if (active.landAt && effectiveAutopilot(active) === 'off' && !active.landed) {
@@ -1604,7 +1519,6 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
           }
           if (isActive) {
             events.push({ type: 'toast', ownerId: v.ownerId, text: `${BODIES[v.bodyId].name} yüzeyine iniş başarılı.` })
-            if (!isMp) onTouchdown(sim, v, res.touchdownSpeed ?? 0, events)
           }
           break
         }
@@ -2954,13 +2868,7 @@ export function dispatchCommand(
       return err ? { events, error: err } : { events }
     }
     case 'setWarpPref': {
-      if (gs.mp) {
-        const p = gs.mp.players[actorId]
-        if (p) {
-          p.wantsWarpIdx = cmd.warpIdx
-          if (cmd.anchor !== undefined) p.warpAnchor = cmd.anchor
-        }
-      }
+      // Çok oyunculuda zaman hızlandırma kapalı: istek yok sayılır.
       return { events }
     }
     case 'fleetOrder': {
@@ -3058,7 +2966,6 @@ export function dispatchCommand(
           return { events }
         case 'toggleRcs':
           v.rcsOn = !v.rcsOn
-          if (!gs.mp) events.push(...noteRcsPulse(sim, v))
           return { events }
         case 'rendezvous': {
           const err = rendezvousStation(sim, v)

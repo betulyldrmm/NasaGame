@@ -49,7 +49,6 @@ import {
   totalPassiveIncomePerMin,
   WARPS,
   isStationVessel,
-  noteRcsPulse,
   rendezvousStation,
 } from '../flight/world'
 import {
@@ -66,7 +65,6 @@ import { CONQUERABLE_BODIES, playerPadAngle, playerPassiveIncomePerMin } from '.
 import { BODIES, type BodyId, gameDate, solarFlux } from '../nasa/bodies'
 import DroneWindow from './DroneWindow'
 import FleetWindow from './FleetWindow'
-import HowToPlay from './HowToPlay'
 import { aimInfoFromScreen, clampCamPan, createView, type FlightFrame, type MapFrame, pickPart, pickVesselFlight, renderFlight, renderMap, resetViewCache } from '../render/renderer'
 import PartIcon from './PartIcon'
 import PlanetGridPanel from './ColonyPanel'
@@ -76,7 +74,6 @@ const QUICK_WARPS = [1, 4, 10, 25]
   .map((w) => ({ label: `${w}×`, idx: WARPS.indexOf(w) }))
   .filter((w) => w.idx >= 0)
 
-const ACH_NAMES: Record<string, string> = { hamilton: 'Margaret Hamilton', 'dont-panic': "Don't Panic", 'water-tower': 'Su Kulesi Fırlatıldı', istikbal: 'İstikbal Göklerdedir', cay: 'Çaylar Şirketten' }
 
 const fmt = (n: number) => Math.round(n).toLocaleString('tr-TR')
 const km = (m: number) => (Math.abs(m) >= 1e7 ? `${(m / 1e6).toFixed(2)} Mm` : Math.abs(m) >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${m.toFixed(0)} m`)
@@ -131,9 +128,6 @@ interface Hud {
   issDist: number | null
   issRel: number
   canRendezvous: boolean
-  tea: boolean
-  buff: boolean
-  achievements: string[]
   missionNext: string
   hasLegs: boolean
   legsOpen: boolean
@@ -416,9 +410,6 @@ function snapshot(): Hud {
     issDist: null,
     issRel: 0,
     canRendezvous: false,
-    tea: !isMp && !!gs.teaMode,
-    buff: !isMp && !!gs.buffUntil && Date.now() < gs.buffUntil,
-    achievements: gs.achievements ?? [],
     missionNext: MISSIONS.find((m) => !gs.missionsDone.includes(m.id))?.title ?? 'Tüm görevler tamamlandı',
     hasLegs: false,
     legsOpen: false,
@@ -728,15 +719,11 @@ export default function FlightScreen({ onBuilder }: Props) {
   const [lost, setLost] = useState<string | null>(null)
   const [spectating, setSpectating] = useState(false)
   const [wreck, setWreck] = useState(false)
-  const [showGuide, setShowGuide] = useState(false)
   const [showCargo, setShowCargo] = useState(false)
   const [showDrone, setShowDrone] = useState(false)
   const [showFleet, setShowFleet] = useState(false)
   const [followPick, setFollowPick] = useState<number>(0)
   const [droneSite, setDroneSite] = useState<{ bodyId: BodyId; quadrant: QuadrantId } | null>(null)
-  const [alarm, setAlarm] = useState(false)
-  const spam = useRef<number[]>([])
-  const typed = useRef('')
   const [panel, setPanel] = useState<'missions' | 'base' | 'help' | 'chat' | 'health' | null>(null)
   const [inspectIdx, setInspectIdx] = useState<number | null>(null)
   const [confirmDel, setConfirmDel] = useState<{ id: number; name: string } | null>(null)
@@ -767,7 +754,6 @@ export default function FlightScreen({ onBuilder }: Props) {
     }
   }, [hud.weapons, chooseWeapon])
   useEffect(() => {
-    if (hud.landed) setAlarm(false)
   }, [hud.landed])
   useEffect(() => {
     if (hud.vesselId) lastMyVesselId.current = hud.vesselId
@@ -836,7 +822,6 @@ export default function FlightScreen({ onBuilder }: Props) {
         const vol = Math.min(0.9, 0.35 + e.size * 0.05) * gain
         if (vol > 0.02) audio.sfx('explosion', vol)
       }
-      else if (e.type === 'achievement') toast(`🏆 Başarım: ${e.title} — ${e.text}`, 'mission')
       else if (e.type === 'crash') {
         const isMine = isMp
           ? e.ownerId === curSim.gs.ownerId && (e.vesselId === lastMyVesselId.current || !curSim.gs.activeId)
@@ -975,22 +960,6 @@ export default function FlightScreen({ onBuilder }: Props) {
 
   const toggleAutoLand = useCallback(() => toggleAutopilot('land'), [toggleAutopilot])
 
-  const stepMpWarpReq = useCallback((dir: 1 | -1) => {
-    const curSim = getActiveSim()
-    if (!curSim.gs.mp) return
-    const me = curSim.gs.mp.players[curSim.gs.ownerId ?? '']
-    const curReq = me ? me.wantsWarpIdx : -1
-    let nextReq: number
-    if (dir > 0) {
-      const base = curReq >= 0 ? curReq : curSim.warpIdx
-      nextReq = Math.min(WARPS.length - 1, base + 1)
-    } else {
-      if (curReq < 0) nextReq = Math.max(0, curSim.warpIdx - 1)
-      else nextReq = curReq - 1
-    }
-    runCommand({ type: 'setWarpPref', warpIdx: nextReq, anchor: false })
-    setHud(snapshot())
-  }, [])
 
   // klavye
   useEffect(() => {
@@ -1005,25 +974,7 @@ export default function FlightScreen({ onBuilder }: Props) {
       const curSim = getActiveSim()
       const isMp = Boolean(curSim.gs.mp)
       const v = activeVessel(curSim.gs)
-      // Gizli mod: uçuşta "cay" yaz → Simit & Çay telemetrisi (yalnızca tek oyunculu)
-      if (!isMp && k.length === 1) {
-        typed.current = (typed.current + k).slice(-3)
-        if (typed.current === 'cay' || typed.current === 'çay') {
-          sim.gs.teaMode = !sim.gs.teaMode
-          typed.current = ''
-          toast(sim.gs.teaMode ? '🫖 Gizli mod açıldı: Simit & Çay telemetrisi. Çayı dökmeden (2 m/s altında) in!' : 'Simit & Çay modu kapandı.', 'mission')
-        }
-      }
-      // 1202 alarmı: 100 m altında kontrollere abanırsan iniş bilgisayarı taşar
-      if (v && !v.landed && ['a', 'd', 'w', 's', 'z', 'x', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(k)) {
-        const now = performance.now()
-        spam.current = [...spam.current.filter((t) => now - t < 2500), now]
-        if (spam.current.length >= 12 && situation(v).alt < 100) {
-          spam.current = []
-          setAlarm(true)
-        }
-      }
-      else if (k >= '1' && k <= '9') {
+      if (k >= '1' && k <= '9') {
         const curV = activeVessel(curSim.gs)
         if (curV) {
           const allowGuns = !isMp || isWarfareMode(curSim.gs)
@@ -1038,12 +989,10 @@ export default function FlightScreen({ onBuilder }: Props) {
       } else if (k === 'h') {
         setPanel((p) => (p === 'health' ? null : 'health'))
       } else if (k === 'm') toggleMap()
-      else if (k === '.') {
-        if (isMp) stepMpWarpReq(1)
-        else sim.warpIdx = Math.min(WARPS.length - 1, sim.warpIdx + 1)
-      } else if (k === ',') {
-        if (isMp) stepMpWarpReq(-1)
-        else {
+      else if (k === '.' && !isMp) {
+        sim.warpIdx = Math.min(WARPS.length - 1, sim.warpIdx + 1)
+      } else if (k === ',' && !isMp) {
+        {
           sim.warpIdx = Math.max(0, sim.warpIdx - 1)
           sim.apWarpPinned = true
         }
@@ -1072,7 +1021,6 @@ export default function FlightScreen({ onBuilder }: Props) {
         if (isMp) hudCmd({ type: 'toggleRcs', vesselId: v.id })
         else {
           v.rcsOn = !v.rcsOn
-          handle(noteRcsPulse(sim, v))
         }
       } else if (k === 't') {
         const order: SasMode[] = ['off', 'prograde', 'retrograde', 'radial']
@@ -1124,7 +1072,7 @@ export default function FlightScreen({ onBuilder }: Props) {
       window.removeEventListener('keyup', up)
       window.removeEventListener('blur', blur)
     }
-  }, [chooseWeapon, handle, hudCmd, stepMpWarpReq, switchTo, toast, toggleAutoLand, toggleMap])
+  }, [chooseWeapon, handle, hudCmd, switchTo, toast, toggleAutoLand, toggleMap])
 
   // ana döngü
   useEffect(() => {
@@ -1438,8 +1386,6 @@ export default function FlightScreen({ onBuilder }: Props) {
 
   return (
     <main className="flight">
-      {alarm && !hud.landed && <div className="alarm-1202" role="alert">ERR 1202: EXEC OVERFLOW<small>İrtifa göstergesi devre dışı — göz kararı in!</small></div>}
-      {hud.tea && <div className="tea-glass" title="Çayı dökme!">🍵</div>}
       <canvas
         ref={canvasRef}
         className="flight-canvas"
@@ -1689,35 +1635,11 @@ export default function FlightScreen({ onBuilder }: Props) {
           </div>
         ) : (
           <div className="mp-warp-card">
-            <div className="warp">
-              <button
-                className={`mini-warp-btn${hud.mpWantWarpIdx < 0 && !hud.mpWarpAnchor ? ' is-on' : ''}`}
-                title="Akıllı Otomatik Zaman: tehlike yokken otopilotla hızlanır, çatışma/yakın temasta anında 1×'e iner"
-                onClick={() => hudCmd({ type: 'setWarpPref', warpIdx: -1, anchor: false })}
-              >
-                🤖 Oto
-              </button>
-              <button
-                className={`mini-warp-btn${hud.mpWarpAnchor ? ' is-on' : ''}`}
-                title="Herkes için hızı 1×'te tut"
-                onClick={() => hudCmd({ type: 'setWarpPref', warpIdx: 0, anchor: !hud.mpWarpAnchor })}
-              >
-                ⚓ 1×
-              </button>
-              <button className="hud-btn" onClick={() => stepMpWarpReq(-1)} aria-label="Yavaşlat">◀◀</button>
-              <b>{hud.warp.toLocaleString('tr-TR')}×</b>
-              <button className="hud-btn" onClick={() => stepMpWarpReq(1)} aria-label="Hızlandır">▶▶</button>
-            </div>
             <div className="mp-warp-meta">
               {mp.pingMs !== null && (
                 <span className={`mp-ping-pill ${mp.pingMs < 60 ? 'is-good' : mp.pingMs < 140 ? 'is-mid' : 'is-bad'}`}>
                   📶 {mp.pingMs} ms
                 </span>
-              )}
-              {hud.mpWarpInfo && (
-                <div className={`mp-warp-reason mode-${hud.mpWarpInfo.mode}`}>
-                  {hud.mpWarpInfo.reason}
-                </div>
               )}
             </div>
           </div>
@@ -1727,7 +1649,7 @@ export default function FlightScreen({ onBuilder }: Props) {
           {hud.has && (
             <>
               <span className="big">{BODIES[hud.body].name} · {QUADRANT_SHORT[hud.quadrant]}</span>
-              <span>Yükseklik</span><b className={alarm || hud.droneWarn ? 'warn' : ''}>{alarm ? '— — —' : hud.isDrone && hud.droneMaxAlt ? `${km(hud.alt)} / ${km(hud.droneMaxAlt)}` : km(hud.alt)}</b>
+              <span>Yükseklik</span><b className={hud.droneWarn ? 'warn' : ''}>{hud.isDrone && hud.droneMaxAlt ? `${km(hud.alt)} / ${km(hud.droneMaxAlt)}` : km(hud.alt)}</b>
               <span>Hız</span><b>{hud.speed.toFixed(1)} m/s</b>
               <span>Dikey</span><b className={hud.vr < -hud.tol && hud.alt < 2000 ? 'bad' : ''}>{hud.vr.toFixed(1)} m/s</b>
               {hud.apo !== null && <><span>Öte nokta</span><b>{km(hud.apo)}</b></>}
@@ -1841,8 +1763,8 @@ export default function FlightScreen({ onBuilder }: Props) {
             )}
             {!hud.isDrone ? (
               <>
-                <div className="gauge"><span>{hud.tea ? '🫖 Dem' : 'Kademe yakıtı'}</span><i><em style={{ width: pct(hud.stageFuel, hud.stageCap) }} /></i><small>{hud.stageFuel.toFixed(1)} t</small></div>
-                <div className="gauge"><span>{hud.tea ? '♨️ Sıcak Su' : 'Toplam yakıt'}</span><i><em style={{ width: pct(hud.fuel, hud.fuelCap) }} /></i><small>{hud.fuel.toFixed(1)} t</small></div>
+                <div className="gauge"><span>Kademe yakıtı</span><i><em style={{ width: pct(hud.stageFuel, hud.stageCap) }} /></i><small>{hud.stageFuel.toFixed(1)} t</small></div>
+                <div className="gauge"><span>Toplam yakıt</span><i><em style={{ width: pct(hud.fuel, hud.fuelCap) }} /></i><small>{hud.fuel.toFixed(1)} t</small></div>
               </>
             ) : (
               <div className="gauge"><span>🌬️ Fan İtkisi</span><i><em style={{ width: `${Math.round(hud.throttle * 100)}%` }} /></i><small>{Math.round(hud.throttle * 100)}%</small></div>
@@ -2283,8 +2205,6 @@ export default function FlightScreen({ onBuilder }: Props) {
               )
             })}
           </ul>
-          <h3 className="ach-title">Başarımlar ({hud.achievements.length})</h3>
-          <p className="base-note">{hud.achievements.length ? hud.achievements.map((a) => ACH_NAMES[a] ?? a).join(' · ') : 'Henüz başarım yok. Evrende gizli sürprizler var…'}</p>
         </aside>
       )}
 
@@ -2326,7 +2246,6 @@ export default function FlightScreen({ onBuilder }: Props) {
       {panel === 'help' && (
         <aside className="side-panel">
           <header><h2>Kontroller</h2><button onClick={() => setPanel(null)}>×</button></header>
-          <button className="button button-primary guide-open" onClick={() => setShowGuide(true)}>📘 Tam rehberi aç (Nasıl Oynanır?)</button>
           <ul className="help-list">
             <li><kbd>W</kbd>/<kbd>S</kbd> itki ±, <kbd>Z</kbd> tam itki, <kbd>X</kbd> motoru kes</li>
             <li><kbd>A</kbd>/<kbd>D</kbd> döndür · <kbd>T</kbd> yön kilidi (ileri / geri / radyal)</li>
@@ -2456,7 +2375,6 @@ export default function FlightScreen({ onBuilder }: Props) {
         )
       })()}
 
-      {showGuide && <HowToPlay onClose={() => setShowGuide(false)} />}
 
       {showCargo && hud.has && (hud.nearbyTransfer || (hud.landed && (hud.hasCargoBay || !(hud.body === 'earth' && hud.quadrant === 0)))) && (() => {
         const cv = activeVessel(curSim.gs)

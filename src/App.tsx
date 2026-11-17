@@ -5,10 +5,7 @@ import { enterMpMode, exitMpMode, useMultiplayer } from './flight/mpClient'
 import { resetViewCache } from './render/renderer'
 import AuthScreen from './components/AuthScreen'
 import BuilderScreen from './components/BuilderScreen'
-import IntroCutscene from './components/IntroCutscene'
-import HowToPlay from './components/HowToPlay'
 import MultiplayerLobby from './components/MultiplayerLobby'
-import PlanetGridPanel from './components/ColonyPanel'
 import MenuHangarCanvas from './components/MenuHangarCanvas'
 import { bump, clearOfflineGain, initAuth, logoutAccount, resetGame, saveGame, setIdleWarp, sim, useAuthState, useGame } from './game/store'
 import { audio } from './audio'
@@ -16,7 +13,6 @@ import { messages } from './i18n/tr'
 
 const FlightScreen = lazy(() => import('./components/FlightScreen'))
 
-type Dialog = 'how-to-play' | null
 const IDLE_WARPS = [1, 5, 25]
 const fmt = (n: number) => Math.round(n).toLocaleString('tr-TR')
 
@@ -24,10 +20,6 @@ function App() {
   const gs = useGame()
   const auth = useAuthState()
   const mp = useMultiplayer()
-  const [dialog, setDialog] = useState<Dialog>(null)
-  const setShowTech = (_open: boolean) => undefined
-  const [showGrid, setShowGrid] = useState(false)
-  const [showCutscene, setShowCutscene] = useState(false)
   const [screen, setScreen] = useState<'home' | 'assembly' | 'flight'>('home')
   const prevInMatch = useRef(false)
 
@@ -50,13 +42,10 @@ function App() {
     if (screen === 'home' && !mp.active) audio.music('menu')
   }, [screen, mp.active])
 
-  // Yeni girişte tamamen yeni hesapsa intro sinematiğini aç
+  // Çıkış yapılınca çok oyunculu moddan çık ve ana menüye dön
   useEffect(() => {
-    if (auth.user && gs.vessels.length === 0 && gs.missionsDone.length === 0 && gs.time < 1) {
-      setShowCutscene(true)
-    } else if (!auth.user) {
+    if (!auth.user) {
       exitMpMode()
-      setShowCutscene(false)
       setScreen('home')
     }
   }, [auth.user])
@@ -181,9 +170,6 @@ function App() {
                 Uçuşa devam et
               </button>
             )}
-            <button className="button button-secondary" onClick={() => setShowGrid(true)}>
-              🏗️ Koloni
-            </button>
             <button
               className="button button-secondary"
               onClick={() => {
@@ -191,15 +177,6 @@ function App() {
               }}
             >
               Yeni oyun
-            </button>
-            <button className="button button-secondary" onClick={() => setShowCutscene(true)}>
-              🎬 İntroyu İzle
-            </button>
-            <button className="button button-secondary" onClick={() => setDialog('how-to-play')}>
-              <span className="help-icon" aria-hidden="true">
-                ?
-              </span>{' '}
-              {messages.howToPlay}
             </button>
           </div>
           <div className="hero-footnote">
@@ -236,40 +213,6 @@ function App() {
         <span>{messages.footer}</span>
       </footer>
 
-      {showCutscene && (
-        <IntroCutscene
-          onFinish={() => {
-            setShowCutscene(false)
-            setScreen('home')
-          }}
-        />
-      )}
-
-
-      {showGrid && (
-        <div className="dialog-backdrop tech-backdrop" role="presentation" onClick={() => setShowGrid(false)}>
-          <section className="tech-modal panel-card grid-modal" role="dialog" aria-modal="true" aria-label="Koloni" onClick={(e) => e.stopPropagation()}>
-            <header className="tech-head">
-              <div>
-                <p className="eyebrow"><span /> YÜZEY KOLONİSİ</p>
-                <h2>Koloni</h2>
-              </div>
-              <div className="tech-head-right">
-                <span className="tech-budget">Bütçe: <b>{fmt(gs.money)} ₡</b></span>
-                <button type="button" className="hud-btn" onClick={() => setShowGrid(false)}>Kapat ×</button>
-              </div>
-            </header>
-            <PlanetGridPanel
-              onOpenTech={() => {
-                setShowGrid(false)
-                setShowTech(true)
-              }}
-            />
-          </section>
-        </div>
-      )}
-
-      {dialog === 'how-to-play' && <HowToPlay onClose={() => setDialog(null)} />}
     </main>
   )
 }
