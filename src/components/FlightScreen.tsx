@@ -25,7 +25,8 @@ import { bodyAbsState, bodyRelState, elementsFromState, hohmann, len, wrapPi } f
 import { type Controls, effectiveAutopilot, landingTolerance, pressureRatio, situation } from '../flight/physics'
 import { type Patch, predictTrajectory } from '../flight/predict'
 import { allColoniesOnBody, getPlayerQuadrantColonies, isLootMode, isWarfareMode } from '../flight/combat'
-import { findOutpost, SERVICE_RANGE } from '../flight/loot'
+import { arcadeAutoAim, findOutpost, lootLeaderId, SERVICE_RANGE } from '../flight/loot'
+import ArcadeHud, { type ArcadeInfo } from './ArcadeHud'
 import {
   activeVessel,
   availableLaunchSites,
@@ -80,6 +81,8 @@ const km = (m: number) => (Math.abs(m) >= 1e7 ? `${(m / 1e6).toFixed(2)} Mm` : M
 const dur = (s: number) => (s >= 7200 ? `${(s / 3600).toFixed(1)} sa` : s >= 120 ? `${(s / 60).toFixed(0)} dk` : `${s.toFixed(0)} sn`)
 
 interface Hud {
+  /** Yağma modu sade arcade HUD verisi (mod kapalıysa null) */
+  arcade: ArcadeInfo | null
   has: boolean
   vesselId: number | null
   name: string
@@ -298,6 +301,39 @@ function lootSnapshot(gs: GameState, v: Vessel | null, myId: string, clock: numb
   }
 }
 
+function arcadeSnapshot(gs: GameState, v: Vessel | null, myId: string, clock: number): ArcadeInfo | null {
+  const base = lootSnapshot(gs, v, myId, clock)
+  if (!base) return null
+  const me = gs.mp!.players[myId]
+  const ship = v && !v.debris ? v : null
+  const st = ship ? vesselStats(ship.parts, ship.cargo) : null
+  const at = gs.mp!.loot?.respawn?.[myId]
+  return {
+    goal: base.goal,
+    cargo: base.cargo,
+    cargoCap: base.cargoCap,
+    nearHome: base.nearHome,
+    outside: base.outside,
+    level: base.level,
+    upgradeCost: base.upgradeCost,
+    rebuildIn: base.rebuildIn,
+    hp: st?.hp ?? 0,
+    maxHp: st?.maxHp ?? 1,
+    shield: ship?.shield ?? 0,
+    shieldCap: st?.shieldCap ?? 0,
+    fuel: st?.fuel ?? 0,
+    fuelCap: st?.fuelCap ?? 1,
+    boost: ship?.boost ?? 1,
+    respawnIn: at !== undefined ? Math.max(0, at - clock) : null,
+    hasShip: !!ship,
+    shipId: me?.lootShip ?? 'raider',
+    vesselId: ship?.id ?? null,
+    money: me?.money ?? 0,
+    myLooted: me?.looted ?? 0,
+    leaderId: lootLeaderId(gs),
+  }
+}
+
 function snapshot(): Hud {
   const curSim = getActiveSim()
   const gs = curSim.gs
@@ -434,6 +470,7 @@ function snapshot(): Hud {
     mpNearestEnemyColony,
     isWarfare,
     loot: lootSnapshot(gs, v, myId, curSim.clock ?? 0),
+    arcade: arcadeSnapshot(gs, v, myId, curSim.clock ?? 0),
     warfareGoal,
     mpEliminated: Boolean(meMp?.eliminated),
     hp: 0,
@@ -652,6 +689,11 @@ export default function FlightScreen({ onBuilder }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const viewRef = useRef(createView())
   const keys = useRef(new Set<string>())
+  /** Arcade dokunmatik girdileri (sanal çubuk, ateş, boost) */
+  const arcadeMove = useRef<{ x: number; y: number } | null>(null)
+  const arcadeFire = useRef(false)
+  const arcadeBoost = useRef(false)
+  const arcadeInput = useRef({ move: arcadeMove, fire: arcadeFire, boost: arcadeBoost }).current
   const flightFrame = useRef<FlightFrame>({ cam: null, hits: [] })
   const mapFrame = useRef<MapFrame>({ vessels: [], bodies: [] })
   const patchesRef = useRef<Patch[]>([])
@@ -974,6 +1016,11 @@ export default function FlightScreen({ onBuilder }: Props) {
       const curSim = getActiveSim()
       const isMp = Boolean(curSim.gs.mp)
       const v = activeVessel(curSim.gs)
+      if (isLootMode(curSim.gs)) {
+        // Arcade: hareket/ateş/boost döngüde okunur; burada yalnızca E (kargoyu bırak) ve silah seçimi.
+        if (k === 'e' && v) runCommand({ type: 'jettisonCargo', vesselId: v.id })
+        if (!(k >= '1' && k <= '9')) return
+      }
       if (k >= '1' && k <= '9') {
         const curV = activeVessel(curSim.gs)
         if (curV) {
@@ -1118,14 +1165,50 @@ export default function FlightScreen({ onBuilder }: Props) {
         }
       }
       view.selectedWeapon = activeWeaponKey
-      const wantFire = !view.map && (k.has('f') || mouseFire.current || manualFire.current)
+      const arcadeOn = isLootMode(curSim.gs)
+      if (arcadeOn) view.map = false
+      const wantFire = !view.map && (k.has('f') || mouseFire.current || manualFire.current || (arcadeOn && arcadeFire.current))
       if (wantFire && v && activeWeaponKey) {
         const chPart = v.parts.find((p) => p.def === activeWeaponKey && (p.charge ?? 0) > 0.05 && (p.charge ?? 0) < 0.99 && !p.beamUntil)
         if (chPart && partDef(activeWeaponKey).weapon?.chargeTime) {
           audio.chargeHum(chPart.charge ?? 0, activeWeaponKey === 'gun-beam')
         }
       }
-      const ctrl: Controls = {
+      // Arcade: dokunmatik ateşte (fare nişanı yoksa) en yakın düşmana otomatik nişan.
+      let aimAngle = aimInfo?.angle
+      let aimDist = aimInfo?.dist
+      if (arcadeOn && v && arcadeFire.current) {
+        const auto = arcadeAutoAim(curSim.gs, v)
+        if (auto) {
+          aimAngle = auto.angle
+          aimDist = auto.dist
+        } else {
+          aimAngle = v.angle
+          aimDist = 800
+        }
+      }
+      let move: { x: number; y: number } | undefined
+      if (arcadeOn) {
+        const kx = (k.has('d') || k.has('ArrowRight') ? 1 : 0) - (k.has('a') || k.has('ArrowLeft') ? 1 : 0)
+        const ky = (k.has('w') || k.has('ArrowUp') ? 1 : 0) - (k.has('s') || k.has('ArrowDown') ? 1 : 0)
+        const kl = Math.hypot(kx, ky)
+        move = arcadeMove.current ?? (kl > 0 ? { x: kx / kl, y: ky / kl } : { x: 0, y: 0 })
+        // Kamera: hıza göre hafifçe uzaklaşan otomatik yakınlaştırma (ekran boyuna göre).
+        const spd = v ? Math.hypot(v.vel.x, v.vel.y) : 0
+        const zt = Math.max(1.1, Math.min(3, Math.min(view.w, view.h) / 290)) / (1 + spd / 320)
+        view.zoom += (zt - view.zoom) * Math.min(1, dt * 2.5)
+      }
+      const ctrl: Controls = arcadeOn ? {
+        rotate: 0,
+        tx: 0,
+        ty: 0,
+        fire: wantFire,
+        weaponKey: activeWeaponKey,
+        aimAngle,
+        aimDist,
+        move,
+        boost: arcadeBoost.current || k.has('Shift'),
+      } : {
         rotate: (k.has('d') || k.has('ArrowRight') ? 1 : 0) - (k.has('a') || k.has('ArrowLeft') ? 1 : 0),
         tx: (k.has('l') ? 1 : 0) - (k.has('j') ? 1 : 0),
         ty: (k.has('i') ? 1 : 0) - (k.has('k') ? 1 : 0),
@@ -1134,7 +1217,7 @@ export default function FlightScreen({ onBuilder }: Props) {
         aimAngle: aimInfo?.angle,
         aimDist: aimInfo?.dist,
       }
-      if (v) {
+      if (v && !arcadeOn) {
         let thChanged = false
         if (k.has('w') || k.has('ArrowUp') || k.has('Shift')) {
           v.autoLand = false
@@ -1184,7 +1267,7 @@ export default function FlightScreen({ onBuilder }: Props) {
         audio.rocket(av && (curSim.firing.get(av.id)?.size ?? 0) > 0 ? av.throttle : 0)
       }
       const cur = activeVessel(curSim.gs)
-      if (n % 3 === 0) patchesRef.current = cur && !cur.landed && !cur.cruise ? predictTrajectory(cur.bodyId, cur.pos, cur.vel, curSim.gs.time) : []
+      if (n % 3 === 0) patchesRef.current = cur && !cur.landed && !cur.cruise && !arcadeOn ? predictTrajectory(cur.bodyId, cur.pos, cur.vel, curSim.gs.time) : []
       if (view.map) mapFrame.current = renderMap(ctx, curSim, view, patchesRef.current)
       else flightFrame.current = renderFlight(ctx, curSim, view, patchesRef.current)
       if (n % 6 === 0) setHud(snapshot())
@@ -1402,6 +1485,20 @@ export default function FlightScreen({ onBuilder }: Props) {
         }}
       />
 
+      {hud.arcade && (
+        <ArcadeHud
+          info={hud.arcade}
+          players={hud.mpPlayers}
+          feed={hud.mpFeed}
+          myId={hud.myId}
+          pingMs={mp.pingMs}
+          input={arcadeInput}
+          onCmd={hudCmd}
+          onLeave={() => { resetViewCache(); leaveMpRoom(false) }}
+        />
+      )}
+
+      {!hud.arcade && (<>
       <div className="hud hud-tl">
         <button className="hud-btn" onClick={onBuilder}>☰ Montaj</button>
         <button className={`hud-btn${isMap ? ' is-on' : ''}`} onClick={toggleMap}>{isMap ? 'Uçuş (M)' : 'Harita (M)'}</button>
@@ -2631,6 +2728,8 @@ export default function FlightScreen({ onBuilder }: Props) {
         </div>
       )}
 
+      </>)}
+
       {hud.isMp && hud.mpWinnerId && (
         <div className="dialog-backdrop">
           <section className="dialog mp-victory-dialog" role="dialog" aria-modal="true">
@@ -2680,11 +2779,11 @@ export default function FlightScreen({ onBuilder }: Props) {
         </div>
       )}
 
-      {hud.isMp && !hud.has && !lost && isMpPendingLaunch() && (
+      {!hud.arcade && hud.isMp && !hud.has && !lost && isMpPendingLaunch() && (
         <div className="toast">🚀 Fırlatma hazırlanıyor…</div>
       )}
 
-      {!confirmDel && !wreck && !showDrone && !(hud.isMp && hud.mpWinnerId) && !(hud.mpEliminated && spectating) && (lost || (noVesselReady && !hud.has && !(hud.isMp && isMpPendingLaunch()))) && (
+      {!hud.arcade && !confirmDel && !wreck && !showDrone && !(hud.isMp && hud.mpWinnerId) && !(hud.mpEliminated && spectating) && (lost || (noVesselReady && !hud.has && !(hud.isMp && isMpPendingLaunch()))) && (
         <div className="dialog-backdrop">
           <section className="dialog">
             <h2>{hud.mpEliminated ? 'Elendin — Üssün Yok Edildi' : lost ? 'Araç kaybedildi' : 'Aktif araç yok'}</h2>

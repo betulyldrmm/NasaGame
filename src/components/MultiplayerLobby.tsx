@@ -17,13 +17,6 @@ interface Props {
   onBack: () => void
 }
 
-const TARGET_CHOICES = [
-  { val: 3, label: '3 Gezegen (Hızlı)' },
-  { val: 4, label: '4 Gezegen (Standart)' },
-  { val: 5, label: '5 Gezegen (Uzun)' },
-  { val: 7, label: '7 Gezegen (Hepsi)' },
-  { val: 0, label: 'Sonsuz Mod' },
-]
 
 const WARFARE_GOALS: { val: WarfareGoal; label: string; short: string }[] = [
   { val: 'raid', label: '🏴‍☠️ Uzay Yağması (Üs & Ganimet)', short: 'Uzay Yağması' },
@@ -51,11 +44,11 @@ const MODE_LABEL: Record<MultiplayerMode, string> = {
 export default function MultiplayerLobby({ defaultName, onBack }: Props) {
   const mp = useMultiplayer()
   const [pilotName, setPilotName] = useState(defaultName || 'Pilot')
-  const [mode, setMode] = useState<MultiplayerMode>('orbital-warfare')
-  const [warfareGoal, setWarfareGoal] = useState<WarfareGoal>('raid')
+  const [mode] = useState<MultiplayerMode>('loot-raid')
+  const [warfareGoal] = useState<WarfareGoal>('raid')
   const [roomName, setRoomName] = useState(`${defaultName || 'Pilot'} Yağma Odası`)
   const [joinCode, setJoinCode] = useState('')
-  const [targetPlanets, setTargetPlanets] = useState(4)
+  const [targetPlanets] = useState(4)
   const [startingMoney, setStartingMoney] = useState(45_000)
   const [lootGoal, setLootGoal] = useState(60)
   const [allowAutoWarp] = useState(true)
@@ -69,25 +62,6 @@ export default function MultiplayerLobby({ defaultName, onBack }: Props) {
     }, 6000)
     return () => clearInterval(t)
   }, [mp.room])
-
-  const selectMode = (next: MultiplayerMode, goalOverride?: WarfareGoal) => {
-    setMode(next)
-    const g = goalOverride ?? warfareGoal
-    const isRaidSel = next === 'orbital-warfare' && g === 'raid'
-    setStartingMoney(isRaidSel ? 45_000 : next === 'orbital-warfare' ? 100_000 : 50_000)
-    if (/(Savaş|Koloni|Yağma) Odası$/.test(roomName)) {
-      const suffix = isRaidSel ? 'Yağma' : next === 'orbital-warfare' ? 'Savaş' : 'Koloni'
-      setRoomName(`${pilotName || 'Pilot'} ${suffix} Odası`)
-    }
-  }
-
-  const selectWarfareGoal = (nextGoal: WarfareGoal) => {
-    setWarfareGoal(nextGoal)
-    setStartingMoney(nextGoal === 'raid' ? 45_000 : 100_000)
-    if (/(Savaş|Koloni|Yağma) Odası$/.test(roomName)) {
-      setRoomName(`${pilotName || 'Pilot'} ${nextGoal === 'raid' ? 'Yağma' : 'Savaş'} Odası`)
-    }
-  }
 
   const handleCreate = (e: FormEvent) => {
     e.preventDefault()
@@ -177,27 +151,6 @@ export default function MultiplayerLobby({ defaultName, onBack }: Props) {
             <p className="eyebrow"><span /> YENİ ODA KUR</p>
             <h2>Ev Sahibi Ol</h2>
             <form className="mp-form" onSubmit={handleCreate}>
-              <div className="mp-field">
-                <span>Oyun Modu</span>
-                <div className="mp-mode-switch" role="group" aria-label="Oyun Modu">
-                  <button
-                    type="button"
-                    className={`mp-mode-btn ${mode !== 'colony-race' ? 'is-active' : ''}`}
-                    onClick={() => selectMode('orbital-warfare')}
-                  >
-                    <strong>⚔️ Uzay Savaşı</strong>
-                    <small>Kuşatma, Puan &amp; Yağma kategorileri</small>
-                  </button>
-                  <button
-                    type="button"
-                    className={`mp-mode-btn ${mode === 'colony-race' ? 'is-active' : ''}`}
-                    onClick={() => selectMode('colony-race')}
-                  >
-                    <strong>🪐 Koloni Yarışı</strong>
-                    <small>4 çeyrekli gezegen fethi</small>
-                  </button>
-                </div>
-              </div>
               <label className="mp-field">
                 <span>Pilot Adın</span>
                 <input
@@ -219,25 +172,14 @@ export default function MultiplayerLobby({ defaultName, onBack }: Props) {
                 />
               </label>
               <div className="mp-form-row">
-                {mode !== 'colony-race' ? (
-                  <label className="mp-field">
-                    <span>Savaş Kategorisi</span>
-                    <select value={warfareGoal} onChange={(e) => selectWarfareGoal(e.target.value as WarfareGoal)}>
-                      {WARFARE_GOALS.map((g) => (
-                        <option key={g.val} value={g.val}>{g.label}</option>
-                      ))}
-                    </select>
-                  </label>
-                ) : (
-                  <label className="mp-field">
-                    <span>Zafer Hedefi</span>
-                    <select value={targetPlanets} onChange={(e) => setTargetPlanets(Number(e.target.value))}>
-                      {TARGET_CHOICES.map((c) => (
-                        <option key={c.val} value={c.val}>{c.label}</option>
-                      ))}
-                    </select>
-                  </label>
-                )}
+                <label className="mp-field">
+                  <span>Ganimet Hedefi</span>
+                  <select value={lootGoal} onChange={(e) => setLootGoal(Number(e.target.value))}>
+                    {LOOT_GOALS.map((g) => (
+                      <option key={g.val} value={g.val}>{g.label}</option>
+                    ))}
+                  </select>
+                </label>
                 <label className="mp-field">
                   <span>Başlangıç Bütçesi</span>
                   <select value={startingMoney} onChange={(e) => setStartingMoney(Number(e.target.value))}>
@@ -247,16 +189,6 @@ export default function MultiplayerLobby({ defaultName, onBack }: Props) {
                   </select>
                 </label>
               </div>
-              {mode !== 'colony-race' && warfareGoal === 'raid' && (
-                <label className="mp-field">
-                  <span>Yağma Ganimet Hedefi</span>
-                  <select value={lootGoal} onChange={(e) => setLootGoal(Number(e.target.value))}>
-                    {LOOT_GOALS.map((g) => (
-                      <option key={g.val} value={g.val}>{g.label}</option>
-                    ))}
-                  </select>
-                </label>
-              )}
               <button type="submit" className="button button-primary">
                 ＋ Oda Oluştur
               </button>

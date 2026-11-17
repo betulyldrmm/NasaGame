@@ -6,6 +6,7 @@
  *  - Uçuş arcade'dir: yerçekimi yok, uzay sürtünmesi var (bkz. `arcade` — game/vessel.ts).
  */
 import {
+  LOOT_PRESETS,
   OUTPOST_LOOT_BONUS,
   OUTPOST_MAX_LEVEL,
   OUTPOST_REPAIR_RATE,
@@ -14,27 +15,30 @@ import {
   partDef,
   partMaxHp,
 } from '../game/data'
-import type { GameEvent, GameState, LootState, MultiplayerPlayer, Vessel } from '../game/types'
+import type { GameEvent, GameState, LootState, MultiplayerPlayer, PartInst, Vessel } from '../game/types'
 import { cargoMass, freshParts, partAlive, vesselStats } from '../game/vessel'
 import { BODIES } from '../nasa/bodies'
 import { dropLoot, emitStationDestructionFx, isLootMode, LOOT_VALUE_PER_TON, pushFeed, spawnDebrisPiece } from './combat'
 import type { Controls } from './physics'
+import { setActiveVesselForPlayer } from './multiplayerSim'
 import type { Fx } from './world'
 
 type Vec = { x: number; y: number }
 
 /** Arena ölçüleri (m). Üsler halkaya dizilir, kaynak sahaları ortadadır. */
 export const ARENA_ALT = 500_000
-export const ARENA_RADIUS = 8_500
-export const OUTPOST_RING = 6_000
+export const ARENA_RADIUS = 4_200
+export const OUTPOST_RING = 3_000
 export const PICKUP_RANGE = 55
 export const SERVICE_RANGE = 320
-export const TURRET_RANGE = 1_250
+export const TURRET_RANGE = 900
 export const OUTPOST_REBUILD_SEC = 45
 /** Çekirdeği yok edilen üsten saçılan kasa oranı. */
 export const BREACH_LOOT_SHARE = 0.3
 export const LOOT_START_MONEY = 45_000
 const WRECK_CRATE_TTL = 240
+/** Gemisi yok olan oyuncu bu kadar saniye sonra üssünde yeniden doğar. */
+export const RESPAWN_SEC = 4
 /** 16 yuva: ilk gelen oyuncular halkada birbirinden en uzak noktalara yerleşir. */
 const SLOT_ORDER = [0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15]
 
@@ -52,17 +56,17 @@ export function newLootState(): LootState {
   const c = arenaCenter()
   const mid = (k: number): Vec => {
     const a = Math.PI / 4 + (k * Math.PI) / 2
-    return { x: c.x + Math.cos(a) * 3000, y: c.y + Math.sin(a) * 3000 }
+    return { x: c.x + Math.cos(a) * 1_600, y: c.y + Math.sin(a) * 1_600 }
   }
   return {
     center: c,
     radius: ARENA_RADIUS,
     sites: [
-      { pos: { ...c }, name: 'Çekirdek Enkazı', rate: 0.06, max: 9, acc: 2 },
-      { pos: mid(0), name: 'Kuzey Hurdalığı', rate: 0.028, max: 5, acc: 1.2 },
-      { pos: mid(1), name: 'Batı Hurdalığı', rate: 0.028, max: 5, acc: 1.2 },
-      { pos: mid(2), name: 'Güney Hurdalığı', rate: 0.028, max: 5, acc: 1.2 },
-      { pos: mid(3), name: 'Doğu Hurdalığı', rate: 0.028, max: 5, acc: 1.2 },
+      { pos: { ...c }, name: 'Çekirdek Enkazı', rate: 0.09, max: 10, acc: 2 },
+      { pos: mid(0), name: 'Kuzey Hurdalığı', rate: 0.04, max: 5, acc: 1.2 },
+      { pos: mid(1), name: 'Batı Hurdalığı', rate: 0.04, max: 5, acc: 1.2 },
+      { pos: mid(2), name: 'Güney Hurdalığı', rate: 0.04, max: 5, acc: 1.2 },
+      { pos: mid(3), name: 'Doğu Hurdalığı', rate: 0.04, max: 5, acc: 1.2 },
     ],
     crates: [],
     nextCrateId: 1,
@@ -141,6 +145,102 @@ export function lootSpawn(gs: GameState, ownerId: string): { pos: Vec; angle: nu
   return { pos: { x: base.x + dir.x * 150, y: base.y + dir.y * 150 }, angle: Math.atan2(dir.y, dir.x) }
 }
 
+/** Hangar gemisinin fiyatı (parça maliyetleri toplamı). İlk gemi (Akıncı) her zaman bedavadır. */
+export function lootShipCost(presetId: string): number {
+  if (presetId === LOOT_PRESETS[0]!.id) return 0
+  const pr = LOOT_PRESETS.find((p) => p.id === presetId)
+  return pr ? pr.design.reduce((s, p) => s + partDef(p.def).cost, 0) : 0
+}
+
+/** Oyuncunun gemisini üssünün rıhtımında yaratır ve aktif yapar. */
+export function spawnLootShip(gs: GameState, ownerId: string, design: PartInst[], clock: number, designCargo: Record<string, number> = {}): Vessel {
+  const parts = freshParts(design)
+  for (const q of parts) if (partDef(q.def).kind === 'solar') q.deployed = true
+  const st = vesselStats(parts)
+  const spawn = lootSpawn(gs, ownerId)
+  const id = gs.nextId
+  gs.nextId += 1
+  const ownerName = gs.mp?.players[ownerId]?.username
+  const v: Vessel = {
+    id,
+    name: ownerName ? `${ownerName} #${id}` : `Akıncı ${id}`,
+    ownerId,
+    parts,
+    bodyId: 'earth',
+    pos: spawn.pos,
+    vel: { x: 0, y: 0 },
+    angle: spawn.angle,
+    angVel: 0,
+    landed: false,
+    throttle: 0,
+    ec: st.ecCap,
+    cargo: { modules: { ...designCargo }, ore: 0, oreFrom: null },
+    rcsOn: false,
+    sas: 'off',
+    autopilot: 'off',
+    approachWarn: null,
+    visited: ['earth'],
+    assist: null,
+    dvUsed: 0,
+    boost: 1,
+    ...(st.shieldCap > 0 ? { shield: st.shieldCap } : {}),
+    spawnShieldUntil: clock + 4,
+  }
+  gs.vessels.push(v)
+  setActiveVesselForPlayer(gs, ownerId, id)
+  const p = gs.mp?.players[ownerId]
+  if (p) p.lastManualAt = clock
+  return v
+}
+
+/** Gemisi olmayan oyuncuyu seçili hangar gemisiyle doğurur; parası yetmezse bedava Akıncı ile. */
+function respawnPlayer(gs: GameState, p: MultiplayerPlayer, clock: number) {
+  let preset = LOOT_PRESETS.find((x) => x.id === p.lootShip) ?? LOOT_PRESETS[0]!
+  let cost = lootShipCost(preset.id)
+  if (cost > p.money) {
+    preset = LOOT_PRESETS[0]!
+    cost = 0
+  }
+  p.money -= cost
+  if (gs.ownerId === p.id) gs.money = p.money
+  spawnLootShip(gs, p.id, preset.design, clock)
+}
+
+/**
+ * Hangar seçimi: sonraki doğuşta kullanılacak gemi. Gemin üssünün yanındaysa hemen değiştirilir
+ * (eski gemi hurdaya verilir, kargosu paraya çevrilir).
+ */
+export function selectLootShip(gs: GameState, actorId: string, presetId: string, clock: number): string | null {
+  const p = gs.mp?.players[actorId]
+  const preset = LOOT_PRESETS.find((x) => x.id === presetId)
+  if (!p || !preset || !isLootMode(gs)) return 'Geçersiz gemi.'
+  const cost = lootShipCost(preset.id)
+  const cur = findLootShip(gs, actorId)
+  if (cur && nearOwnOutpost(gs, cur)) {
+    const refund = tradeInValue(cur) + Math.round(cur.cargo.ore * LOOT_VALUE_PER_TON)
+    if (cost > p.money + refund) return `Bütçe yetersiz: ${cost.toLocaleString('tr-TR')} ₡ gerekli.`
+    gs.vessels = gs.vessels.filter((o) => o !== cur)
+    p.money += refund - cost
+    if (gs.ownerId === p.id) gs.money = p.money
+    p.lootShip = preset.id
+    spawnLootShip(gs, actorId, preset.design, clock)
+    return null
+  }
+  if (cost > p.money) return `Bütçe yetersiz: ${cost.toLocaleString('tr-TR')} ₡ gerekli.`
+  p.lootShip = preset.id
+  return null
+}
+
+/** Ganimet sıralamasında lider (en az 1 t taşımış olmalı). */
+export function lootLeaderId(gs: GameState): string | null {
+  let best: MultiplayerPlayer | null = null
+  for (const p of Object.values(gs.mp?.players ?? {})) {
+    if ((p.looted ?? 0) < 1) continue
+    if (!best || (p.looted ?? 0) > (best.looted ?? 0)) best = p
+  }
+  return best?.id ?? null
+}
+
 /** Üste bekleyen eski gemi yeni gemi alınırken hurdaya verilir: sağlam parçaların %80'i iade. */
 export function tradeInValue(v: Vessel): number {
   return Math.round(v.parts.reduce((s, p) => s + (partAlive(p) ? partDef(p.def).cost : 0), 0) * 0.8)
@@ -188,6 +288,33 @@ export function jettisonCargo(gs: GameState, v: Vessel, clock: number): string |
   v.cargo.ore = 0
   v.cargo.oreFrom = null
   return null
+}
+
+/**
+ * Dokunmatik ateş için otomatik nişan: menzildeki en yakın düşman gemisi (yoksa düşman üssü),
+ * hedefin hızına göre önleme açısıyla. Hedef yoksa null.
+ */
+export function arcadeAutoAim(gs: GameState, v: Vessel, range = 1_300): { angle: number; dist: number } | null {
+  let best: Vessel | null = null
+  let bestScore = Infinity
+  for (const o of gs.vessels) {
+    if (o === v || o.debris || o.bodyId !== v.bodyId || !o.ownerId || o.ownerId === v.ownerId) continue
+    const d = Math.hypot(o.pos.x - v.pos.x, o.pos.y - v.pos.y)
+    if (d > range) continue
+    // Gemiler üslerden önceliklidir; burnun önündeki hedef biraz daha tercih edilir.
+    const ahead = Math.cos(Math.atan2(o.pos.y - v.pos.y, o.pos.x - v.pos.x) - v.angle)
+    const score = d * (o.outpost ? 2.5 : 1) * (1.25 - 0.25 * ahead)
+    if (score < bestScore) {
+      bestScore = score
+      best = o
+    }
+  }
+  if (!best) return null
+  const d = Math.hypot(best.pos.x - v.pos.x, best.pos.y - v.pos.y)
+  const lead = d / 850
+  const ax = best.pos.x + (best.vel.x - v.vel.x) * lead - v.pos.x
+  const ay = best.pos.y + (best.vel.y - v.vel.y) * lead - v.pos.y
+  return { angle: Math.atan2(ay, ax), dist: Math.hypot(ax, ay) }
 }
 
 /** Üs taretlerinin kendiliğinden nişan alıp ateş etmesi için sanal kontrol girdisi. */
@@ -317,7 +444,26 @@ export function stepLoot(gs: GameState, real: number, clock: number, fxOut: Fx[]
     }
   }
 
-  // 4) Gemiler: arena sınırı, sandık toplama, üste teslim ve ikmal.
+  // 4) Yeniden doğma: gemisi olmayan oyuncu birkaç saniye sonra üssünde yeni gemiyle çıkar.
+  loot.respawn ??= {}
+  for (const p of Object.values(mp.players)) {
+    if (findLootShip(gs, p.id)) {
+      delete loot.respawn[p.id]
+      continue
+    }
+    const at = loot.respawn[p.id]
+    if (at === undefined) {
+      // Hiç gemisi olmamış oyuncu (maç başı, yeni katılan) beklemeden doğar; düşen kısa bir sayaç bekler.
+      const fresh = clock < 2 && !gs.vessels.some((o) => o.ownerId === p.id && !o.outpost)
+      loot.respawn[p.id] = clock + (fresh ? 0.3 : RESPAWN_SEC)
+      continue
+    }
+    if (clock < at) continue
+    delete loot.respawn[p.id]
+    respawnPlayer(gs, p, clock)
+  }
+
+  // 5) Gemiler: arena sınırı, sandık toplama, üste teslim ve ikmal.
   for (const v of gs.vessels) {
     if (v.outpost || !v.ownerId) continue
     const dx = v.pos.x - loot.center.x
@@ -372,7 +518,7 @@ export function stepLoot(gs: GameState, real: number, clock: number, fxOut: Fx[]
   }
   loot.crates = loot.crates.filter((c) => c.tons > 0.005)
 
-  // 5) Zafer: hedef ganimete ilk ulaşan kazanır.
+  // 6) Zafer: hedef ganimete ilk ulaşan kazanır.
   const goal = mp.config.lootGoal ?? 60
   if (goal > 0 && !mp.winnerId) {
     const winner = Object.values(mp.players).find((p) => (p.looted ?? 0) >= goal)

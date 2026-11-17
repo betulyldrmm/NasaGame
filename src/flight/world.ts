@@ -45,7 +45,7 @@ import {
   stepProjectiles,
   stepVesselWeapons,
 } from './combat'
-import { ARENA_RADIUS, findLootShip, jettisonCargo, lootSpawn, nearOwnOutpost, outpostControls, stepLoot, tradeInValue, upgradeOutpost } from './loot'
+import { ARENA_RADIUS, findLootShip, jettisonCargo, nearOwnOutpost, outpostControls, stepLoot, tradeInValue, upgradeOutpost, selectLootShip, spawnLootShip } from './loot'
 import { bodyAbsState, bodyRelState, elementsFromState, hohmann, len, wrapPi } from './orbit'
 import {
   orbitCoastWait,
@@ -1142,7 +1142,7 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
   if (gs.mp && effCtrlMap) {
     for (const p of Object.values(gs.mp.players)) {
       const pc = effCtrlMap.get(p.id)
-      if (pc && (pc.rotate !== 0 || pc.tx !== 0 || pc.ty !== 0)) p.lastManualAt = sim.clock
+      if (pc && (pc.rotate !== 0 || pc.tx !== 0 || pc.ty !== 0 || (pc.move && Math.hypot(pc.move.x, pc.move.y) > 0.12))) p.lastManualAt = sim.clock
     }
   }
 
@@ -1898,42 +1898,8 @@ function launchLootShip(sim: Sim, ownerId: string, design: PartInst[], designCar
     gs.vessels = gs.vessels.filter((o) => o !== old)
     sim.firing.delete(old.id)
   }
-  const parts = freshParts(design)
-  // Uzayda doğan geminin güneş panelleri açık gelir.
-  for (const q of parts) if (partDef(q.def).kind === 'solar') q.deployed = true
-  const st = vesselStats(parts)
-  const spawn = lootSpawn(gs, ownerId)
-  const id = gs.nextId
-  gs.nextId += 1
-  const ownerName = gs.mp?.players[ownerId]?.username
-  gs.vessels.push({
-    id,
-    name: ownerName ? `${ownerName} #${id}` : `Akıncı ${id}`,
-    ownerId,
-    parts,
-    bodyId: 'earth',
-    pos: spawn.pos,
-    vel: { x: 0, y: 0 },
-    angle: spawn.angle,
-    angVel: 0,
-    landed: false,
-    throttle: 0,
-    ec: st.ecCap,
-    cargo: { modules: { ...designCargo }, ore: 0, oreFrom: null },
-    rcsOn: false,
-    sas: 'off',
-    autopilot: 'off',
-    approachWarn: null,
-    visited: ['earth'],
-    assist: null,
-    dvUsed: 0,
-    ...(st.shieldCap > 0 ? { shield: st.shieldCap } : {}),
-    spawnShieldUntil: (sim.clock ?? 0) + 4,
-  })
+  spawnLootShip(gs, ownerId, design, sim.clock ?? 0, designCargo)
   addPlayerMoney(gs, refund - cost, ownerId)
-  setActiveVesselForPlayer(gs, ownerId, id)
-  const p = gs.mp?.players[ownerId]
-  if (p) p.lastManualAt = sim.clock ?? 0
   return null
 }
 
@@ -2865,6 +2831,10 @@ export function dispatchCommand(
     }
     case 'upgradeOutpost': {
       const err = upgradeOutpost(gs, actorId)
+      return err ? { events, error: err } : { events }
+    }
+    case 'selectLootShip': {
+      const err = selectLootShip(gs, actorId, cmd.presetId, sim.clock ?? 0)
       return err ? { events, error: err } : { events }
     }
     case 'setWarpPref': {

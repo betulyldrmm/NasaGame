@@ -44,6 +44,34 @@ export interface Controls {
   angVel?: number
   /** ev sahibi bu yön bilgisini bir kez uyguladı mı */
   applied?: boolean
+  /**
+   * Arcade (Yağma modu) yön çubuğu: dünya ekseninde istenen hareket yönü, uzunluğu 0..1 gaz.
+   * Gemi bu yöne kendiliğinden döner ve yeterince hizalanınca iter.
+   */
+  move?: { x: number; y: number }
+  /** Arcade boost: dolu olduğu sürece itkiyi katlar */
+  boost?: boolean
+}
+
+/** Arcade boost: itki çarpanı, harcama ve dolum hızları (birim/s, depo 0..1). */
+export const BOOST_MULT = 2.3
+const BOOST_DRAIN = 0.55
+const BOOST_REGEN = 0.2
+/** Arcade "tutunma": hızın burun eksenine dik bileşeni bu oranda söner (1/s). */
+const ARCADE_GRIP = 1.4
+
+/** Yön çubuğunu hedef burun açısına ve gaza çevirir; çubuk boştaysa gaz kesilir. */
+export function arcadeSteer(v: Vessel, ctrl: Controls | null): number | null {
+  if (!ctrl?.move) return null
+  const mag = Math.min(1, Math.hypot(ctrl.move.x, ctrl.move.y))
+  if (mag < 0.12) {
+    v.throttle = 0
+    return null
+  }
+  const target = Math.atan2(ctrl.move.y, ctrl.move.x)
+  const align = Math.cos(wrapPi(target - v.angle))
+  v.throttle = align > 0.35 ? mag * Math.min(1, (align - 0.35) / 0.5) : 0
+  return target
 }
 
 export interface StepResult {
@@ -826,12 +854,21 @@ export function stepPhysics(
         : ap === 'orbit' || ap === 'transfer'
           ? autoOrbitGuidance(v, st, body, s, pressure, ap === 'transfer')
           : null
+  const steer = arcade.on && st.hasCommand ? arcadeSteer(v, ctrl) : null
   const out = runEngines(v.parts, v.throttle, pressure, dt, v.ec)
   v.ec -= out.ecUsed
+  let boostMul = 1
+  if (arcade.on && st.hasCommand) {
+    const b = v.boost ?? 1
+    if (ctrl?.boost && b > 0.02 && out.thrust > 0) {
+      boostMul = BOOST_MULT
+      v.boost = Math.max(0, b - BOOST_DRAIN * dt)
+    } else v.boost = Math.min(1, b + BOOST_REGEN * dt)
+  }
   const fwd = { x: Math.cos(v.angle), y: Math.sin(v.angle) }
   const mass = st.mass
-  let ax = (fwd.x * out.thrust) / mass
-  let ay = (fwd.y * out.thrust) / mass
+  let ax = (fwd.x * out.thrust * boostMul) / mass
+  let ay = (fwd.y * out.thrust * boostMul) / mass
   v.dvUsed += (out.thrust / mass) * dt
 
   const tx = ctrl ? Math.max(-1, Math.min(1, ctrl.tx || 0)) : 0
@@ -869,7 +906,7 @@ export function stepPhysics(
     const tilt = wrapPi(chuteAngle - s.theta)
     chuteAngle = s.theta + Math.max(-0.45, Math.min(0.45, tilt))
   }
-  const forcedTarget = chuteAngle !== null && ap !== 'land' ? chuteAngle : autoTarget
+  const forcedTarget = steer ?? (chuteAngle !== null && ap !== 'land' ? chuteAngle : autoTarget)
   rotateVessel(v, st, dt, ctrl, forcedTarget, manualScale)
 
   v.vel = { x: v.vel.x + ax * dt, y: v.vel.y + ay * dt }
@@ -877,6 +914,13 @@ export function stepPhysics(
     // Uzay sürtünmesi: motor kesilince gemi yavaşça durur, azami hız itkiyle sınırlanır.
     const k = Math.exp(-ARCADE_DRAG * dt)
     v.vel = { x: v.vel.x * k, y: v.vel.y * k }
+    if (st.hasCommand) {
+      // Tutunma: yana kayma söner, gemi burnunun baktığı yöne gider.
+      const side = { x: -Math.sin(v.angle), y: Math.cos(v.angle) }
+      const sv = v.vel.x * side.x + v.vel.y * side.y
+      const cut = sv * (1 - Math.exp(-ARCADE_GRIP * dt))
+      v.vel = { x: v.vel.x - side.x * cut, y: v.vel.y - side.y * cut }
+    }
   }
 
   if (rho > 0 && s.speed > 0.05) {

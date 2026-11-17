@@ -163,7 +163,7 @@ function App() {
               <span aria-hidden="true">＋</span> {messages.newMission}
             </button>
             <button className="button mp-entry-btn" onClick={() => enterMpMode()}>
-              <span aria-hidden="true">🪐</span> Çok Oyunculu (Uzay Savaşı & Koloni Yarışı)
+              <span aria-hidden="true">🏴‍☠️</span> Çevrim İçi Yağma (PvP)
             </button>
             {sim.gs.vessels.length > 0 && (
               <button className="button button-secondary" onClick={() => setScreen('flight')}>

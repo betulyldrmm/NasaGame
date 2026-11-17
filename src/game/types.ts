@@ -242,6 +242,8 @@ export interface Vessel {
   station?: boolean
   /** çarpışmadan kopan parça: kendi fiziğiyle savrulur, yere değince patlar */
   debris?: { ttl: number }
+  /** Arcade boost deposu (0..1) */
+  boost?: number
   /** Yağma modu: oyuncunun uzay üssü (kontrol edilemez, taretleri kendiliğinden ateş eder) */
   outpost?: { level: number; rebuildAt?: number }
   /** Gezegensel kargo/keşif dronu (silahsızdır, yalnızca doğduğu gezegen/arena içinde uçar) */
@@ -381,6 +383,8 @@ export interface LootState {
   nextCrateId: number
   /** çekirdeği yok edilen üslerin yeniden kurulacağı saat (sim.clock), oyuncu kimliğine göre */
   rebuild?: Record<string, number>
+  /** gemisi olmayan oyuncuların yeniden doğacağı saat (sim.clock) */
+  respawn?: Record<string, number>
 }
 export type WarfareGoal = 'siege' | 'score15' | 'score30' | 'endless' | 'raid'
 
@@ -472,6 +476,8 @@ export interface MultiplayerPlayer {
   /** Yağma modu: üsse teslim edilen toplam ganimet (t) ve üs seviyesi */
   looted?: number
   outpostLevel?: number
+  /** Yağma modu: seçili hangar gemisi (LOOT_PRESETS id) — yeniden doğunca bu gemiyle çıkar */
+  lootShip?: string
 }
 
 export interface DynamicWarpInfo {
@@ -571,6 +577,7 @@ export type GameCommand =
   | { type: 'rendezvous'; vesselId: number }
   | { type: 'repairVessel'; vesselId: number }
   | { type: 'upgradeOutpost' }
+  | { type: 'selectLootShip'; presetId: string }
   | { type: 'jettisonCargo'; vesselId: number }
   | { type: 'launchDrone'; vesselId: number; partIndex: number; aimAngle?: number }
   | { type: 'launchPadDrone'; bodyId: BodyId; quadrant: 0 | 1 | 2 | 3; tier: 1 | 2 | 3; modules?: Record<string, number> }

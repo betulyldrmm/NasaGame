@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { LOOT_PRESETS, OUTPOST_INCOME_PER_MIN, OUTPOST_MAX_LEVEL, OUTPOST_UPGRADE_COST, PARTS, outpostDesign, partDef, partMaxHp } from '../game/data'
 import type { GameEvent, PartInst, Vessel } from '../game/types'
 import { arcade, freshParts, isConnected, partAlive, runEngines, vesselStats } from '../game/vessel'
-import { applyVesselDamage, BREAKOFF_RATIO, dropLoot, isLootMode, isWarfareMode, LOOT_VALUE_PER_TON } from './combat'
-import { ARENA_RADIUS, arenaCenter, findLootShip, findOutpost, LOOT_START_MONEY, outpostPos, TURRET_RANGE } from './loot'
+import { applyVesselDamage, BREAKOFF_RATIO, dropLoot, isLootMode, isWarfareMode, LOOT_BOUNTY, LOOT_VALUE_PER_TON } from './combat'
+import { ARENA_RADIUS, arenaCenter, findLootShip, findOutpost, LOOT_START_MONEY, outpostPos, TURRET_RANGE, arcadeAutoAim, lootShipCost, RESPAWN_SEC } from './loot'
 import { buildCompactSnapshot, hydrateCompactSnapshot } from './mpClient'
 import { newMultiplayerGame, stepMultiplayerIncome } from './multiplayerSim'
 import { availableLaunchSites, dispatchCommand, stepWorld, validateDesign, type Sim } from './world'
@@ -322,5 +322,94 @@ describe('Raid category in Space Warfare and 5-tier Outpost upgrades', () => {
 
     // Maksimum seviyeden sonra tekrar yükseltme hata verir
     expect(dispatchCommand(sim, { type: 'upgradeOutpost' }, 'p1').error).toBeTruthy()
+  })
+})
+
+describe('Arcade kontrol, yeniden doğma, hangar ve lider ödülü', () => {
+  it('yön çubuğu: gemi istenen yöne döner ve o yöne hızlanır; boost daha hızlı götürür', () => {
+    const run = (boost: boolean) => {
+      const sim = makeLootSim()
+      const v = launch(sim, 'p1')
+      v.spawnShieldUntil = 0
+      v.angle = 0
+      const ctrls = new Map([['p1', { rotate: 0, tx: 0, ty: 0, move: { x: 0, y: -1 }, boost }]])
+      const start = { ...v.pos }
+      for (let i = 0; i < 80; i += 1) stepWorld(sim, 0.05, ctrls)
+      arcade.on = false
+      return { v, dy: v.pos.y - start.y, dx: v.pos.x - start.x }
+    }
+    const plain = run(false)
+    expect(Math.cos(plain.v.angle + Math.PI / 2)).toBeGreaterThan(0.95)
+    expect(plain.dy).toBeLessThan(-20)
+    expect(Math.abs(plain.dx)).toBeLessThan(Math.abs(plain.dy) * 0.5)
+    const fast = run(true)
+    expect(fast.dy).toBeLessThan(plain.dy * 1.3)
+    expect(fast.v.boost!).toBeLessThan(0.9)
+  })
+
+  it('çubuk bırakılınca gaz kesilir', () => {
+    const sim = makeLootSim()
+    const v = launch(sim, 'p1')
+    stepWorld(sim, 0.05, new Map([['p1', { rotate: 0, tx: 0, ty: 0, move: { x: Math.cos(v.angle), y: Math.sin(v.angle) } }]]))
+    expect(v.throttle).toBeGreaterThan(0.5)
+    stepWorld(sim, 0.05, new Map([['p1', { rotate: 0, tx: 0, ty: 0, move: { x: 0, y: 0 } }]]))
+    expect(v.throttle).toBe(0)
+    arcade.on = false
+  })
+
+  it('maç başında gemiler kendiliğinden doğar; gemisi düşen oyuncu birkaç saniye sonra yeniden doğar', () => {
+    const sim = makeLootSim()
+    for (let i = 0; i < 20; i += 1) stepWorld(sim, 0.05, new Map())
+    const v1 = findLootShip(sim.gs, 'p1')!
+    expect(v1).toBeDefined()
+    v1.spawnShieldUntil = 0
+    expect(findLootShip(sim.gs, 'p2')).toBeDefined()
+    v1.parts.find((p) => partDef(p.def).kind === 'command')!.hp = 1
+    applyVesselDamage(sim.gs, v1, v1.pos.x, v1.pos.y, 5, { ...dmgOpts(sim, [], 'p2'), splash: 60 })
+    expect(findLootShip(sim.gs, 'p1')).toBeUndefined()
+    for (let i = 0; i < 20; i += 1) stepWorld(sim, 0.05, new Map())
+    expect(findLootShip(sim.gs, 'p1')).toBeUndefined()
+    for (let i = 0; i < (RESPAWN_SEC + 0.5) / 0.05; i += 1) stepWorld(sim, 0.05, new Map())
+    const again = findLootShip(sim.gs, 'p1')!
+    expect(again).toBeDefined()
+    expect(again.id).not.toBe(v1.id)
+    expect(sim.gs.mp!.players.p1!.activeVesselId).toBe(again.id)
+    arcade.on = false
+  })
+
+  it('hangar: üste yakınken gemi hemen değişir ve ücreti ödenir; Akıncı bedavadır', () => {
+    const sim = makeLootSim()
+    expect(lootShipCost('raider')).toBe(0)
+    const cost = lootShipCost('bruiser')
+    expect(cost).toBeGreaterThan(0)
+    const old = launch(sim, 'p1')
+    const money = sim.gs.mp!.players.p1!.money
+    expect(dispatchCommand(sim, { type: 'selectLootShip', presetId: 'bruiser' }, 'p1').error).toBeUndefined()
+    const now = findLootShip(sim.gs, 'p1')!
+    expect(now.id).not.toBe(old.id)
+    expect(sim.gs.vessels.includes(old)).toBe(false)
+    expect(now.parts.some((p) => p.def === 'gun-plasma')).toBe(true)
+    expect(sim.gs.mp!.players.p1!.money).toBeLessThan(money)
+    expect(sim.gs.mp!.players.p1!.lootShip).toBe('bruiser')
+    arcade.on = false
+  })
+
+  it('lideri düşüren ödül alır; otomatik nişan en yakın düşmanı seçer', () => {
+    const sim = makeLootSim()
+    const a = launch(sim, 'p1')
+    const b = launch(sim, 'p2')
+    b.spawnShieldUntil = 0
+    b.pos = { x: a.pos.x + 400, y: a.pos.y }
+    b.vel = { x: 0, y: 0 }
+    a.vel = { x: 0, y: 0 }
+    const aim = arcadeAutoAim(sim.gs, a)!
+    expect(Math.abs(aim.angle)).toBeLessThan(0.05)
+    expect(aim.dist).toBeGreaterThan(380)
+    sim.gs.mp!.players.p2!.looted = 10
+    const money = sim.gs.mp!.players.p1!.money
+    b.parts.find((p) => partDef(p.def).kind === 'command')!.hp = 1
+    applyVesselDamage(sim.gs, b, b.pos.x, b.pos.y, 5, { ...dmgOpts(sim, [], 'p1'), splash: 60 })
+    expect(sim.gs.mp!.players.p1!.money).toBeGreaterThanOrEqual(money + LOOT_BOUNTY)
+    arcade.on = false
   })
 })

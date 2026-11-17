@@ -957,7 +957,7 @@ function stepClientExtrapolation(dtReal: number) {
     if (v.outpost) continue
     const ap = effectiveAutopilot(v)
     // Kendi aracın: yerel tuşlarla tam fizik tahmini (anında tepki).
-    if (v === own && ap === 'off' && (warpIdx <= PHYSICS_WARP_MAX_IDX || v.throttle > 0 || localCtrl.rotate !== 0 || localCtrl.tx !== 0 || localCtrl.ty !== 0)) {
+    if (v === own && ap === 'off' && (warpIdx <= PHYSICS_WARP_MAX_IDX || v.throttle > 0 || localCtrl.rotate !== 0 || localCtrl.tx !== 0 || localCtrl.ty !== 0 || lootMode)) {
       const effWarp = Math.min(warp, WARPS[PHYSICS_WARP_MAX_IDX] ?? 10)
       predictOwn(v, Math.min(simDt, real * effWarp), effWarp, true)
       continue
@@ -1371,6 +1371,8 @@ export function sendMpControls(ctrl: Controls) {
     ...(ctrl.fireGroup !== undefined ? { fireGroup: ctrl.fireGroup } : {}),
     ...(ctrl.aimAngle !== undefined ? { aimAngle: Math.round(ctrl.aimAngle * 10000) / 10000 } : {}),
     ...(ctrl.aimDist !== undefined ? { aimDist: Math.round(ctrl.aimDist) } : {}),
+    ...(ctrl.move ? { move: { x: Math.round(ctrl.move.x * 100) / 100, y: Math.round(ctrl.move.y * 100) / 100 } } : {}),
+    ...(ctrl.boost ? { boost: true } : {}),
   }
   const own = ownActive(clientSim?.gs)
   const withAngle = own && !own.landed && effectiveAutopilot(own) === 'off'
@@ -1380,8 +1382,11 @@ export function sendMpControls(ctrl: Controls) {
     ctrl.ty !== lastSentCtrl.ty ||
     Boolean(ctrl.fire) !== Boolean(lastSentCtrl.fire) ||
     ctrl.weaponKey !== lastSentCtrl.weaponKey ||
-    (ctrl.fireGroup ?? 0) !== (lastSentCtrl.fireGroup ?? 0)
-  const activeCtrl = ctrl.rotate !== 0 || ctrl.tx !== 0 || ctrl.ty !== 0
+    (ctrl.fireGroup ?? 0) !== (lastSentCtrl.fireGroup ?? 0) ||
+    Boolean(ctrl.boost) !== Boolean(lastSentCtrl.boost) ||
+    Boolean(ctrl.move) !== Boolean(lastSentCtrl.move) ||
+    (!!ctrl.move && !!lastSentCtrl.move && Math.hypot(ctrl.move.x - lastSentCtrl.move.x, ctrl.move.y - lastSentCtrl.move.y) > 0.12)
+  const activeCtrl = ctrl.rotate !== 0 || ctrl.tx !== 0 || ctrl.ty !== 0 || (!!ctrl.move && Math.hypot(ctrl.move.x, ctrl.move.y) > 0.12)
   const aimMovedFiring =
     Boolean(ctrl.fire) &&
     ctrl.aimAngle !== undefined &&

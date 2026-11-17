@@ -7,7 +7,7 @@ import { bodyAbsState, len, stateAtAnomaly, type Vec, wrapPi } from '../flight/o
 import { airDensity, PAD_ANGLE, situation, terrainHeight } from '../flight/physics'
 import type { Patch } from '../flight/predict'
 import { allColoniesOnBody, colonyCenterWorldPos, colonySlotOffset, findLockTarget, getActorQuadrantBase, getPlayerQuadrantColonies, isLootMode, isWarfareMode } from '../flight/combat'
-import { findOutpost, outpostPos, PICKUP_RANGE, SERVICE_RANGE } from '../flight/loot'
+import { findOutpost, lootLeaderId, outpostPos, PICKUP_RANGE, SERVICE_RANGE } from '../flight/loot'
 import { padAngleForSlot, playerPadAngle } from '../flight/multiplayerSim'
 import { getVisualPos } from '../flight/mpClient'
 import { activeVessel, type Sim } from '../flight/world'
@@ -1425,14 +1425,77 @@ function drawLootWorld(ctx: Ctx, sim: Sim, cam: Cam, clock: number) {
   ctx.restore()
 }
 
+/**
+ * Arcade yönlendirme: kargo doluysa üsse, değilse en yakın sandığa işaret eden ok; liderin üstünde taç.
+ * Metin göstergeleri yerine oyuncuya "şimdi ne yapmalıyım" sorusunun tek cevabını verir.
+ */
+function drawArcadeGuides(ctx: Ctx, sim: Sim, cam: Cam, v: Vessel | null, clock: number) {
+  const gs = sim.gs
+  const loot = gs.mp?.loot
+  if (!loot) return
+  ctx.save()
+  const leader = lootLeaderId(gs)
+  if (leader) {
+    for (const o of gs.vessels) {
+      if (o.ownerId !== leader || o.outpost || o.debris) continue
+      const p = toScreen(cam, o.pos)
+      ctx.font = '22px system-ui, sans-serif'
+      ctx.textAlign = 'center'
+      ctx.fillText('👑', p.x, p.y - 30 - Math.sin(clock * 3) * 3)
+    }
+  }
+  if (v && !v.debris && v.ownerId) {
+    const st = vesselStats(v.parts, v.cargo)
+    const full = st.cargoCap > 0 && v.cargo.ore >= st.cargoCap - 0.01
+    let target: Vec | null = null
+    let color = '#fbbf24'
+    if (full || (v.cargo.ore > 0.05 && loot.crates.length === 0)) {
+      target = findOutpost(gs, v.ownerId)?.pos ?? null
+      color = '#4ade80'
+    } else {
+      let best = Infinity
+      for (const c of loot.crates) {
+        const d = Math.hypot(c.pos.x - v.pos.x, c.pos.y - v.pos.y)
+        if (d < best) {
+          best = d
+          target = c.pos
+        }
+      }
+    }
+    if (target) {
+      const dx = target.x - v.pos.x
+      const dy = target.y - v.pos.y
+      const d = Math.hypot(dx, dy)
+      if (d > 120) {
+        const p = toScreen(cam, v.pos)
+        const q = toScreen(cam, target)
+        const a = Math.atan2(q.y - p.y, q.x - p.x)
+        const r = 58
+        ctx.translate(p.x + Math.cos(a) * r, p.y + Math.sin(a) * r)
+        ctx.rotate(a)
+        ctx.fillStyle = color
+        ctx.globalAlpha = 0.75 + 0.25 * Math.sin(clock * 5)
+        ctx.beginPath()
+        ctx.moveTo(14, 0)
+        ctx.lineTo(-6, -9)
+        ctx.lineTo(-2, 0)
+        ctx.lineTo(-6, 9)
+        ctx.closePath()
+        ctx.fill()
+      }
+    }
+  }
+  ctx.restore()
+}
+
 /** Yağma modu radarı: arenanın tamamı — üsler, sahalar, sandıklar ve gemiler. */
 function drawLootRadar(ctx: Ctx, sim: Sim, view: View, center: Vec) {
   const gs = sim.gs
   const loot = gs.mp?.loot
   if (!loot) return
-  const R = Math.max(54, Math.min(86, view.h * 0.11))
+  const R = Math.max(42, Math.min(80, Math.min(view.w, view.h) * 0.13))
   const cx = view.w - R - 18
-  const cy = view.h * 0.5
+  const cy = 58 + R
   const k = R / (loot.radius * 1.04)
   // Radar ekran yönüyle aynı bakar (kamera dönmediği için kuzey yukarı).
   const P = (w: Vec): Vec => ({ x: cx + (w.x - loot.center.x) * k, y: cy - (w.y - loot.center.y) * k })
@@ -1888,6 +1951,8 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
       // Yağma modunda kendi üssün de işaretlenir (eve dönüş oku).
       const ownBase = !!o.outpost && o.ownerId === gs.ownerId
       if (!o.ownerId || (o.ownerId === gs.ownerId && !ownBase)) continue
+      // Arcade: düşman üsleri radarda; ekran kenarında yalnızca gemiler ve kendi üssün işaretlenir.
+      if (o.outpost && !ownBase && isLootMode(gs)) continue
       const owner = gs.mp.players[o.ownerId]
       if (!owner) continue
       const oPos = getVisualPos(o)
@@ -1937,6 +2002,7 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
     }
   }
   drawBooms(ctx, sim, cam, bodyId)
+  if (lootMode) drawArcadeGuides(ctx, sim, cam, v, view.clock)
   if (lootMode) drawLootRadar(ctx, sim, view, center)
   if (v && !v.debris && view.selectedWeapon === 'gun-missile') {
     const info = view.aimScreen ? aimInfoFromScreen(frame, v, view.aimScreen.x, view.aimScreen.y) : undefined

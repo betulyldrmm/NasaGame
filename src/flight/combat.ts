@@ -63,6 +63,8 @@ export function isLootMode(gs: GameState): boolean {
 /** Canı bu oranın altına (−maxHp·oran) inen devre dışı parça gövdeden kopar. */
 export const BREAKOFF_RATIO = 0.75
 /** 1 t ganimetin üsse teslim değeri (₡). */
+/** Yağma modu: lideri düşürme ödülü (₡). */
+export const LOOT_BOUNTY = 6_000
 export const LOOT_VALUE_PER_TON = 7200
 const MAX_CRATES = 90
 
@@ -718,6 +720,15 @@ export function applyVesselDamage(
       if (atk) {
         atk.kills += 1
         awardScore(gs, atk.id, 2, 3500)
+      }
+      // Yağma modu: lideri (en çok ganimet taşıyanı) vuran ek ödül alır.
+      const players = Object.values(gs.mp.players)
+      let top: (typeof players)[number] | undefined
+      for (const p of players) if ((p.looted ?? 0) >= 1 && (!top || (p.looted ?? 0) > (top.looted ?? 0))) top = p
+      if (isLootMode(gs) && atk && vic && top?.id === vic.id) {
+        atk.money += LOOT_BOUNTY
+        if (gs.ownerId === atk.id) gs.money = atk.money
+        pushFeed(gs, `👑 ${atk.username} lideri düşürdü: +${LOOT_BOUNTY.toLocaleString('tr-TR')} ₡ ödül!`, atk.color)
       }
       const msg = `💥 ${atk?.username ?? opts.attackerId}, ${vic?.username ?? v.name} roketini imha etti (+3.500 ₡)!`
       pushFeed(gs, msg, atk?.color)
