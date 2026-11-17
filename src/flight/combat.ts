@@ -7,15 +7,18 @@
 import {
   baseReport,
   COLONY_SLOTS,
-  COLONY_STATION_ID,
   colonyHealthSummary,
   colonyShieldCap,
   ensureSiteHp,
   ensureSites,
+  isQuadrantColonized,
   MODULE_BY_ID,
+  QUADRANTS,
+  quadrantOfAngle,
   syncModules,
+  type QuadrantId,
 } from '../game/base'
-import { partDef, partMaxHp } from '../game/data'
+import { droneDesign, PAD_DRONE_SPECS, partDef, partMaxHp } from '../game/data'
 import type {
   Base,
   GameEvent,
@@ -26,39 +29,41 @@ import type {
   Projectile,
   Vessel,
 } from '../game/types'
-import { adjacency, arcade, cargoMass, components, partAlive, vesselStats } from '../game/vessel'
+import { freshParts, adjacency, arcade, cargoMass, components, modulesMass, partAlive, trimCargoToCap, vesselStats } from '../game/vessel'
 import { BODIES, type BodyId, solarFlux } from '../nasa/bodies'
 import { bodyAbsState, len, wrapPi } from './orbit'
 import { type Controls, terrainHeight } from './physics'
 import type { Fx } from './world'
 
 const MAX_PROJECTILES = 160
-const COLONY_COMPACT_OFFSET = 20
-const COLONY_COMPACT_STEP = 10
-const COLONY_STD_OFFSET = 28
-const COLONY_STD_STEP = 13
+const COLONY_COMPACT_STEP = 11.2
+const COLONY_STD_STEP = 12.6
 
 export interface ColonyEntry {
   ownerId: string
   bodyId: BodyId
+  quadrant: QuadrantId
   base: Base
   isEarth: boolean
 }
 
-/** Silahların ve muharebe kurallarının açık olduğu çok oyunculu modlar (Uzay Savaşı ve Yağma). */
+/** Silahların ve muharebe kurallarının açık olduğu çok oyunculu modlar (Uzay Savaşı ve alt kategorisi Yağma). */
 export function isWarfareMode(gs: GameState): boolean {
   return gs.mp?.config.mode === 'orbital-warfare' || gs.mp?.config.mode === 'loot-raid'
 }
 
-/** Yağma modu: uzay üsleri, kaynak sahaları, sandık toplama ve arcade uçuş. */
+/** Yağma modu: Uzay Savaşı alt kategorisi (`warfareGoal: 'raid'`) veya eski `'loot-raid'`. */
 export function isLootMode(gs: GameState): boolean {
-  return gs.mp?.config.mode === 'loot-raid'
+  return (
+    gs.mp?.config.mode === 'loot-raid' ||
+    (gs.mp?.config.mode === 'orbital-warfare' && gs.mp?.config.warfareGoal === 'raid')
+  )
 }
 
 /** Canı bu oranın altına (−maxHp·oran) inen devre dışı parça gövdeden kopar. */
 export const BREAKOFF_RATIO = 0.75
 /** 1 t ganimetin üsse teslim değeri (₡). */
-export const LOOT_VALUE_PER_TON = 2500
+export const LOOT_VALUE_PER_TON = 7200
 const MAX_CRATES = 90
 
 /** Yağma modunda uzaya ganimet sandıkları bırakır (en fazla 2 t'luk sandıklara bölünür). */
@@ -109,7 +114,8 @@ function pushProjectile(projs: Projectile[], proj: Projectile) {
 }
 
 export function colonySlotOffset(slot: number, compact: boolean): number {
-  return (compact ? COLONY_COMPACT_OFFSET : COLONY_STD_OFFSET) + slot * (compact ? COLONY_COMPACT_STEP : COLONY_STD_STEP)
+  const step = compact ? COLONY_COMPACT_STEP : COLONY_STD_STEP
+  return (slot - (COLONY_SLOTS - 1) / 2) * step
 }
 
 /** Yüzeydeki bir koloni yuvasının gövde-merkezli dünya koordinatlarını döndürür. */
@@ -131,41 +137,144 @@ export function colonySlotWorldPos(
 }
 
 export function colonyCenterWorldPos(bodyId: BodyId, siteAngle: number, compact = false): { x: number; y: number } {
-  return colonySlotWorldPos(bodyId, siteAngle, 3.5, compact, 4)
+  return colonySlotWorldPos(bodyId, siteAngle, (COLONY_SLOTS - 1) / 2, compact, 4)
+}
+
+export function getActorQuadrantBase(
+  gs: GameState,
+  bodyId: BodyId,
+  actorId: string,
+  quadrant: QuadrantId = 0,
+): Base | undefined {
+  if (gs.mp) {
+    const p = gs.mp.players[actorId]
+    if (bodyId === 'earth' || isWarfareMode(gs)) {
+      const qArr = p?.quadrantColonies?.[bodyId]
+      if (qArr?.[quadrant]) return qArr[quadrant]
+      if (quadrant === 0) return bodyId === 'earth' ? p?.earthBase : p?.colonies?.[bodyId]
+      return undefined
+    }
+    const gArr = gs.quadrantBases?.[bodyId]
+    if (gArr?.[quadrant]) return gArr[quadrant]
+    if (quadrant === 0) return gs.bases[bodyId]
+    return undefined
+  }
+  const spArr = gs.quadrantBases?.[bodyId]
+  if (spArr?.[quadrant]) return spArr[quadrant]
+  if (quadrant === 0) return gs.bases[bodyId]
+  return undefined
+}
+
+export function setActorQuadrantBase(
+  gs: GameState,
+  bodyId: BodyId,
+  actorId: string,
+  base: Base,
+  quadrant: QuadrantId = 0,
+) {
+  base.quadrant = quadrant
+  if (gs.mp) {
+    const p = gs.mp.players[actorId]
+    if (bodyId === 'earth' || isWarfareMode(gs)) {
+      if (p) {
+        const arr = ((p.quadrantColonies ??= {})[bodyId] ??= [undefined, undefined, undefined, undefined])
+        arr[quadrant] = base
+        if (quadrant === 0) {
+          if (bodyId === 'earth') p.earthBase = base
+          else (p.colonies ??= {})[bodyId] = base
+        }
+      }
+      if (bodyId === 'earth' && actorId === gs.ownerId && quadrant === 0) gs.bases.earth = base
+      return
+    }
+    const arr = ((gs.quadrantBases ??= {})[bodyId] ??= [undefined, undefined, undefined, undefined])
+    arr[quadrant] = base
+    if (quadrant === 0) gs.bases[bodyId] = base
+    return
+  }
+  const spArr = ((gs.quadrantBases ??= {})[bodyId] ??= [undefined, undefined, undefined, undefined])
+  spArr[quadrant] = base
+  if (quadrant === 0) gs.bases[bodyId] = base
+}
+
+export function getPlayerQuadrantColonies(
+  p: MultiplayerPlayer,
+  bodyId: BodyId,
+): { quadrant: QuadrantId; base: Base }[] {
+  const byQ = new Map<QuadrantId, Base>()
+  const arr = p.quadrantColonies?.[bodyId]
+  for (const q of QUADRANTS) {
+    const b = arr?.[q]
+    if (b) byQ.set(q, b)
+  }
+  if (bodyId === 'earth' && p.earthBase) {
+    const q = p.earthBase.quadrant ?? 0
+    if (!byQ.has(q)) byQ.set(q, p.earthBase)
+  } else if (bodyId !== 'earth' && p.colonies?.[bodyId]) {
+    const b = p.colonies[bodyId]!
+    const q = b.quadrant ?? 0
+    if (!byQ.has(q)) byQ.set(q, b)
+  }
+  return QUADRANTS.filter((q) => byQ.has(q)).map((q) => ({ quadrant: q, base: byQ.get(q)! }))
 }
 
 export function allColoniesOnBody(gs: GameState, bodyId: BodyId): ColonyEntry[] {
   const out: ColonyEntry[] = []
+  const seenKey = new Set<string>()
+  const push = (ownerId: string, quadrant: QuadrantId, base: Base | undefined, isEarth: boolean) => {
+    if (!base) return
+    const q = base.quadrant ?? quadrant
+    const key = `${ownerId}:${q}`
+    if (seenKey.has(key)) return
+    seenKey.add(key)
+    out.push({ ownerId, bodyId, quadrant: q, base, isEarth })
+  }
   if (gs.mp) {
-    if (bodyId === 'earth') {
+    if (bodyId === 'earth' || isWarfareMode(gs)) {
       for (const p of Object.values(gs.mp.players)) {
-        if (p.earthBase) out.push({ ownerId: p.id, bodyId: 'earth', base: p.earthBase, isEarth: true })
+        for (const item of getPlayerQuadrantColonies(p, bodyId)) {
+          push(p.id, item.quadrant, item.base, bodyId === 'earth')
+        }
       }
       return out
     }
-    if (isWarfareMode(gs)) {
-      for (const p of Object.values(gs.mp.players)) {
-        const b = p.colonies?.[bodyId]
-        if (b) out.push({ ownerId: p.id, bodyId, base: b, isEarth: false })
+    const qArr = gs.quadrantBases?.[bodyId]
+    if (qArr) {
+      for (const q of QUADRANTS) {
+        const b = qArr[q]
+        if (b && b.ownerId) push(b.ownerId, q, b, false)
       }
-      return out
     }
     const shared = gs.bases[bodyId]
-    if (shared && shared.ownerId) out.push({ ownerId: shared.ownerId, bodyId, base: shared, isEarth: false })
+    if (shared && shared.ownerId) push(shared.ownerId, shared.quadrant ?? quadrantOfAngle(shared.siteAngle), shared, false)
     return out
   }
+  const qArr = gs.quadrantBases?.[bodyId]
+  if (qArr) {
+    for (const q of QUADRANTS) push(gs.ownerId ?? 'local', q, qArr[q], bodyId === 'earth')
+  }
   const b = gs.bases[bodyId]
-  if (b) out.push({ ownerId: b.ownerId ?? gs.ownerId ?? 'local', bodyId, base: b, isEarth: bodyId === 'earth' })
+  if (b) push(b.ownerId ?? gs.ownerId ?? 'local', b.quadrant ?? 0, b, bodyId === 'earth')
   return out
 }
 
 export function countSurvivingColonies(p: MultiplayerPlayer): number {
   let n = 0
-  if (p.earthBase && !p.earthBase.destroyed && colonyHealthSummary(p.earthBase).buildings > 0) n += 1
-  if (p.colonies) {
-    for (const b of Object.values(p.colonies)) {
-      if (b && !b.destroyed && colonyHealthSummary(b).buildings > 0) n += 1
+  const byKey = new Map<string, Base>()
+  const add = (key: string, b: Base | undefined) => {
+    if (b && !byKey.has(key)) byKey.set(key, b)
+  }
+  if (p.quadrantColonies) {
+    for (const [bid, arr] of Object.entries(p.quadrantColonies)) {
+      if (arr) for (const q of QUADRANTS) add(`${bid}:${q}`, arr[q])
     }
+  }
+  add('earth:0', p.earthBase)
+  if (p.colonies) {
+    for (const [bid, b] of Object.entries(p.colonies)) add(`${bid}:0`, b)
+  }
+  for (const b of byKey.values()) {
+    if (!b.destroyed && colonyHealthSummary(b).buildings > 0) n += 1
   }
   return n
 }
@@ -189,7 +298,34 @@ function nextProjId(gs: GameState): number {
 function pushFx(fxOut: Fx[] | undefined, fx: Fx) {
   if (!fxOut) return
   fxOut.push(fx)
-  if (fxOut.length > 90) fxOut.splice(0, fxOut.length - 90)
+  if (fxOut.length > 140) fxOut.splice(0, fxOut.length - 140)
+}
+
+/** İstasyon veya üs yıkıldığında kademeli ikincil patlamalar, şok dalgası, enkaz ve duman sütunları üretir. */
+export function emitStationDestructionFx(
+  bodyId: BodyId,
+  x: number,
+  y: number,
+  spread: number,
+  clock: number,
+  fxOut: Fx[] | undefined,
+  events: GameEvent[],
+  color = '#ff8a3d',
+) {
+  pushFx(fxOut, { kind: 'shockwave', bodyId, x, y, born: clock, size: spread * 1.45, color })
+  pushFx(fxOut, { kind: 'debrisBurst', bodyId, x, y, born: clock, size: spread, color })
+  pushFx(fxOut, { kind: 'smokePlume', bodyId, x, y, born: clock, size: spread * 0.9 })
+  pushFx(fxOut, { kind: 'boom', bodyId, x, y, born: clock, size: spread * 0.72, color })
+  events.push({ type: 'explosion', size: spread * 0.72, bodyId, x, y })
+  for (let i = 0; i < 4; i += 1) {
+    const ang = (i / 4) * Math.PI * 2 + clock * 1.3
+    const dist = spread * (0.45 + 0.35 * ((i % 2) + 0.5))
+    const ox = x + Math.cos(ang) * dist
+    const oy = y + Math.sin(ang) * dist
+    const delay = 0.14 * (i + 1)
+    pushFx(fxOut, { kind: 'boom', bodyId, x: ox, y: oy, born: clock + delay, size: spread * (0.42 + (i % 2) * 0.16), color })
+    pushFx(fxOut, { kind: 'smokePlume', bodyId, x: ox, y: oy, born: clock + delay * 0.8, size: spread * 0.6 })
+  }
 }
 
 function awardScore(gs: GameState, attackerId: string | undefined, pts: number, bounty = 0) {
@@ -302,7 +438,7 @@ function hitTestVesselSegment(
   return null
 }
 
-function spawnDebrisPiece(gs: GameState, v: Vessel, p: PartInst, wx: number, wy: number, k: number) {
+export function spawnDebrisPiece(gs: GameState, v: Vessel, p: PartInst, wx: number, wy: number, k: number) {
   const id = gs.nextId
   gs.nextId += 1
   const ang = Math.atan2(wy - v.pos.y, wx - v.pos.x) + (k - 1) * 0.45
@@ -560,16 +696,10 @@ export function applyVesselDamage(
   const st2 = vesselStats(v.parts, v.cargo)
   v.ec = Math.min(v.ec, st2.ecCap)
   if (v.shield !== undefined) v.shield = Math.min(v.shield, st2.shieldCap)
-  // Kargo gövdesi giderse sığmayan yük uzaya saçılır (Yağma modunda sandık olarak toplanabilir).
-  const over = cargoMass(v.cargo) - st2.cargoCap
-  if (over > 1e-9) {
-    const spill = Math.min(v.cargo.ore, over)
-    if (spill > 0) {
-      v.cargo.ore -= spill
-      dropLoot(gs, { x: hitX, y: hitY }, v.vel, spill, opts.clock)
-    }
-    if (cargoMass(v.cargo) > st2.cargoCap + 1e-9) v.cargo = { modules: {}, ore: v.cargo.ore, oreFrom: v.cargo.oreFrom }
-    if (v.cargo.ore <= 1e-9) v.cargo.oreFrom = null
+  // Kargo gövdesi giderse sığmayan yük uzaya saçılır; sağlam gövdelere sığan modüller korunur.
+  if (cargoMass(v.cargo) > st2.cargoCap + 1e-9) {
+    const spilled = trimCargoToCap(v.cargo, st2.cargoCap)
+    if (spilled.droppedOre > 0) dropLoot(gs, { x: hitX, y: hitY }, v.vel, spilled.droppedOre, opts.clock)
   }
 
   if (v.outpost || !hadCommand || st2.hasCommand) return { destroyed: false, colonyStaticDirty: false }
@@ -680,7 +810,7 @@ export function applyColonyDamage(
     base.shieldRegenAt = opts.clock + 5.0
     touched = true
     const center = colonyCenterWorldPos(bodyId, base.siteAngle, compact)
-    pushFx(opts.fxOut, { kind: 'shield', bodyId, x: center.x, y: center.y, born: opts.clock, size: 58, color: '#38d9e8' })
+    pushFx(opts.fxOut, { kind: 'shield', bodyId, x: center.x, y: center.y, born: opts.clock, size: 74, color: '#38d9e8' })
     opts.events.push({ type: 'shieldHit', bodyId, x: center.x, y: center.y })
   }
 
@@ -722,8 +852,14 @@ export function applyColonyDamage(
     sites[i] = null
     hps[i] = null
     destroyedAny = true
-    pushFx(opts.fxOut, { kind: 'boom', bodyId, x: pos.x, y: pos.y, born: opts.clock, size: 6.5 })
-    opts.events.push({ type: 'explosion', size: 6.5, bodyId, x: pos.x, y: pos.y })
+    if (id === 'colony-station' || id === 'launch-pad' || id === 'rtg-reactor') {
+      emitStationDestructionFx(bodyId, pos.x, pos.y, 12, opts.clock, opts.fxOut, opts.events, id === 'rtg-reactor' ? '#4ade80' : '#ff9a3d')
+    } else {
+      pushFx(opts.fxOut, { kind: 'boom', bodyId, x: pos.x, y: pos.y, born: opts.clock, size: 7.5 })
+      pushFx(opts.fxOut, { kind: 'debrisBurst', bodyId, x: pos.x, y: pos.y, born: opts.clock, size: 7 })
+      pushFx(opts.fxOut, { kind: 'smokePlume', bodyId, x: pos.x, y: pos.y, born: opts.clock, size: 6.5 })
+      opts.events.push({ type: 'explosion', size: 7.5, bodyId, x: pos.x, y: pos.y })
+    }
     if (opts.attackerId && opts.attackerId !== ownerId) {
       awardScore(gs, opts.attackerId, 1, 900)
     }
@@ -738,6 +874,8 @@ export function applyColonyDamage(
     const remaining = colonyHealthSummary(base).buildings
     if (remaining === 0 && !base.destroyed) {
       base.destroyed = true
+      const cPos = colonyCenterWorldPos(bodyId, base.siteAngle, compact)
+      emitStationDestructionFx(bodyId, cPos.x, cPos.y, 20, opts.clock, opts.fxOut, opts.events, '#fb7185')
       const atk = opts.attackerId && gs.mp ? gs.mp.players[opts.attackerId] : undefined
       const vic = gs.mp ? gs.mp.players[ownerId] : undefined
       if (atk && atk.id !== ownerId) {
@@ -911,7 +1049,7 @@ function fireWeaponInstance(
       for (const col of allColoniesOnBody(gs, v.bodyId)) {
         if (col.ownerId === ownerId || col.base.destroyed) continue
         const cPos = colonyCenterWorldPos(v.bodyId, col.base.siteAngle, true)
-        const rad = (col.base.shield && col.base.shield > 0 ? 58 : 48) + (w.beamWidth ? w.beamWidth * 0.5 : 0)
+        const rad = (col.base.shield && col.base.shield > 0 ? 74 : 68) + (w.beamWidth ? w.beamWidth * 0.5 : 0)
         const seg = distSegPoint(muzzle.x, muzzle.y, end.x, end.y, cPos.x, cPos.y)
         if (seg.dist <= rad && seg.t <= maxT) {
           hits.push({ kind: 'colony', t: seg.t, x: seg.cx, y: seg.cy, colony: col })
@@ -1034,7 +1172,201 @@ function fireWeaponInstance(
   return colonyDirty
 }
 
-/** FTL tarzı silahları çalıştırır: tek seçili silah ateşleme, şarj, seri atış ve zincir hızlanma. */
+export function droneMaxAlt(bodyId: BodyId, tier: 1 | 2 | 3): number {
+  const b = BODIES[bodyId]
+  if (b.atmoHeight > 0) return Math.max(12_000, Math.round(b.atmoHeight * (0.72 + (tier - 1) * 0.08)))
+  return Math.max(10_000, Math.round(Math.min(b.soi * 0.12, b.radius * (0.12 + (tier - 1) * 0.03))))
+}
+
+const DRONE_LOAD_PRIORITY = ['colony-station', 'rtg-reactor', 'solar-farm', 'launch-pad', 'battery', 'drill', 'habitat', 'telemetry', 'sampler', 'biodome', 'lab', 'isru', 'aa-turret', 'sam-battery', 'colony-shield', 'repair-bay']
+
+export interface SpawnDroneOpts {
+  gs: GameState
+  ownerId: string
+  bodyId: BodyId
+  pos: { x: number; y: number }
+  vel: { x: number; y: number }
+  angle: number
+  tier: 1 | 2 | 3
+  modules: Record<string, number>
+  parentId?: number
+  parentVessel?: Vessel
+  clock: number
+  fxOut?: Fx[]
+  events: GameEvent[]
+  autoSelect?: boolean
+  muzzleFrom?: { x: number; y: number }
+  weaponId?: string
+}
+
+/** Gezegen içi elektrikli quad-fan drone aracı oluşturur (gemi hangarından veya doğrudan fırlatma rampasından). */
+export function spawnPlanetaryDrone(opts: SpawnDroneOpts): Vessel {
+  const { gs, ownerId, bodyId, pos, vel, angle, tier, modules, parentId, parentVessel, clock, fxOut, events, autoSelect = true } = opts
+  const spec = PAD_DRONE_SPECS[tier]
+  const dParts = freshParts(droneDesign(tier))
+  const dst = vesselStats(dParts)
+  const id = gs.nextId
+  gs.nextId += 1
+  const maxAlt = droneMaxAlt(bodyId, tier)
+  const cleanMods: Record<string, number> = {}
+  for (const [mid, n] of Object.entries(modules)) {
+    if (n > 0 && MODULE_BY_ID[mid]) cleanMods[mid] = n
+  }
+  const drone: Vessel = {
+    id,
+    name: `${spec.name} #${id}`,
+    ownerId,
+    parts: dParts,
+    bodyId,
+    pos: { ...pos },
+    vel: { ...vel },
+    angle,
+    angVel: 0,
+    landed: false,
+    throttle: 0,
+    ec: dst.ecCap,
+    cargo: { modules: cleanMods, ore: 0, oreFrom: null },
+    rcsOn: false,
+    sas: 'off',
+    autopilot: 'off',
+    approachWarn: null,
+    visited: [bodyId],
+    assist: null,
+    dvUsed: 0,
+    noCollideUntil: gs.time + 3.0,
+    drone: {
+      tier,
+      cargoCap: spec.cargoCap,
+      homeBodyId: bodyId,
+      maxAlt,
+      parentId,
+    },
+  }
+  gs.vessels.push(drone)
+
+  const origin = opts.muzzleFrom ?? pos
+  pushFx(fxOut, {
+    kind: 'muzzle',
+    bodyId,
+    x: origin.x,
+    y: origin.y,
+    x2: pos.x + Math.cos(angle) * 4,
+    y2: pos.y + Math.sin(angle) * 4,
+    born: clock,
+    size: 3.2,
+    color: spec.color,
+  })
+  events.push({
+    type: 'weaponFire',
+    weaponId: opts.weaponId ?? `drone-bay-${tier === 1 ? 's' : tier === 2 ? 'm' : 'l'}`,
+    kind: 'rocket',
+    bodyId,
+    x: origin.x,
+    y: origin.y,
+    pitch: 1.45,
+  })
+  const loadedCount = Object.values(cleanMods).reduce((s, n) => s + n, 0)
+  const usedCap = modulesMass(cleanMods)
+  const cargoNote = loadedCount > 0 ? ` (${loadedCount} modül · ${usedCap.toFixed(1)}/${spec.cargoCap} t yük)` : ''
+  events.push({ type: 'toast', ownerId, text: `🛸 ${spec.name} fırlatıldı${cargoNote}! Uzay sınırını aşma.` })
+
+  if (autoSelect) {
+    if (parentVessel) {
+      const curActiveId = gs.mp ? gs.mp.players[ownerId]?.activeVesselId : gs.activeId
+      if (curActiveId === parentVessel.id) {
+        parentVessel.throttle = 0
+        if (gs.mp && gs.mp.players[ownerId]) gs.mp.players[ownerId]!.activeVesselId = drone.id
+        if (ownerId === gs.ownerId || !gs.mp) gs.activeId = drone.id
+      }
+    } else {
+      if (gs.mp && gs.mp.players[ownerId]) gs.mp.players[ownerId]!.activeVesselId = drone.id
+      if (ownerId === gs.ownerId || !gs.mp) gs.activeId = drone.id
+    }
+  }
+  return drone
+}
+
+/** Ana gemideki Dron Fırlatıcıdan silahsız, kontrollü bir gezegen dronu çıkarır. */
+export function launchDroneFromPart(
+  gs: GameState,
+  v: Vessel,
+  p: PartInst,
+  wantAim: number | undefined,
+  clock: number,
+  fxOut: Fx[] | undefined,
+  events: GameEvent[],
+  autoSelect = true,
+): { drone?: Vessel; error?: string } {
+  const d = partDef(p.def)
+  const spec = d.droneSpec
+  if (!spec || !partAlive(p)) return { error: 'Bu parça çalışır bir dron fırlatıcı değil.' }
+  if (v.drone) return { error: 'Dron içinden başka dron fırlatılamaz.' }
+  if (v.debris || v.station || v.cruise) return { error: 'Bu araçtan şu an dron fırlatılamaz.' }
+  if ((p.cd ?? 0) > 0) return { error: 'Dron fırlatıcı henüz hazırlanıyor.' }
+  const left = p.ammo ?? spec.ammo
+  if (left <= 0) return { error: 'Bu fırlatıcıda kalan dron yok.' }
+  if (v.ec < spec.ecUse) return { error: `Yetersiz elektrik (${spec.ecUse} ⚡ gerekli).` }
+
+  const st = vesselStats(v.parts, v.cargo)
+  const rawAim = wantAim !== undefined && Number.isFinite(wantAim) ? wantAim : v.angle
+  const up = Math.atan2(v.pos.y, v.pos.x)
+  const fireAng = v.landed ? up + Math.max(-0.55, Math.min(0.55, wrapPi(rawAim - up))) : rawAim
+  const dir = { x: Math.cos(fireAng), y: Math.sin(fireAng) }
+  const partCenter = partWorldPos(v, st, p)
+  const muzzleDist = Math.max(d.w, d.h) * 0.55 + (v.landed ? 5.5 : 4.5)
+  const spawnPos = { x: partCenter.x + dir.x * muzzleDist, y: partCenter.y + dir.y * muzzleDist }
+
+  p.ammo = left - 1
+  v.ec = Math.max(0, v.ec - spec.ecUse)
+  p.cd = spec.cooldown
+  p.fireAt = clock
+
+  // Önce Dron Hangarı içine özel yüklenmiş kargo (p.droneCargo) varsa onu kullan; yoksa gemi kargosundan öncelik sırasına göre aktar
+  let droneMods: Record<string, number> = {}
+  const staged = p.droneCargo && Object.entries(p.droneCargo).some(([, n]) => n > 0)
+  if (staged && p.droneCargo) {
+    droneMods = { ...p.droneCargo }
+    p.droneCargo = undefined
+  } else {
+    let usedCap = 0
+    const modIds = [
+      ...DRONE_LOAD_PRIORITY.filter((id) => (v.cargo.modules[id] ?? 0) > 0),
+      ...Object.keys(v.cargo.modules).filter((id) => !DRONE_LOAD_PRIORITY.includes(id) && (v.cargo.modules[id] ?? 0) > 0),
+    ]
+    for (const id of modIds) {
+      const mm = MODULE_BY_ID[id]?.mass ?? 1
+      while ((v.cargo.modules[id] ?? 0) > 0 && usedCap + mm <= spec.cargoCap + 1e-6) {
+        v.cargo.modules[id]! -= 1
+        if (v.cargo.modules[id]! <= 0) delete v.cargo.modules[id]
+        droneMods[id] = (droneMods[id] ?? 0) + 1
+        usedCap += mm
+      }
+    }
+  }
+
+  v.noCollideUntil = gs.time + 3.0
+  const drone = spawnPlanetaryDrone({
+    gs,
+    ownerId: v.ownerId ?? gs.ownerId ?? 'local',
+    bodyId: v.bodyId,
+    pos: spawnPos,
+    vel: { x: v.vel.x + dir.x * spec.launchSpeed, y: v.vel.y + dir.y * spec.launchSpeed },
+    angle: fireAng,
+    tier: spec.tier,
+    modules: droneMods,
+    parentId: v.id,
+    parentVessel: v,
+    clock,
+    fxOut,
+    events,
+    autoSelect,
+    muzzleFrom: partCenter,
+    weaponId: d.id,
+  })
+  return { drone }
+}
+
+/** FTL tarzı silahları ve dron fırlatıcıları çalıştırır: tek seçili yuva ateşleme, şarj, seri atış ve zincir hızlanma. */
 export function stepVesselWeapons(
   gs: GameState,
   v: Vessel,
@@ -1050,7 +1382,7 @@ export function stepVesselWeapons(
     if (p.cd && p.cd > 0) p.cd = Math.max(0, p.cd - realDt)
   }
 
-  if (v.debris || v.station || v.cruise) return false
+  if (v.debris || v.station || v.cruise || v.drone) return false
   if ((v.empUntil ?? 0) > clock) {
     for (const p of v.parts) {
       if (partDef(p.def).weapon) {
@@ -1061,20 +1393,22 @@ export function stepVesselWeapons(
     }
     return false
   }
-  if (gs.mp && !isWarfareMode(gs)) return false
+  const canShootGuns = !gs.mp || isWarfareMode(gs)
 
   const st = vesselStats(v.parts, v.cargo)
   const wantAim = ctrl?.aimAngle !== undefined && Number.isFinite(ctrl.aimAngle) ? ctrl.aimAngle : v.angle
   v.aimAngle = wantAim
 
-  const mountedWeapons = v.parts.filter((p) => !!partDef(p.def).weapon && partAlive(p))
-  if (!mountedWeapons.length) return false
+  const mounted = v.parts.filter(
+    (p) => partAlive(p) && ((canShootGuns && !!partDef(p.def).weapon) || !!partDef(p.def).droneSpec),
+  )
+  if (!mounted.length) return false
 
-  let selectedDef = mountedWeapons[0]!.def
-  if (ctrl?.weaponKey && mountedWeapons.some((p) => p.def === ctrl.weaponKey)) {
+  let selectedDef = mounted[0]!.def
+  if (ctrl?.weaponKey && mounted.some((p) => p.def === ctrl.weaponKey)) {
     selectedDef = ctrl.weaponKey
   } else if (ctrl?.fireGroup && ctrl.fireGroup > 0) {
-    const grpHit = mountedWeapons.find((p) => partDef(p.def).weapon?.group === ctrl.fireGroup)
+    const grpHit = mounted.find((p) => partDef(p.def).weapon?.group === ctrl.fireGroup)
     if (grpHit) selectedDef = grpHit.def
   }
 
@@ -1085,9 +1419,19 @@ export function stepVesselWeapons(
 
   for (const p of v.parts) {
     const d = partDef(p.def)
-    const w = d.weapon
-    if (!w || !partAlive(p)) continue
+    if (!partAlive(p)) continue
     const isSel = p.def === selectedDef
+
+    if (d.droneSpec) {
+      if (wantFire && isSel && (p.cd ?? 0) <= 0) {
+        const res = launchDroneFromPart(gs, v, p, wantAim, clock, fxOut, events, true)
+        if (res.error) events.push({ type: 'toast', ownerId: v.ownerId, text: res.error })
+      }
+      continue
+    }
+
+    const w = d.weapon
+    if (!w || !canShootGuns) continue
 
     // Devam eden seri atış (Burst — FTL Burst Laser / Rocket Salvo)
     if ((p.burstLeft ?? 0) > 0) {
@@ -1275,7 +1619,7 @@ function detonateArea(
       for (const col of allColoniesOnBody(gs, proj.bodyId)) {
         if (col.ownerId === proj.ownerId || col.base.destroyed) continue
         const cPos = colonyCenterWorldPos(proj.bodyId, col.base.siteAngle, true)
-        if (Math.hypot(cPos.x - hx, cPos.y - hy) <= splash + 55) {
+        if (Math.hypot(cPos.x - hx, cPos.y - hy) <= splash + 72) {
           if (applyColonyDamage(gs, col, hx, hy, proj.dmg, { ...opts, colonyMult: proj.colonyMult })) {
             colonyDirty = true
           }
@@ -1398,7 +1742,7 @@ export function stepProjectiles(
         if (col.base.shield && col.base.shield > 0) {
           const cPos = colonyCenterWorldPos(proj.bodyId, col.base.siteAngle, true)
           const seg = distSegPoint(prev.x, prev.y, proj.pos.x, proj.pos.y, cPos.x, cPos.y)
-          if (seg.dist <= 58) {
+          if (seg.dist <= 74) {
             if (detonateArea(gs, proj, seg.cx, seg.cy, null, col, clock, firing, fxOut, events)) colonyDirty = true
             hit = true
             break
@@ -1679,18 +2023,17 @@ export function stepWarfareRules(gs: GameState, events: GameEvent[]) {
 
   const players = Object.values(mp.players)
   for (const p of players) {
-    let planetCols = 0
-    if (p.colonies) {
-      for (const [bid, b] of Object.entries(p.colonies)) {
-        if (!b || b.destroyed) continue
-        const flux = solarFlux(len(bodyAbsState(bid as BodyId, gs.time).r))
-        const hasStation = (b.modules[COLONY_STATION_ID] ?? 0) > 0
-        if (hasStation && baseReport(b, flux).sites.some((s) => s.id === COLONY_STATION_ID && s.powered)) {
-          planetCols += 1
+    let quadCols = 0
+    for (const bid of Object.keys(BODIES) as BodyId[]) {
+      if (bid === 'earth' || !BODIES[bid].landable) continue
+      const flux = solarFlux(len(bodyAbsState(bid, gs.time).r))
+      for (const item of getPlayerQuadrantColonies(p, bid)) {
+        if (!item.base.destroyed && isQuadrantColonized(item.base, flux)) {
+          quadCols += 1
         }
       }
     }
-    p.planetsHeld = planetCols
+    p.planetsHeld = quadCols
 
     if (countSurvivingColonies(p) === 0 && !p.eliminated) {
       p.eliminated = true

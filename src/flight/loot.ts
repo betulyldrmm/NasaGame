@@ -5,11 +5,19 @@
  *  - Vurulan gemi kargosunu saçar; çekirdeği yok edilen üs kasasının bir kısmını bırakır.
  *  - Uçuş arcade'dir: yerçekimi yok, uzay sürtünmesi var (bkz. `arcade` — game/vessel.ts).
  */
-import { OUTPOST_MAX_LEVEL, OUTPOST_UPGRADE_COST, outpostDesign, partDef, partMaxHp } from '../game/data'
+import {
+  OUTPOST_LOOT_BONUS,
+  OUTPOST_MAX_LEVEL,
+  OUTPOST_REPAIR_RATE,
+  OUTPOST_UPGRADE_COST,
+  outpostDesign,
+  partDef,
+  partMaxHp,
+} from '../game/data'
 import type { GameEvent, GameState, LootState, MultiplayerPlayer, Vessel } from '../game/types'
 import { cargoMass, freshParts, partAlive, vesselStats } from '../game/vessel'
 import { BODIES } from '../nasa/bodies'
-import { dropLoot, isLootMode, LOOT_VALUE_PER_TON, pushFeed } from './combat'
+import { dropLoot, emitStationDestructionFx, isLootMode, LOOT_VALUE_PER_TON, pushFeed, spawnDebrisPiece } from './combat'
 import type { Controls } from './physics'
 import type { Fx } from './world'
 
@@ -25,7 +33,7 @@ export const TURRET_RANGE = 1_250
 export const OUTPOST_REBUILD_SEC = 45
 /** Çekirdeği yok edilen üsten saçılan kasa oranı. */
 export const BREACH_LOOT_SHARE = 0.3
-export const LOOT_START_MONEY = 40_000
+export const LOOT_START_MONEY = 45_000
 const WRECK_CRATE_TTL = 240
 /** 16 yuva: ilk gelen oyuncular halkada birbirinden en uzak noktalara yerleşir. */
 const SLOT_ORDER = [0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15]
@@ -225,18 +233,25 @@ function breachOutpost(gs: GameState, base: Vessel, clock: number, fxOut: Fx[] |
   const text = `🏴‍☠️ ${atk?.username ?? 'Bir oyuncu'}, ${owner?.username ?? '?'} üssünü yağmaladı: ${tons.toFixed(1)} t ganimet uzaya saçıldı!`
   pushFeed(gs, text, atk?.color)
   if (owner && atk) events.push({ type: 'colonyDestroyed', bodyId: 'earth', victimId: owner.id, attackerId: atk.id, text })
-  fxOut?.push({ kind: 'boom', bodyId: base.bodyId, x: base.pos.x, y: base.pos.y, born: clock, size: 14 })
-  events.push({ type: 'explosion', size: 14, bodyId: base.bodyId, x: base.pos.x, y: base.pos.y })
+  emitStationDestructionFx(base.bodyId, base.pos.x, base.pos.y, 24, clock, fxOut, events, owner?.color ?? '#fb923c')
+  // Parçalanan üssün panelleri ve zırh plakaları enkaz olarak uzaya savrulur
+  const wreckParts = base.parts.filter((p) => p.def !== 'base-core').slice(0, 6)
+  wreckParts.forEach((wp, k) => {
+    const a = (k / Math.max(1, wreckParts.length)) * Math.PI * 2 + clock
+    const d = 8 + (k % 3) * 5
+    spawnDebrisPiece(gs, base, wp, base.pos.x + Math.cos(a) * d, base.pos.y + Math.sin(a) * d, k)
+  })
   gs.vessels = gs.vessels.filter((o) => o !== base)
 }
 
-/** İkmal: yakıt, onarım (devre dışı parçalar dahil), cephane ve elektrik. */
-function serviceShip(v: Vessel, real: number, tickSecond: boolean) {
-  let fuelLeft = 1.5 * real
+/** İkmal: yakıt, onarım (üs seviyesine göre), cephane/dron stoğu ve elektrik. */
+function serviceShip(v: Vessel, real: number, tickSecond: boolean, outpostLevel = 1) {
+  const repairRate = OUTPOST_REPAIR_RATE[Math.max(1, Math.min(OUTPOST_MAX_LEVEL, outpostLevel))] ?? 45
+  let fuelLeft = (1.5 + (outpostLevel - 1) * 0.4) * real
   for (const p of v.parts) {
     const d = partDef(p.def)
     const max = partMaxHp(p.def)
-    if (p.hp !== undefined && p.hp < max) p.hp = Math.min(max, Math.max(p.hp, -max * 0.5) + 45 * real)
+    if (p.hp !== undefined && p.hp < max) p.hp = Math.min(max, Math.max(p.hp, -max * 0.5) + repairRate * real)
     if (d.kind === 'tank' && partAlive(p) && fuelLeft > 0) {
       const add = Math.min(fuelLeft, (d.fuel ?? 0) - (p.fuel ?? 0))
       if (add > 0) {
@@ -244,8 +259,9 @@ function serviceShip(v: Vessel, real: number, tickSecond: boolean) {
         fuelLeft -= add
       }
     }
-    if (tickSecond && d.weapon?.ammo !== undefined && partAlive(p)) {
-      p.ammo = Math.min(d.weapon.ammo, (p.ammo ?? 0) + Math.ceil(d.weapon.ammo * 0.2))
+    const maxAmmo = d.weapon?.ammo ?? d.droneSpec?.ammo
+    if (tickSecond && maxAmmo !== undefined && partAlive(p)) {
+      p.ammo = Math.min(maxAmmo, (p.ammo ?? 0) + Math.max(1, Math.ceil(maxAmmo * 0.2)))
     }
   }
   const st = vesselStats(v.parts, v.cargo)
@@ -294,9 +310,10 @@ export function stepLoot(gs: GameState, real: number, clock: number, fxOut: Fx[]
     base.vel = { x: 0, y: 0 }
     base.angVel = 0
     base.ec = vesselStats(base.parts).ecCap
+    const bLvl = Math.max(1, Math.min(OUTPOST_MAX_LEVEL, base.outpost?.level ?? 1))
     for (const p of base.parts) {
       const max = partMaxHp(p.def)
-      if (p.hp !== undefined && p.hp > 0 && p.hp < max) p.hp = Math.min(max, p.hp + 4 * real)
+      if (p.hp !== undefined && p.hp > 0 && p.hp < max) p.hp = Math.min(max, p.hp + (4 + (bLvl - 1) * 2) * real)
     }
   }
 
@@ -337,9 +354,11 @@ export function stepLoot(gs: GameState, real: number, clock: number, fxOut: Fx[]
     }
 
     if (nearOwnOutpost(gs, v)) {
+      const lvl = Math.max(1, Math.min(OUTPOST_MAX_LEVEL, player.outpostLevel ?? 1))
+      const bonusMult = OUTPOST_LOOT_BONUS[lvl] ?? 1
       if (v.cargo.ore > 0.01) {
         const tons = v.cargo.ore
-        const pay = Math.round(tons * LOOT_VALUE_PER_TON)
+        const pay = Math.round(tons * LOOT_VALUE_PER_TON * bonusMult)
         v.cargo.ore = 0
         v.cargo.oreFrom = null
         player.money += pay
@@ -348,7 +367,7 @@ export function stepLoot(gs: GameState, real: number, clock: number, fxOut: Fx[]
         events.push({ type: 'toast', ownerId: v.ownerId, text: `💰 ${tons.toFixed(1)} t ganimet teslim edildi: +${pay.toLocaleString('tr-TR')} ₡` })
         pushFeed(gs, `💰 ${player.username} üssüne ${tons.toFixed(1)} t ganimet taşıdı.`, player.color)
       }
-      serviceShip(v, real, tickSecond)
+      serviceShip(v, real, tickSecond, lvl)
     }
   }
   loot.crates = loot.crates.filter((c) => c.tons > 0.005)

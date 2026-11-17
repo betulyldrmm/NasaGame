@@ -1,12 +1,12 @@
 /** Uçuş görünümü ve uzay haritası çizimi (Canvas 2D, 2.5D gölgelendirme). */
 import { partDef, partMaxHp } from '../game/data'
-import { colonyShieldCap, isBodyColonized, MODULE_BY_ID } from '../game/base'
+import { COLONY_SLOTS, colonyShieldCap, hasActiveLaunchPad, isQuadrantColonized, MODULE_BY_ID, QUADRANTS, quadrantCenterAngle, QUADRANT_SHORT } from '../game/base'
 import type { Projectile, Vessel } from '../game/types'
 import { vesselStats } from '../game/vessel'
 import { bodyAbsState, len, stateAtAnomaly, type Vec, wrapPi } from '../flight/orbit'
 import { airDensity, PAD_ANGLE, situation, terrainHeight } from '../flight/physics'
 import type { Patch } from '../flight/predict'
-import { allColoniesOnBody, colonyCenterWorldPos, colonySlotOffset, findLockTarget, isLootMode, isWarfareMode } from '../flight/combat'
+import { allColoniesOnBody, colonyCenterWorldPos, colonySlotOffset, findLockTarget, getActorQuadrantBase, getPlayerQuadrantColonies, isLootMode, isWarfareMode } from '../flight/combat'
 import { findOutpost, outpostPos, PICKUP_RANGE, SERVICE_RANGE } from '../flight/loot'
 import { padAngleForSlot, playerPadAngle } from '../flight/multiplayerSim'
 import { getVisualPos } from '../flight/mpClient'
@@ -81,101 +81,311 @@ function mix(a: string, b: string, t: number): string {
 
 /** Küre gölgelendirmesi: ışık Güneş yönünden gelir. */
 function sphereFill(ctx: Ctx, body: BodyDef, cx: number, cy: number, rpx: number, light: Vec) {
-  const g = ctx.createRadialGradient(cx + light.x * rpx * 0.5, cy + light.y * rpx * 0.5, rpx * 0.05, cx, cy, rpx * 1.02)
+  const g = ctx.createRadialGradient(cx + light.x * rpx * 0.48, cy + light.y * rpx * 0.48, rpx * 0.04, cx, cy, rpx * 1.04)
   g.addColorStop(0, body.colors.light)
-  g.addColorStop(0.45, body.colors.base)
+  g.addColorStop(0.5, body.colors.base)
   g.addColorStop(1, body.colors.dark)
   return g
 }
 
-export function drawSphere(ctx: Ctx, body: BodyDef, cx: number, cy: number, rpx: number, light: Vec, rot: number, detail: boolean) {
+export function drawSphere(ctx: Ctx, body: BodyDef, cx: number, cy: number, rpx: number, light: Vec, rot: number, detail: boolean, clock = 0) {
   if (body.id === 'sun') {
-    const glow = ctx.createRadialGradient(cx, cy, rpx * 0.6, cx, cy, rpx * 4)
-    glow.addColorStop(0, 'rgba(255,220,120,.55)')
-    glow.addColorStop(1, 'rgba(255,170,60,0)')
+    const pulse = 1 + 0.04 * Math.sin(clock * 2.1)
+    const glow = ctx.createRadialGradient(cx, cy, rpx * 0.55, cx, cy, rpx * 4.2 * pulse)
+    glow.addColorStop(0, 'rgba(255,245,180,.78)')
+    glow.addColorStop(0.28, 'rgba(255,190,70,.35)')
+    glow.addColorStop(1, 'rgba(255,130,30,0)')
     ctx.fillStyle = glow
     ctx.beginPath()
-    ctx.arc(cx, cy, rpx * 4, 0, 6.283)
+    ctx.arc(cx, cy, rpx * 4.2 * pulse, 0, 6.283)
     ctx.fill()
+    // Taç küre fışkırmaları (animasyonlu güneş halkaları)
+    if (rpx >= 8) {
+      ctx.save()
+      ctx.translate(cx, cy)
+      ctx.globalCompositeOperation = 'lighter'
+      for (let i = 0; i < 6; i += 1) {
+        const a = i * 1.047 + clock * 0.06
+        const flareR = rpx * (0.14 + 0.08 * Math.sin(clock * 1.7 + i * 2.1))
+        ctx.strokeStyle = 'rgba(255,140,45,.48)'
+        ctx.lineWidth = Math.max(1.2, rpx * 0.05)
+        ctx.beginPath()
+        ctx.arc(Math.cos(a) * rpx * 0.96, Math.sin(a) * rpx * 0.96, flareR, a - 1.3, a + 1.3)
+        ctx.stroke()
+      }
+      ctx.restore()
+    }
   }
   if (body.atmoHeight > 0) {
-    const ar = rpx * (1 + body.atmoHeight / body.radius)
-    const g = ctx.createRadialGradient(cx, cy, rpx * 0.98, cx, cy, ar)
-    g.addColorStop(0, body.id === 'earth' ? 'rgba(120,190,255,.5)' : 'rgba(240,170,120,.32)')
-    g.addColorStop(1, 'rgba(120,190,255,0)')
+    const ar = rpx * (1 + Math.max(0.05, body.atmoHeight / body.radius) * 1.15)
+    const g = ctx.createRadialGradient(cx, cy, rpx * 0.94, cx, cy, ar)
+    const atCol =
+      body.id === 'earth' ? 'rgba(96,185,255,' :
+      body.id === 'titan' ? 'rgba(245,158,66,' :
+      body.id === 'venus' ? 'rgba(253,224,135,' :
+      body.id === 'mars' ? 'rgba(244,142,102,' : 'rgba(220,185,135,'
+    g.addColorStop(0, atCol + '.56)')
+    g.addColorStop(0.5, atCol + '.18)')
+    g.addColorStop(1, atCol + '0)')
     ctx.fillStyle = g
     ctx.beginPath()
     ctx.arc(cx, cy, ar, 0, 6.283)
     ctx.fill()
   }
+  // Satürn arka halkaları (Cassini boşluğu + gezegen gölgesi)
   if (body.id === 'saturn' && rpx >= 4) {
     ctx.save()
     ctx.translate(cx, cy)
     ctx.rotate(-0.35 - rot * 0.1)
-    ctx.strokeStyle = 'rgba(235,212,165,.42)'
-    ctx.lineWidth = Math.max(1.2, rpx * 0.28)
-    ctx.beginPath()
-    ctx.ellipse(0, 0, rpx * 2.1, rpx * 0.42, 0, Math.PI, Math.PI * 2)
-    ctx.stroke()
+    for (const ring of [
+      { mult: 2.32, lw: 0.22, col: 'rgba(225,198,150,.56)' },
+      { mult: 1.88, lw: 0.28, col: 'rgba(245,225,180,.72)' },
+      { mult: 1.48, lw: 0.14, col: 'rgba(175,148,110,.36)' },
+    ]) {
+      ctx.strokeStyle = ring.col
+      ctx.lineWidth = Math.max(1, rpx * ring.lw)
+      ctx.beginPath()
+      ctx.ellipse(0, 0, rpx * ring.mult, rpx * ring.mult * 0.21, 0, Math.PI, Math.PI * 2)
+      ctx.stroke()
+    }
     ctx.restore()
   }
+
   ctx.beginPath()
   ctx.arc(cx, cy, rpx, 0, 6.283)
   ctx.fillStyle = sphereFill(ctx, body, cx, cy, rpx, light)
   ctx.fill()
-  if (detail && rpx >= 9 && body.id !== 'sun') {
+
+  if (body.id === 'sun' && detail && rpx >= 10) {
     ctx.save()
     ctx.clip()
     ctx.translate(cx, cy)
+    for (let i = 0; i < 18; i += 1) {
+      const a = hash(i * 4.3) * 6.283 + clock * 0.04
+      const d = Math.sqrt(hash(i * 9.1)) * rpx * 0.85
+      const rad = rpx * (0.06 + 0.08 * hash(i * 2.7))
+      ctx.fillStyle = i % 5 === 0 ? 'rgba(180,75,15,.35)' : 'rgba(255,250,210,.26)'
+      ctx.beginPath()
+      ctx.arc(Math.cos(a) * d, Math.sin(a) * d, rad, 0, 6.283)
+      ctx.fill()
+    }
+    ctx.restore()
+  }
+
+  if (detail && rpx >= 7 && body.id !== 'sun') {
+    ctx.save()
+    ctx.beginPath()
+    ctx.arc(cx, cy, rpx, 0, 6.283)
+    ctx.clip()
+    ctx.translate(cx, cy)
     ctx.rotate(-rot)
+    const drift = (clock * (body.id === 'jupiter' ? 0.035 : body.id === 'venus' ? 0.028 : 0.012)) % 6.283
+
     if (body.id === 'jupiter' || body.id === 'saturn') {
-      const bands = body.id === 'jupiter' ? ['rgba(165,98,54,.35)', 'rgba(245,220,185,.32)', 'rgba(130,68,38,.3)'] : ['rgba(175,148,96,.25)', 'rgba(245,232,190,.22)']
-      for (let i = -3; i <= 3; i += 1) {
-        ctx.fillStyle = bands[Math.abs(i) % bands.length]!
-        ctx.fillRect(-rpx * 1.1, i * rpx * 0.22 - rpx * 0.08, rpx * 2.2, rpx * 0.14)
+      const jupColors = ['rgba(248,230,202,.46)', 'rgba(176,104,58,.44)', 'rgba(235,198,154,.38)', 'rgba(142,76,42,.38)', 'rgba(218,168,118,.35)']
+      const satColors = ['rgba(248,236,198,.38)', 'rgba(205,176,120,.32)', 'rgba(232,208,155,.34)', 'rgba(165,135,88,.26)']
+      const belts = body.id === 'jupiter' ? jupColors : satColors
+      const count = body.id === 'jupiter' ? 9 : 7
+      for (let i = -count; i <= count; i += 1) {
+        const y0 = (i / (count + 0.5)) * rpx
+        ctx.fillStyle = belts[Math.abs(i) % belts.length]!
+        ctx.beginPath()
+        ctx.moveTo(-rpx * 1.1, y0)
+        for (let k = -4; k <= 4; k += 1) {
+          const x = (k / 4) * rpx * 1.05
+          const wave = body.id === 'jupiter' ? Math.sin(k * 1.4 + i + drift * 6) * rpx * 0.025 : 0
+          ctx.lineTo(x, y0 + wave)
+        }
+        ctx.lineTo(rpx * 1.1, y0 + rpx * 0.12)
+        ctx.lineTo(-rpx * 1.1, y0 + rpx * 0.12)
+        ctx.closePath()
+        ctx.fill()
       }
       if (body.id === 'jupiter') {
-        ctx.fillStyle = 'rgba(195,78,52,.5)'
+        // Büyük Kırmızı Leke kasırgası
+        const gx = Math.sin(drift) * rpx * 0.55
+        ctx.fillStyle = 'rgba(186,62,40,.68)'
         ctx.beginPath()
-        ctx.ellipse(rpx * 0.25, rpx * 0.28, rpx * 0.22, rpx * 0.12, 0, 0, 6.283)
+        ctx.ellipse(gx, rpx * 0.3, rpx * 0.24, rpx * 0.13, 0, 0, 6.283)
+        ctx.fill()
+        ctx.strokeStyle = 'rgba(255,195,145,.55)'
+        ctx.lineWidth = Math.max(0.8, rpx * 0.025)
+        ctx.stroke()
+      }
+    } else if (body.id === 'earth') {
+      // Kıtalar, sığ deniz rafları, kutup buzulları ve dönen siklon bulutları
+      const continents = [
+        { x: -0.34, y: -0.18, rx: 0.32, ry: 0.24, rot: 0.3 },
+        { x: -0.22, y: 0.28, rx: 0.2, ry: 0.26, rot: -0.25 },
+        { x: 0.26, y: -0.22, rx: 0.36, ry: 0.25, rot: -0.18 },
+        { x: 0.36, y: 0.24, rx: 0.22, ry: 0.18, rot: 0.4 },
+        { x: 0.04, y: 0.06, rx: 0.16, ry: 0.22, rot: 0.15 },
+      ]
+      for (const l of continents) {
+        // Turkuaz kıyı sığlığı
+        ctx.fillStyle = 'rgba(56,217,232,.25)'
+        ctx.beginPath()
+        ctx.ellipse(l.x * rpx, l.y * rpx, l.rx * rpx * 1.14, l.ry * rpx * 1.14, l.rot, 0, 6.283)
+        ctx.fill()
+        // Yeşil kara + çöl/dağ dokusu
+        ctx.fillStyle = '#3b9b56'
+        ctx.beginPath()
+        ctx.ellipse(l.x * rpx, l.y * rpx, l.rx * rpx, l.ry * rpx, l.rot, 0, 6.283)
+        ctx.fill()
+        ctx.fillStyle = 'rgba(180,165,105,.45)'
+        ctx.beginPath()
+        ctx.ellipse((l.x + 0.03) * rpx, (l.y + 0.02) * rpx, l.rx * rpx * 0.45, l.ry * rpx * 0.38, l.rot, 0, 6.283)
+        ctx.fill()
+      }
+      // Kuzey ve güney kutup buzulları
+      ctx.fillStyle = 'rgba(240,248,255,.88)'
+      ctx.beginPath()
+      ctx.ellipse(0, -rpx * 0.92, rpx * 0.48, rpx * 0.16, 0, 0, 6.283)
+      ctx.ellipse(0, rpx * 0.93, rpx * 0.52, rpx * 0.15, 0, 0, 6.283)
+      ctx.fill()
+      // Yavaşça kayan beyaz siklon bulut şeritleri
+      ctx.fillStyle = 'rgba(255,255,255,.36)'
+      for (let i = 0; i < 8; i += 1) {
+        const cxCloud = (((hash(i * 5.7) * 2 - 1) + drift * 0.18) % 1.4) * rpx * 0.85
+        const cyCloud = (hash(i * 9.3) * 1.6 - 0.8) * rpx * 0.8
+        ctx.beginPath()
+        ctx.ellipse(cxCloud, cyCloud, rpx * (0.24 + 0.14 * hash(i)), rpx * 0.065, -0.22 + hash(i * 3) * 0.4, 0, 6.283)
+        ctx.fill()
+      }
+    } else if (body.id === 'mars') {
+      // Koyu bazalt ovalar, Valles Marineris kanyon yarığı, kutup buzulları
+      ctx.fillStyle = 'rgba(105,36,20,.46)'
+      ctx.beginPath()
+      ctx.ellipse(-rpx * 0.25, -rpx * 0.1, rpx * 0.35, rpx * 0.22, 0.3, 0, 6.283)
+      ctx.ellipse(rpx * 0.3, rpx * 0.22, rpx * 0.28, rpx * 0.16, -0.4, 0, 6.283)
+      ctx.fill()
+      // Valles Marineris ekvator kanyonu
+      ctx.strokeStyle = 'rgba(82,22,12,.72)'
+      ctx.lineWidth = Math.max(1, rpx * 0.045)
+      ctx.beginPath()
+      ctx.moveTo(-rpx * 0.35, rpx * 0.05)
+      ctx.quadraticCurveTo(0, rpx * 0.12, rpx * 0.36, -rpx * 0.02)
+      ctx.stroke()
+      // İki kutupta CO2 buz başlıkları
+      ctx.fillStyle = 'rgba(250,242,235,.82)'
+      ctx.beginPath()
+      ctx.ellipse(0, -rpx * 0.93, rpx * 0.32, rpx * 0.11, 0, 0, 6.283)
+      ctx.ellipse(0, rpx * 0.94, rpx * 0.28, rpx * 0.09, 0, 0, 6.283)
+      ctx.fill()
+    } else if (body.id === 'venus' || body.id === 'titan') {
+      // Dönerek şeritlenen V-desenli yoğun bulut akıntıları & hidrokarbon kutup denizleri (Titan)
+      const bandCol = body.id === 'venus' ? 'rgba(255,244,200,.34)' : 'rgba(255,212,135,.3)'
+      const darkCol = body.id === 'venus' ? 'rgba(166,112,48,.28)' : 'rgba(122,58,14,.32)'
+      for (let i = -3; i <= 3; i += 1) {
+        const y = i * rpx * 0.25
+        ctx.strokeStyle = Math.abs(i) % 2 === 0 ? bandCol : darkCol
+        ctx.lineWidth = Math.max(1.2, rpx * 0.14)
+        ctx.beginPath()
+        ctx.moveTo(-rpx * 1.1, y - rpx * 0.08)
+        ctx.quadraticCurveTo(Math.sin(drift * 2 + i) * rpx * 0.25, y + rpx * 0.14, rpx * 1.1, y - rpx * 0.08)
+        ctx.stroke()
+      }
+      if (body.id === 'titan') {
+        // Kutup metan denizleri (Kraken Mare)
+        ctx.fillStyle = 'rgba(34,26,38,.52)'
+        ctx.beginPath()
+        ctx.ellipse(-rpx * 0.12, -rpx * 0.72, rpx * 0.28, rpx * 0.14, 0.2, 0, 6.283)
         ctx.fill()
       }
     } else {
-      const n = body.id === 'earth' ? 9 : 14
+      // Ay, Merkür, Ceres, Ganimed: mare havzaları, oluklu buz hatları, parlak ve gölgeli çok halkalı kraterler
+      if (body.id === 'moon') {
+        ctx.fillStyle = 'rgba(68,74,88,.48)'
+        ctx.beginPath()
+        ctx.ellipse(-rpx * 0.22, -rpx * 0.18, rpx * 0.34, rpx * 0.26, -0.3, 0, 6.283)
+        ctx.ellipse(rpx * 0.2, -rpx * 0.05, rpx * 0.26, rpx * 0.3, 0.4, 0, 6.283)
+        ctx.ellipse(-rpx * 0.05, rpx * 0.32, rpx * 0.24, rpx * 0.16, 0.1, 0, 6.283)
+        ctx.fill()
+      } else if (body.id === 'ganymede') {
+        // Açık renk buz olukları (sulci)
+        ctx.strokeStyle = 'rgba(232,240,250,.32)'
+        ctx.lineWidth = Math.max(0.8, rpx * 0.04)
+        for (let g = 0; g < 6; g += 1) {
+          const a = hash(g * 7.1) * Math.PI
+          const y = (hash(g * 3.7) - 0.5) * rpx * 1.3
+          ctx.beginPath()
+          ctx.moveTo(-rpx * Math.cos(a), y - rpx * Math.sin(a))
+          ctx.lineTo(rpx * Math.cos(a), y + rpx * Math.sin(a))
+          ctx.stroke()
+        }
+      }
+      const n = 15
       for (let i = 0; i < n; i += 1) {
         const a = hash(i + body.radius) * 6.283
-        const d = Math.sqrt(hash(i * 3 + 1)) * rpx * 0.9
-        const s = rpx * (body.id === 'earth' ? 0.16 + 0.22 * hash(i * 7) : 0.04 + 0.11 * hash(i * 7))
+        const d = Math.sqrt(hash(i * 3 + 1)) * rpx * 0.85
+        const cxC = Math.cos(a) * d
+        const cyC = -Math.sin(a) * d
+        const cr = rpx * (0.04 + 0.11 * hash(i * 7))
+        ctx.fillStyle = 'rgba(38,40,48,.38)'
         ctx.beginPath()
-        ctx.ellipse(Math.cos(a) * d, -Math.sin(a) * d, s, s * (0.55 + 0.4 * hash(i * 11)), hash(i * 13) * 3, 0, 6.283)
-        ctx.fillStyle =
-          body.id === 'earth'
-            ? 'rgba(70,160,90,.55)'
-            : body.id === 'venus' || body.id === 'titan'
-              ? 'rgba(245,205,130,.28)'
-              : 'rgba(60,62,75,.35)'
+        ctx.arc(cxC, cyC, cr, 0, 6.283)
         ctx.fill()
+        ctx.strokeStyle = body.id === 'ceres' && i % 5 === 0 ? 'rgba(255,255,255,.78)' : 'rgba(255,255,255,.26)'
+        ctx.lineWidth = Math.max(0.7, cr * 0.22)
+        ctx.beginPath()
+        ctx.arc(cxC, cyC, cr, Math.PI * 0.9, Math.PI * 1.9)
+        ctx.stroke()
+        if (body.id === 'ceres' && i % 5 === 0) {
+          ctx.fillStyle = 'rgba(248,252,255,.85)'
+          ctx.beginPath()
+          ctx.arc(cxC, cyC, cr * 0.42, 0, 6.283)
+          ctx.fill()
+        }
       }
     }
     ctx.restore()
-    // gece tarafı
+
+    // Gece tarafı gölge geçişi + Dünya'da gece şehir ışıkları
     const sh = ctx.createLinearGradient(cx + light.x * rpx, cy + light.y * rpx, cx - light.x * rpx, cy - light.y * rpx)
-    sh.addColorStop(0.35, 'rgba(0,0,10,0)')
-    sh.addColorStop(1, 'rgba(0,0,10,.62)')
+    sh.addColorStop(0.32, 'rgba(0,0,12,0)')
+    sh.addColorStop(1, 'rgba(2,4,14,.68)')
     ctx.beginPath()
     ctx.arc(cx, cy, rpx, 0, 6.283)
     ctx.fillStyle = sh
     ctx.fill()
+    if (body.id === 'earth' && rpx >= 14) {
+      ctx.save()
+      ctx.beginPath()
+      ctx.arc(cx, cy, rpx, 0, 6.283)
+      ctx.clip()
+      for (let i = 0; i < 16; i += 1) {
+        const a = hash(i * 11.3 + 2) * 6.283
+        const d = (0.25 + 0.55 * hash(i * 3.9)) * rpx
+        const pxCity = cx + Math.cos(a) * d
+        const pyCity = cy + Math.sin(a) * d
+        // Yalnızca ışığa ters (gece) yarı kürede parlasın
+        if ((pxCity - cx) * light.x + (pyCity - cy) * light.y < -rpx * 0.15) {
+          ctx.fillStyle = 'rgba(255,215,120,.65)'
+          ctx.beginPath()
+          ctx.arc(pxCity, pyCity, Math.max(0.8, rpx * 0.018), 0, 6.283)
+          ctx.fill()
+        }
+      }
+      ctx.restore()
+    }
   }
+
+  // Satürn ön halkaları
   if (body.id === 'saturn' && rpx >= 4) {
     ctx.save()
     ctx.translate(cx, cy)
     ctx.rotate(-0.35 - rot * 0.1)
-    ctx.strokeStyle = 'rgba(245,222,175,.68)'
-    ctx.lineWidth = Math.max(1.2, rpx * 0.28)
-    ctx.beginPath()
-    ctx.ellipse(0, 0, rpx * 2.1, rpx * 0.42, 0, 0, Math.PI)
-    ctx.stroke()
+    for (const ring of [
+      { mult: 2.32, lw: 0.22, col: 'rgba(242,216,170,.72)' },
+      { mult: 1.88, lw: 0.28, col: 'rgba(252,235,195,.84)' },
+      { mult: 1.48, lw: 0.14, col: 'rgba(185,158,118,.48)' },
+    ]) {
+      ctx.strokeStyle = ring.col
+      ctx.lineWidth = Math.max(1, rpx * ring.lw)
+      ctx.beginPath()
+      ctx.ellipse(0, 0, rpx * ring.mult, rpx * ring.mult * 0.21, 0, 0, Math.PI)
+      ctx.stroke()
+    }
     ctx.restore()
   }
 }
@@ -235,7 +445,7 @@ function withSurfaceFrame(ctx: Ctx, cam: Cam, body: BodyDef, theta: number, fn: 
   ctx.restore()
 }
 
-function drawPad(ctx: Ctx) {
+function drawPad(ctx: Ctx, clock = 0) {
   ctx.fillStyle = '#5b6470'
   ctx.fillRect(-22, -1.2, 44, 3)
   ctx.fillStyle = '#8b96a3'
@@ -262,10 +472,17 @@ function drawPad(ctx: Ctx) {
   ctx.fillStyle = '#6d7785'
   ctx.fillRect(-10, -27, 7, 0.9)
   ctx.fillRect(-10, -15, 7, 0.9)
-  ctx.fillStyle = '#ff5d5d'
+  const beaconOn = Math.sin(clock * 4.5) > -0.2
+  ctx.fillStyle = beaconOn ? '#ff5d5d' : '#7f1d1d'
   ctx.beginPath()
   ctx.arc(-12, -37, 0.7, 0, 6.283)
   ctx.fill()
+  if (beaconOn) {
+    ctx.fillStyle = 'rgba(255,93,93,.22)'
+    ctx.beginPath()
+    ctx.arc(-12, -37, 2.2, 0, 6.283)
+    ctx.fill()
+  }
 }
 
 const spriteCache = new Map<string, HTMLImageElement>()
@@ -287,6 +504,7 @@ function drawBaseSites(
   opts: { compact?: boolean; siteHp?: (number | null)[]; clock?: number } = {},
 ) {
   ctx.imageSmoothingEnabled = false
+  const t = opts.clock ?? 0
   sites.forEach((id, i) => {
     const def = id ? MODULE_BY_ID[id] : null
     const img = def ? sprite(def.sprite) : null
@@ -295,6 +513,42 @@ function drawBaseSites(
     const h = (w * img.naturalHeight) / img.naturalWidth
     const x = colonySlotOffset(i, !!opts.compact)
     ctx.drawImage(img, x - w / 2, -h + 0.3, w, h)
+
+    // Modüle özgü canlı yüzey animasyonları
+    if (opts.clock !== undefined) {
+      if (id === 'launch-pad') {
+        const blink = Math.sin(t * 5) > 0
+        ctx.fillStyle = blink ? '#f87171' : '#7f1d1d'
+        ctx.beginPath()
+        ctx.arc(x - w * 0.25, -h * 0.92, 0.85, 0, Math.PI * 2)
+        ctx.fill()
+        // Kriojenik yakıt buharı bulutları
+        const steam = ((t * 1.4 + i) % 1) * 5.5
+        ctx.fillStyle = `rgba(215,245,255,${(0.42 * (1 - steam / 5.5)).toFixed(2)})`
+        ctx.beginPath()
+        ctx.arc(x + Math.sin(t * 2.5 + i) * 1.2, -1 - steam, 1.3 + steam * 0.22, 0, Math.PI * 2)
+        ctx.fill()
+      } else if (id === 'telemetry') {
+        const wave = ((t * 1.8 + i) % 1) * 6
+        ctx.strokeStyle = `rgba(56,217,232,${(0.55 * (1 - wave / 6)).toFixed(2)})`
+        ctx.lineWidth = 0.65
+        ctx.beginPath()
+        ctx.arc(x, -h * 0.72, 2 + wave, -Math.PI * 0.8, -Math.PI * 0.2)
+        ctx.stroke()
+      } else if (id === 'drill') {
+        const puff = ((t * 4.5 + i) % 1) * 3.5
+        ctx.fillStyle = `rgba(214,190,150,${(0.55 * (1 - puff / 3.5)).toFixed(2)})`
+        ctx.beginPath()
+        ctx.arc(x + Math.sin(t * 11) * 1.4, -puff, 0.95, 0, Math.PI * 2)
+        ctx.fill()
+      } else if (id === 'rtg-reactor' || id === 'colony-shield') {
+        ctx.fillStyle = id === 'colony-shield' ? `rgba(56,217,232,${(0.22 + 0.16 * Math.sin(t * 4)).toFixed(2)})` : `rgba(74,222,128,${(0.22 + 0.16 * Math.sin(t * 3.5)).toFixed(2)})`
+        ctx.beginPath()
+        ctx.arc(x, -h * 0.45, w * 0.36, 0, Math.PI * 2)
+        ctx.fill()
+      }
+    }
+
     const maxHp = def.hp ?? 320
     const curHp = opts.siteHp?.[i] ?? maxHp
     if (curHp < maxHp) {
@@ -582,6 +836,87 @@ function drawBooms(ctx: Ctx, sim: Sim, cam: Cam, bodyId: BodyId) {
       ctx.restore()
       continue
     }
+    if (f.kind === 'shockwave') {
+      const life = 0.75
+      if (age < 0 || age > life) continue
+      const t = age / life
+      const p = toScreen(cam, f)
+      const R = Math.max(18, f.size * cam.z) * (0.25 + 1.9 * (1 - (1 - t) ** 2.4))
+      ctx.save()
+      ctx.globalCompositeOperation = 'lighter'
+      ctx.globalAlpha = Math.max(0, (1 - t) * 0.9)
+      ctx.strokeStyle = f.color ?? '#fde68a'
+      ctx.lineWidth = Math.max(2, (1 - t) * 6)
+      ctx.beginPath()
+      ctx.arc(p.x, p.y, R, 0, 6.283)
+      ctx.stroke()
+      ctx.globalAlpha = Math.max(0, (1 - t) * 0.55)
+      ctx.strokeStyle = '#ffffff'
+      ctx.lineWidth = Math.max(1, (1 - t) * 2.5)
+      ctx.beginPath()
+      ctx.arc(p.x, p.y, R * 0.72, 0, 6.283)
+      ctx.stroke()
+      ctx.restore()
+      continue
+    }
+    if (f.kind === 'debrisBurst') {
+      const life = 2.4
+      if (age < 0 || age > life) continue
+      const t = age / life
+      const p = toScreen(cam, f)
+      const spreadPx = Math.max(20, f.size * cam.z * 2.8)
+      ctx.save()
+      ctx.translate(p.x, p.y)
+      for (let i = 0; i < 16; i += 1) {
+        const a = hash(f.born * 19 + i * 2.1) * 6.283
+        const spd = 0.45 + 0.75 * hash(i * 4.7 + f.born)
+        const dist = spreadPx * spd * (1 - (1 - t) ** 1.8)
+        const sx = Math.cos(a) * dist
+        const sy = Math.sin(a) * dist
+        const ember = 1 - t
+        // Kızgın kor izi
+        ctx.strokeStyle = `rgba(255,145,55,${(ember * 0.65).toFixed(2)})`
+        ctx.lineWidth = 1.6
+        ctx.beginPath()
+        ctx.moveTo(sx - Math.cos(a) * 7 * ember, sy - Math.sin(a) * 7 * ember)
+        ctx.lineTo(sx, sy)
+        ctx.stroke()
+        // Dönen metal gövde / kiriş parçası
+        ctx.save()
+        ctx.translate(sx, sy)
+        ctx.rotate(a + age * (4 + (i % 3) * 3))
+        ctx.globalAlpha = Math.max(0, 1 - t * 0.85)
+        ctx.fillStyle = i % 3 === 0 ? '#64748b' : i % 3 === 1 ? '#f59e0b' : '#cbd5e1'
+        const pw = 3 + (i % 4) * 1.4
+        const ph = 1.8 + (i % 2) * 1.2
+        ctx.fillRect(-pw / 2, -ph / 2, pw, ph)
+        ctx.restore()
+      }
+      ctx.restore()
+      continue
+    }
+    if (f.kind === 'smokePlume') {
+      const life = 3.2
+      if (age < 0 || age > life) continue
+      const t = age / life
+      const p = toScreen(cam, f)
+      const R = Math.max(12, f.size * cam.z)
+      ctx.save()
+      ctx.translate(p.x, p.y)
+      for (let i = 0; i < 6; i += 1) {
+        const a = hash(f.born * 11 + i * 3.1) * 6.283
+        const ox = Math.cos(a) * R * 0.6 * t
+        const oy = Math.sin(a) * R * 0.45 * t - R * 0.8 * t
+        const rad = R * (0.28 + 0.55 * t) * (0.7 + 0.3 * hash(i + f.born))
+        ctx.globalAlpha = Math.max(0, (1 - t) * 0.5)
+        ctx.fillStyle = i < 2 && t < 0.4 ? '#7c2d12' : '#2e323c'
+        ctx.beginPath()
+        ctx.arc(ox, oy, rad, 0, 6.283)
+        ctx.fill()
+      }
+      ctx.restore()
+      continue
+    }
     if (f.kind !== 'boom') continue
     const life = 1.25
     if (age < 0 || age > life) continue
@@ -661,70 +996,167 @@ function drawTerrain(ctx: Ctx, cam: Cam, body: BodyDef, focusTheta: number, sim:
     ctx.fill()
   }
   const c = body.colors
+  const icyBody = body.id === 'ganymede' || body.id === 'ceres'
+  const mistyBody = body.id === 'venus' || body.id === 'titan'
   // uzak sırt (derinlik hissi)
   if (cam.z > 0.15) {
-    layer((t) => terrainHeight(body.id, t + 0.00041) * 0.85 + 16 + 9 * Math.sin(t * 5200 + 1.3), body.id === 'earth' ? '#2f6b4f' : mix(c.dark, c.base, 0.45))
-    layer((t) => terrainHeight(body.id, t - 0.00023) * 0.95 + 7 + 4 * Math.sin(t * 8300), body.id === 'earth' ? '#3f8a4f' : mix(c.dark, c.base, 0.75))
+    const ridgeFar =
+      body.id === 'earth' ? '#2c6564'
+      : body.id === 'mars' ? mix(c.dark, '#7a331c', 0.55)
+      : icyBody ? mix(c.dark, '#4a6b88', 0.45)
+      : mistyBody ? mix(c.dark, '#8a6830', 0.4)
+      : mix(c.dark, c.base, 0.45)
+    const ridgeNear =
+      body.id === 'earth' ? '#3b8452'
+      : body.id === 'mars' ? mix(c.base, '#9e4422', 0.5)
+      : icyBody ? mix(c.base, '#789bb8', 0.4)
+      : mix(c.dark, c.base, 0.75)
+    layer((t) => terrainHeight(body.id, t + 0.00041) * 0.85 + 18 + 10 * Math.sin(t * 5200 + 1.3), ridgeFar)
+    layer((t) => terrainHeight(body.id, t - 0.00023) * 0.95 + 8 + 4.5 * Math.sin(t * 8300), ridgeNear)
   }
   const top = pt(focusTheta, body.radius + terrainHeight(body.id, focusTheta))
   const low = pt(focusTheta, body.radius + terrainHeight(body.id, focusTheta) - Math.min(depth, 260 / Math.min(1, cam.z) ))
   const g = ctx.createLinearGradient(top.x, top.y, low.x, low.y)
   if (body.id === 'earth') {
-    g.addColorStop(0, '#6fbf5a')
-    g.addColorStop(0.04, '#3f8f3c')
-    g.addColorStop(0.12, '#6b5a3a')
-    g.addColorStop(1, '#2a2318')
+    g.addColorStop(0, '#72c45d')
+    g.addColorStop(0.035, '#3f8f3c')
+    g.addColorStop(0.11, '#735f3c')
+    g.addColorStop(0.28, '#4a3d2b')
+    g.addColorStop(1, '#221c15')
   } else {
     g.addColorStop(0, c.light)
     g.addColorStop(0.08, c.base)
-    g.addColorStop(1, mix(c.dark, '#000000', 0.5))
+    g.addColorStop(0.32, c.dark)
+    g.addColorStop(1, mix(c.dark, '#000000', 0.55))
   }
   layer((t) => terrainHeight(body.id, t), g, body.id === 'earth' ? '#a6e38a' : mix(c.light, '#ffffff', 0.5))
 
+  // Jeolojik tabaka damarları (kaya / buz katmanları)
+  if (cam.z > 0.35) {
+    const strataColor =
+      body.id === 'earth' ? 'rgba(42,30,18,.42)'
+      : icyBody ? 'rgba(205,235,255,.26)'
+      : 'rgba(0,0,0,.28)'
+    for (let band = 0; band < 2; band += 1) {
+      const baseDepth = 8 + band * 15
+      ctx.save()
+      ctx.beginPath()
+      for (let i = 0; i <= N; i += 4) {
+        const t = focusTheta + ((i / N) * 2 - 1) * half
+        const wave = Math.sin(t * 4600 + band * 2.1) * 1.6 + Math.cos(t * 9800 - band) * 0.7
+        const p = pt(t, body.radius + terrainHeight(body.id, t) - baseDepth + wave)
+        if (i === 0) ctx.moveTo(p.x, p.y)
+        else ctx.lineTo(p.x, p.y)
+      }
+      ctx.strokeStyle = strataColor
+      ctx.lineWidth = Math.max(1, Math.min(3.2, cam.z * 0.55))
+      ctx.stroke()
+      ctx.restore()
+    }
+  }
+
   if (cam.z > 0.45) {
-    // yüzey detayları: krater, kaya, ağaç
-    const spacing = 23
+    // yüzey detayları: krater, kaya, ağaç, buz kristali, mesa
+    const spacing = 22
     const dTheta = spacing / body.radius
     const span = Math.min(half, (diag / cam.z / body.radius) * 0.6)
     const k0 = Math.floor((focusTheta - span) / dTheta)
     const k1 = Math.ceil((focusTheta + span) / dTheta)
     for (let k = k0; k <= k1; k += 1) {
       const r1 = hash(k * 1.37 + body.radius)
+      const r2 = hash(k * 2.71 + body.radius * 0.3)
       const theta = (k + hash(k) * 0.6) * dTheta
       const padMargin = sim.gs.mp ? 700 : 90
       if (body.id === 'earth' && Math.abs(wrapPi(theta - PAD_ANGLE)) * body.radius < padMargin) continue
-      if (r1 > 0.62) continue
+      if (r1 > 0.68) continue
       withSurfaceFrame(ctx, cam, body, theta, () => {
-        const s = 0.6 + hash(k * 3.1) * 1.4
+        const s = 0.65 + hash(k * 3.1) * 1.45
         if (body.id === 'earth') {
-          if (r1 < 0.4) {
+          if (r1 < 0.36) {
             ctx.fillStyle = '#5a4630'
             ctx.fillRect(-0.4 * s, -3 * s, 0.8 * s, 3 * s)
             for (let j = 0; j < 3; j += 1) {
               ctx.beginPath()
               ctx.moveTo(-3.2 * s + j * 0.5 * s, -2.5 * s - j * 2.6 * s)
-              ctx.lineTo(0, -8 * s - j * 2.4 * s)
+              ctx.lineTo(0, -8.2 * s - j * 2.4 * s)
               ctx.lineTo(3.2 * s - j * 0.5 * s, -2.5 * s - j * 2.6 * s)
               ctx.closePath()
               ctx.fillStyle = j % 2 ? '#2f7a3b' : '#256b33'
               ctx.fill()
             }
-          } else {
+          } else if (r1 < 0.55) {
             ctx.fillStyle = '#4c9a4a'
             ctx.beginPath()
             ctx.ellipse(0, -0.8 * s, 2.6 * s, 1.5 * s, 0, 0, 6.283)
             ctx.fill()
+            if (r2 > 0.65) {
+              ctx.fillStyle = r2 > 0.82 ? '#fde047' : '#f472b6'
+              ctx.fillRect(-1.1 * s, -1.7 * s, 0.45 * s, 0.45 * s)
+              ctx.fillRect(0.6 * s, -1.4 * s, 0.45 * s, 0.45 * s)
+            }
+          } else {
+            ctx.fillStyle = '#6c685e'
+            ctx.beginPath()
+            ctx.moveTo(-1.3 * s, 0.2)
+            ctx.lineTo(-0.7 * s, -1.1 * s)
+            ctx.lineTo(0.8 * s, -0.9 * s)
+            ctx.lineTo(1.5 * s, 0.2)
+            ctx.closePath()
+            ctx.fill()
           }
+        } else if (icyBody && r1 > 0.34) {
+          // Buz ve parlak tuz kristalleri (Ganymede / Ceres)
+          for (let j = -1; j <= 1; j += 1) {
+            const h = (1.6 + (j === 0 ? 1.5 : 0.7)) * s
+            ctx.beginPath()
+            ctx.moveTo(j * 0.75 * s - 0.55 * s, 0.2)
+            ctx.lineTo(j * 0.85 * s, -h)
+            ctx.lineTo(j * 0.75 * s + 0.55 * s, 0.2)
+            ctx.closePath()
+            ctx.fillStyle = body.id === 'ceres'
+              ? (j === 0 ? 'rgba(235,245,255,.78)' : 'rgba(170,190,210,.65)')
+              : (j === 0 ? 'rgba(165,220,255,.75)' : 'rgba(105,165,215,.65)')
+            ctx.fill()
+          }
+        } else if (mistyBody && r1 > 0.44) {
+          // Kükürt / metan duman bacaları (Venüs / Titan)
+          ctx.fillStyle = mix(c.dark, '#201810', 0.35)
+          ctx.beginPath()
+          ctx.moveTo(-1.8 * s, 0.2)
+          ctx.lineTo(-0.65 * s, -1.7 * s)
+          ctx.lineTo(0.65 * s, -1.7 * s)
+          ctx.lineTo(1.9 * s, 0.2)
+          ctx.closePath()
+          ctx.fill()
+          const puff = (clock * 0.7 + r2 * 6) % 1
+          ctx.fillStyle = body.id === 'venus'
+            ? `rgba(255,215,120,${(0.32 * (1 - puff)).toFixed(2)})`
+            : `rgba(245,175,90,${(0.28 * (1 - puff)).toFixed(2)})`
+          ctx.beginPath()
+          ctx.arc(Math.sin(clock * 1.4 + k) * 0.5 * s, -2.0 * s - puff * 3.8 * s, (0.7 + puff * 1.1) * s, 0, 6.283)
+          ctx.fill()
+        } else if (body.id === 'mars' && r1 >= 0.3 && r1 < 0.48) {
+          // Mars kızıl kaya mesası (katmanlı tepecik)
+          ctx.fillStyle = mix(c.dark, '#6e2c14', 0.45)
+          ctx.beginPath()
+          ctx.moveTo(-2.7 * s, 0.2)
+          ctx.lineTo(-1.7 * s, -1.9 * s)
+          ctx.lineTo(1.5 * s, -1.9 * s)
+          ctx.lineTo(2.6 * s, 0.2)
+          ctx.closePath()
+          ctx.fill()
+          ctx.fillStyle = mix(c.light, '#e58a54', 0.5)
+          ctx.fillRect(-1.7 * s, -1.9 * s, 3.2 * s, 0.45 * s)
         } else if (r1 < 0.3) {
           const rx = 4 + hash(k * 5.3) * 11
           ctx.beginPath()
           ctx.ellipse(0, 0.3, rx, rx * 0.2, 0, 0, 6.283)
-          ctx.fillStyle = mix(c.dark, '#000000', 0.25)
+          ctx.fillStyle = mix(c.dark, '#000000', 0.3)
           ctx.fill()
           ctx.beginPath()
           ctx.ellipse(0, 0.3, rx, rx * 0.2, 0, Math.PI, 6.283)
-          ctx.strokeStyle = mix(c.light, '#ffffff', 0.4)
-          ctx.lineWidth = 0.35
+          ctx.strokeStyle = mix(c.light, '#ffffff', 0.45)
+          ctx.lineWidth = 0.42
           ctx.stroke()
         } else {
           ctx.beginPath()
@@ -749,7 +1181,7 @@ function drawTerrain(ctx: Ctx, cam: Cam, body: BodyDef, focusTheta: number, sim:
       for (const p of Object.values(sim.gs.mp.players)) {
         const thetaPad = padAngleForSlot(p.slot, mode)
         withSurfaceFrame(ctx, cam, body, thetaPad, () => {
-          drawPad(ctx)
+          drawPad(ctx, clock)
           ctx.fillStyle = p.color
           ctx.fillRect(-10, -2, 20, 2)
           if (cam.z > 0.45) {
@@ -761,7 +1193,7 @@ function drawTerrain(ctx: Ctx, cam: Cam, body: BodyDef, focusTheta: number, sim:
       }
     } else {
       withSurfaceFrame(ctx, cam, body, PAD_ANGLE, () => {
-        drawPad(ctx)
+        drawPad(ctx, clock)
       })
     }
     if (!isWarfareMode(sim.gs)) {
@@ -777,11 +1209,12 @@ function drawTerrain(ctx: Ctx, cam: Cam, body: BodyDef, focusTheta: number, sim:
       })
     }
   }
+  const fluxHere = solarFlux(len(bodyAbsState(body.id, sim.gs.time).r))
   if (sim.gs.mp && isWarfareMode(sim.gs) && cam.z > 0.14) {
     for (const col of allColoniesOnBody(sim.gs, body.id)) {
       const owner = sim.gs.mp.players[col.ownerId]
-      const colAngle = col.base.siteAngle ?? (col.isEarth && owner ? padAngleForSlot(owner.slot, 'orbital-warfare') : PAD_ANGLE)
-      const cx = colonySlotOffset(3.5, true)
+      const colAngle = col.base.siteAngle ?? (col.isEarth && owner ? padAngleForSlot(owner.slot, 'orbital-warfare') : quadrantCenterAngle(col.quadrant))
+      const cx = colonySlotOffset((COLONY_SLOTS - 1) / 2, true)
       withSurfaceFrame(ctx, cam, body, colAngle, () => {
         if (col.base.destroyed) {
           ctx.fillStyle = 'rgba(45,48,56,.92)'
@@ -797,6 +1230,9 @@ function drawTerrain(ctx: Ctx, cam: Cam, body: BodyDef, focusTheta: number, sim:
           }
           return
         }
+        if (!(col.isEarth && col.quadrant === 0) && hasActiveLaunchPad(col.base, fluxHere)) {
+          drawPad(ctx, clock)
+        }
         drawBaseSites(ctx, col.base.sites ?? [], { compact: true, siteHp: col.base.siteHp, clock })
         const shCap = colonyShieldCap(col.base, solarFlux(len(bodyAbsState(body.id, sim.gs.time).r)))
         if ((col.base.shield ?? 0) > 0 && shCap > 0) {
@@ -806,7 +1242,7 @@ function drawTerrain(ctx: Ctx, cam: Cam, body: BodyDef, focusTheta: number, sim:
           ctx.fillStyle = `rgba(56,217,232,${(0.06 + 0.08 * shFrac).toFixed(2)})`
           ctx.lineWidth = 1.2
           ctx.beginPath()
-          ctx.arc(cx, 0, 52, Math.PI, 0)
+          ctx.arc(cx, 0, 72, Math.PI, 0)
           ctx.fill()
           ctx.stroke()
           ctx.restore()
@@ -822,15 +1258,40 @@ function drawTerrain(ctx: Ctx, cam: Cam, body: BodyDef, focusTheta: number, sim:
           ctx.fillStyle = owner.color
           ctx.font = 'bold 8px "DM Mono", monospace'
           ctx.textAlign = 'center'
-          ctx.fillText(`🏰 ${owner.username}`, cx, col.base.shield ? -56 : -22)
+          const qTxt = col.quadrant > 0 ? ` · Q${col.quadrant + 1}` : ''
+          ctx.fillText(`🏰 ${owner.username}${qTxt}`, cx, col.base.shield ? -76 : -22)
         }
       })
     }
-  } else {
-    const earthBase = sim.gs.mp ? sim.gs.mp.players[sim.gs.ownerId ?? '']?.earthBase : sim.gs.bases[body.id]
-    const base = body.id === 'earth' ? earthBase : sim.gs.bases[body.id]
-    const baseAngle = body.id === 'earth' && sim.gs.mp ? playerPadAngle(sim.gs, sim.gs.ownerId) : base?.siteAngle ?? PAD_ANGLE
-    if (base && cam.z > 0.2) withSurfaceFrame(ctx, cam, body, baseAngle, () => drawBaseSites(ctx, base.sites ?? [], { clock }))
+  } else if (cam.z > 0.16) {
+    const actorId = sim.gs.ownerId ?? 'local'
+    for (const q of QUADRANTS) {
+      const base = getActorQuadrantBase(sim.gs, body.id, actorId, q)
+      if (!base) continue
+      const baseAngle = body.id === 'earth' && q === 0 && sim.gs.mp ? playerPadAngle(sim.gs, actorId) : base.siteAngle ?? quadrantCenterAngle(q)
+      withSurfaceFrame(ctx, cam, body, baseAngle, () => {
+        if (!(body.id === 'earth' && q === 0) && hasActiveLaunchPad(base, fluxHere)) {
+          drawPad(ctx, clock)
+        }
+        drawBaseSites(ctx, base.sites ?? [], { clock })
+        if (cam.z > 0.38) {
+          ctx.fillStyle = 'rgba(200,235,255,.8)'
+          ctx.font = 'bold 8px "DM Mono", monospace'
+          ctx.textAlign = 'center'
+          ctx.fillText(QUADRANT_SHORT[q], 0, -24)
+        }
+      })
+    }
+    if (sim.gs.mp && body.id === 'earth') {
+      for (const p of Object.values(sim.gs.mp.players)) {
+        if (p.id === actorId) continue
+        for (const item of getPlayerQuadrantColonies(p, 'earth')) {
+          if (item.quadrant === 0) continue
+          const ba = item.base.siteAngle ?? quadrantCenterAngle(item.quadrant)
+          withSurfaceFrame(ctx, cam, body, ba, () => drawBaseSites(ctx, item.base.sites ?? [], { compact: true, clock }))
+        }
+      }
+    }
   }
 
   // Çok oyunculu bayrak direği: ele geçirilmiş veya fethedilmekte olan gezegen yüzeyinde dalgalanır
@@ -1240,6 +1701,35 @@ function drawVesselAt(ctx: Ctx, sim: Sim, v: Vessel, p: Vec, rot: number, cell: 
   }
   const aimDelta = v.aimAngle !== undefined ? wrapPi(v.aimAngle - v.angle) : 0
   drawVesselParts(ctx, v.parts, cell, { firing: sim.firing.get(v.id), time: clock, vacuum: vac, rcsTx, aimDelta })
+  // Yoğun atmosferde ses hızı (Mach) üstünde burunda şok yoğuşma konisi
+  if (!v.landed && !v.drone && !v.cruise && vac < 0.72) {
+    const spd = len(v.vel)
+    if (spd > 280) {
+      const st = vesselStats(v.parts)
+      const noseY = (st.minY - st.comY) * cell
+      const halfW = Math.max(1.2, (st.maxX - st.minX) * 0.75) * cell
+      const alpha = Math.min(0.45, ((spd - 280) / 450) * (1 - vac) * 0.55)
+      ctx.save()
+      ctx.strokeStyle = `rgba(225,244,255,${alpha.toFixed(2)})`
+      ctx.lineWidth = Math.max(1.4, cell * 0.25)
+      ctx.beginPath()
+      ctx.moveTo(-halfW * 1.4, noseY + halfW * 1.9)
+      ctx.quadraticCurveTo(0, noseY - halfW * 0.4, halfW * 1.4, noseY + halfW * 1.9)
+      ctx.stroke()
+      ctx.restore()
+    }
+  }
+  if (v.drone?.warn) {
+    const pulse = 0.55 + 0.45 * Math.sin(clock * 14)
+    ctx.save()
+    ctx.strokeStyle = `rgba(248,113,113,${pulse.toFixed(2)})`
+    ctx.lineWidth = Math.max(1.8, cell * 0.22)
+    ctx.setLineDash([4, 3])
+    ctx.beginPath()
+    ctx.arc(0, 0, Math.max(cell * 2.2, 14), 0, Math.PI * 2)
+    ctx.stroke()
+    ctx.restore()
+  }
   const spawnProtected = !!(v.spawnShieldUntil && clock < v.spawnShieldUntil)
   if (spawnProtected || (v.shield ?? 0) > 0) {
     const st = vesselStats(v.parts)
@@ -1348,6 +1838,37 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
     ctx.fillStyle = g
     ctx.fillRect(0, 0, view.w, view.h)
     ctx.globalAlpha = 1
+    // Rüzgarda süzülen atmosferik bulut katmanları (Dünya/Venüs/Mars/Titan)
+    if (sky > 0.16 && cam.z > 0.02) {
+      ctx.save()
+      ctx.fillStyle = body.id === 'mars' ? 'rgba(235,165,120,.14)' : body.id === 'titan' ? 'rgba(245,190,110,.18)' : 'rgba(255,255,255,.18)'
+      for (let i = 0; i < 9; i += 1) {
+        const wCloud = 90 + hash(i * 13) * 140
+        const spd = 8 + hash(i * 5) * 14
+        const x = ((hash(i * 7) * (view.w + 320) + view.clock * spd) % (view.w + 320)) - 160
+        const y = view.h * (0.08 + 0.56 * hash(i * 19))
+        ctx.beginPath()
+        ctx.ellipse(x, y, wCloud * 0.5, 11 + hash(i * 3) * 14, 0, 0, 6.283)
+        ctx.fill()
+      }
+      ctx.restore()
+    }
+  }
+  // Yakın büyük patlamalarda kameraya kısa sarsıntı hissi
+  let shakeX = 0
+  let shakeY = 0
+  for (const f of sim.fx ?? []) {
+    if (f.bodyId !== bodyId || f.size < 10) continue
+    const age = (sim.clock ?? view.clock) - f.born
+    if (age >= 0 && age < 0.48) {
+      const decay = (1 - age / 0.48) ** 2
+      shakeX += Math.sin(view.clock * 73 + f.born) * Math.min(9, f.size * 0.42) * decay
+      shakeY += Math.cos(view.clock * 89 + f.born) * Math.min(9, f.size * 0.42) * decay
+    }
+  }
+  if (shakeX !== 0 || shakeY !== 0) {
+    ctx.save()
+    ctx.translate(shakeX, shakeY)
   }
 
   drawSkyEggs(ctx, sim, view, v)
@@ -1370,7 +1891,7 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
       return { x: d.x / l, y: d.y / l }
     })()
     if (rpx <= 5000) {
-      drawSphere(ctx, b, p.x, p.y, rpx, sunDir, cam.rot, true)
+      drawSphere(ctx, b, p.x, p.y, rpx, sunDir, cam.rot, true, view.clock)
     } else if (b.id === bodyId) {
       drawTerrain(ctx, cam, b, theta, sim, view.clock)
     }
@@ -1393,6 +1914,24 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
 
   // araçlar
   const vac = 1 - Math.min(1, rho / 1.2)
+  for (const o of gs.vessels) {
+    if (o.debris || o.bodyId !== bodyId || o.autopilot !== 'follow' || !o.followId) continue
+    if (gs.mp && o.ownerId !== gs.ownerId) continue
+    const leader = gs.vessels.find((l) => l.id === o.followId && l.bodyId === bodyId)
+    if (!leader) continue
+    const p1 = toScreen(cam, getVisualPos(o))
+    const p2 = toScreen(cam, getVisualPos(leader))
+    if (Math.hypot(p2.x - p1.x, p2.y - p1.y) < 12) continue
+    ctx.save()
+    ctx.strokeStyle = 'rgba(56, 217, 232, 0.34)'
+    ctx.lineWidth = 1.4
+    ctx.setLineDash([5, 5])
+    ctx.beginPath()
+    ctx.moveTo(p1.x, p1.y)
+    ctx.lineTo(p2.x, p2.y)
+    ctx.stroke()
+    ctx.restore()
+  }
   for (const o of gs.vessels) {
     if (o.bodyId !== bodyId) continue
     const oPos = getVisualPos(o)
@@ -1605,6 +2144,7 @@ export function renderFlight(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): 
     ctx.stroke()
     ctx.restore()
   }
+  if (shakeX !== 0 || shakeY !== 0) ctx.restore()
   return frame
 }
 
@@ -1808,7 +2348,36 @@ export function renderMap(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): Map
       const l = Math.hypot(a.x, a.y) || 1
       return { x: -a.x / l, y: a.y / l }
     })()
-    drawSphere(ctx, b, p.x, p.y, rpx, sd, 0, b.radius * z > 9)
+    drawSphere(ctx, b, p.x, p.y, rpx, sd, 0, b.radius * z > 9, view.clock)
+    // 4 çeyrek halkası (yakınlaşmış haritada)
+    if (b.landable && rpx >= 14 && !isLootMode(gs)) {
+      const flux = solarFlux(len(abs[b.id]!))
+      for (const q of QUADRANTS) {
+        let qColor: string | null = null
+        if (gs.mp && isWarfareMode(gs)) {
+          const cols = allColoniesOnBody(gs, b.id).filter((c) => !c.base.destroyed && c.quadrant === q)
+          if (cols.length === 1) qColor = gs.mp.players[cols[0]!.ownerId]?.color ?? '#38d9e8'
+          else if (cols.length > 1) qColor = '#fbbf24'
+        } else if (gs.mp) {
+          const qCap = gs.mp.quadrantCaptures?.[b.id]?.[q] ?? (q === 0 ? gs.mp.captures[b.id] : undefined)
+          if (qCap?.ownerId) qColor = gs.mp.players[qCap.ownerId]?.color ?? '#38d9e8'
+        } else {
+          const qb = getActorQuadrantBase(gs, b.id, gs.ownerId ?? 'local', q)
+          if (qb && (isQuadrantColonized(qb, flux) || (b.id === 'earth' && q === 0))) qColor = '#4ade80'
+        }
+        if (qColor) {
+          const ca = quadrantCenterAngle(q)
+          // Canvas açısı +Y aşağıdır, dolayısıyla canvas açısı = -dünya_açısı
+          ctx.save()
+          ctx.strokeStyle = qColor
+          ctx.lineWidth = 2.6
+          ctx.beginPath()
+          ctx.arc(p.x, p.y, rpx + 3, -ca - Math.PI / 4 + 0.12, -ca + Math.PI / 4 - 0.12)
+          ctx.stroke()
+          ctx.restore()
+        }
+      }
+    }
     const cap = gs.mp?.captures[b.id]
     if (gs.mp && isWarfareMode(gs)) {
       const cols = allColoniesOnBody(gs, b.id).filter((c) => !c.base.destroyed)
@@ -1817,6 +2386,7 @@ export function renderMap(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): Map
     } else if (gs.mp && cap) {
       const owner = cap.ownerId ? gs.mp.players[cap.ownerId] : null
       const capturer = cap.capturerId ? gs.mp.players[cap.capturerId] : null
+      const qHeld = QUADRANTS.filter((q) => (gs.mp?.quadrantCaptures?.[b.id]?.[q] ?? (q === 0 ? cap : undefined))?.ownerId).length
       const haloR = rpx + 5
       if (owner || capturer) {
         ctx.save()
@@ -1833,7 +2403,7 @@ export function renderMap(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): Map
         ctx.restore()
       }
       ctx.fillStyle = owner?.color ?? 'rgba(255,255,255,.65)'
-      ctx.fillText(b.name, p.x, p.y + rpx + 16)
+      ctx.fillText(qHeld > 0 ? `${b.name} (${qHeld}/4)` : b.name, p.x, p.y + rpx + 16)
       if (cap.phase === 'contested') {
         ctx.fillStyle = '#fb7185'
         ctx.font = 'bold 10px "DM Mono", monospace'
@@ -1855,10 +2425,24 @@ export function renderMap(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): Map
         ctx.fillText(`📍 ${capturer.username}`, p.x, p.y + rpx + 29)
         ctx.font = '12px "DM Mono", monospace'
       }
-    } else if (!gs.mp && b.id !== 'earth' && gs.bases[b.id]) {
-      const col = isBodyColonized(gs.bases[b.id], solarFlux(len(abs[b.id]!)))
-      ctx.fillStyle = col ? '#4ade80' : 'rgba(255,255,255,.78)'
-      ctx.fillText(col ? `${b.name} 🛰️` : `${b.name} 📍`, p.x, p.y + rpx + 16)
+    } else if (!gs.mp && b.landable) {
+      const flux = solarFlux(len(abs[b.id]!))
+      let anyBase = false
+      let colCount = 0
+      for (const q of QUADRANTS) {
+        const qb = getActorQuadrantBase(gs, b.id, gs.ownerId ?? 'local', q)
+        if (qb) {
+          anyBase = true
+          if (isQuadrantColonized(qb, flux)) colCount += 1
+        }
+      }
+      if (b.id !== 'earth' && anyBase) {
+        ctx.fillStyle = colCount > 0 ? '#4ade80' : 'rgba(255,255,255,.78)'
+        ctx.fillText(colCount > 0 ? `${b.name} 🛰️(${colCount}/4)` : `${b.name} 📍`, p.x, p.y + rpx + 16)
+      } else {
+        ctx.fillStyle = 'rgba(255,255,255,.6)'
+        ctx.fillText(b.name, p.x, p.y + rpx + 16)
+      }
     } else {
       ctx.fillStyle = 'rgba(255,255,255,.6)'
       ctx.fillText(b.name, p.x, p.y + rpx + 16)
@@ -1933,6 +2517,28 @@ export function renderMap(ctx: Ctx, sim: Sim, view: View, patches: Patch[]): Map
   })
 
   // araçlar
+  for (const o of gs.vessels) {
+    if (o.debris || o.autopilot !== 'follow' || !o.followId) continue
+    if (gs.mp && o.ownerId !== gs.ownerId) continue
+    const leader = gs.vessels.find((l) => l.id === o.followId)
+    if (!leader) continue
+    const o1 = abs[o.bodyId]!
+    const o2 = abs[leader.bodyId]!
+    const vp1 = getVisualPos(o)
+    const vp2 = getVisualPos(leader)
+    const p1 = S({ x: o1.x + vp1.x, y: o1.y + vp1.y })
+    const p2 = S({ x: o2.x + vp2.x, y: o2.y + vp2.y })
+    if (Math.hypot(p2.x - p1.x, p2.y - p1.y) < 10) continue
+    ctx.save()
+    ctx.strokeStyle = 'rgba(56, 217, 232, 0.42)'
+    ctx.lineWidth = 1.4
+    ctx.setLineDash([4, 4])
+    ctx.beginPath()
+    ctx.moveTo(p1.x, p1.y)
+    ctx.lineTo(p2.x, p2.y)
+    ctx.stroke()
+    ctx.restore()
+  }
   for (const v of gs.vessels) {
     if (v.debris) continue
     const o = abs[v.bodyId]!

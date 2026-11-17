@@ -3,10 +3,22 @@
  * Yerçekimi aracın kütlesine değil, bulunduğu gök cisminin μ'süne bağlıdır: a = −μ·r/|r|³.
  */
 import { BODIES, type BodyDef, type BodyId, solarFlux } from '../nasa/bodies'
+import { quadrantCenterAngle, quadrantOfAngle, QUADRANT_SHORT, type QuadrantId } from '../game/base'
 import { partDef } from '../game/data'
 import type { AutopilotMode, SasMode, Vessel } from '../game/types'
 import { activeEngines, arcade, ARCADE_DRAG, fuelGroups, runEngines, vesselStats, type VesselStats } from '../game/vessel'
 import { bodyAbsState, elementsFromState, len, propagate, wrapPi } from './orbit'
+
+export interface FollowLeaderRef {
+  name: string
+  pos: { x: number; y: number }
+  vel: { x: number; y: number }
+  angle: number
+  landed: boolean
+  throttle: number
+  accel: number
+  slotIndex: number
+}
 
 /** Fırlatma rampasının Dünya üzerindeki açısı (gezegenin "tepesi"). */
 export const PAD_ANGLE = Math.PI / 2
@@ -187,6 +199,7 @@ export function chargeBatteries(v: Vessel, st: VesselStats, time: number, dt: nu
     const d = partDef(p.def)
     if (d.kind === 'solar' && p.deployed) solarGen += d.ecGen ?? 0
     if (d.kind === 'rtg') rtgGen += d.ecGen ?? 0
+    if (d.kind === 'command' && d.ecGen) rtgGen += d.ecGen
   }
   if (solarGen > 0) {
     const abs = bodyAbsState(v.bodyId, time)
@@ -207,6 +220,12 @@ function maxThrustAvailable(v: Vessel, pressure: number): number {
   let total = 0
   for (const i of activeEngines(v.parts)) {
     const d = partDef(v.parts[i]!.def)
+    if (d.electricFan) {
+      if (v.ec <= 0.1) continue
+      const airBoost = pressure > 0.05 ? 1 + Math.min(0.4, pressure * 0.35) : 0.92
+      total += d.thrust! * airBoost
+      continue
+    }
     if (d.ecUse && v.ec <= 0.1) continue
     const hasFuel = v.parts.some((p, j) => groups[j] === groups[i] && partDef(p.def).kind === 'tank' && (p.fuel ?? 0) > 0)
     if (!hasFuel) continue
@@ -477,6 +496,307 @@ function autoLandGuidance(v: Vessel, st: VesselStats, body: BodyDef, s: Situatio
   return targetAngle
 }
 
+/** Gezegensel dron otopilotu: uzay sınırını aşmadan bir sonraki çeyreğe uçar ve yumuşak iner. */
+function autoDroneNextQuadGuidance(v: Vessel, st: VesselStats, body: BodyDef, s: Situation, pressure: number): number | null {
+  if (!v.drone || !body.landable) {
+    v.autopilot = 'off'
+    v.throttle = 0
+    return null
+  }
+  const curQ = quadrantOfAngle(s.theta)
+  const targetQ: QuadrantId = v.targetQuad ?? (((curQ + 1) % 4) as QuadrantId)
+  const targetTheta = quadrantCenterAngle(targetQ)
+  const dTheta = wrapPi(targetTheta - s.theta)
+  const arcDist = dTheta * s.r
+  const absArc = Math.abs(arcDist)
+  const up = { x: v.pos.x / s.r, y: v.pos.y / s.r }
+  const tan = { x: -up.y, y: up.x }
+  const vt = v.vel.x * tan.x + v.vel.y * tan.y
+  const maxF = maxThrustAvailable(v, pressure)
+  const maxAccel = maxF / Math.max(0.1, st.mass)
+  const g = body.mu / (s.r * s.r)
+  if (maxAccel <= g * 1.02) {
+    v.throttle = 0
+    v.autopilotNote = 'Fan bataryası şarj ediliyor…'
+    return s.theta
+  }
+
+  const label = QUADRANT_SHORT[targetQ]
+  if (v.landed && absArc < 220) {
+    v.throttle = 0
+    v.autopilot = 'off'
+    v.autopilotNote = undefined
+    return s.theta
+  }
+
+  const maxAlt = v.drone.maxAlt || 15_000
+  const cruiseAlt = Math.min(maxAlt * 0.45, Math.max(1600, body.radius * 0.016))
+  const brakeDecel = Math.max(1.8, maxAccel * 0.34)
+  const maxCruise = Math.min(720 + v.drone.tier * 140, Math.max(220, maxAccel * 18))
+  const wantVtMag = absArc < 45 ? 0 : Math.min(maxCruise, Math.sqrt(2 * brakeDecel * Math.max(0, absArc - 15)))
+  const wantVt = Math.sign(dTheta || 1) * wantVtMag
+
+  let wantVr: number
+  if (absArc < 900 && Math.abs(vt) < 60) {
+    // Çeyrek merkezine yaklaşıldı: yumuşakça yüzeye alçal
+    const aNet = Math.min(28, Math.max(1, maxAccel * 0.85 - g))
+    const vBrake = Math.sqrt(2 * aNet * Math.max(0, s.alt - 1.5)) * 0.76
+    wantVr = -Math.max(2.0, Math.min(44, vBrake))
+    v.autopilotNote = `${label} çeyreğine alçalıp iniyor…`
+  } else {
+    // Düzgün seyir yüksekliğini koru (uzay sınırı 0.75× altına kilitli)
+    const targetAlt = s.alt < 120 ? cruiseAlt : absArc < 4000 ? Math.max(200, cruiseAlt * (absArc / 4000)) : cruiseAlt
+    const altErr = targetAlt - Math.max(s.altSea, s.alt)
+    wantVr = Math.max(-110, Math.min(140, altErr * 0.38))
+    const kmLeft = (absArc / 1000).toFixed(1)
+    v.autopilotNote = `🧭 ${label} çeyreğine uçuluyor (${kmLeft} km)…`
+  }
+
+  // Kalkıştan hemen sonra yatmadan önce güvenle yüksel
+  if (s.alt < 55 && absArc > 250) {
+    v.throttle = 1
+    return s.theta
+  }
+
+  const aUp = Math.min(maxAccel * 0.94, Math.max(0, g + (wantVr - s.vr) / 0.7))
+  const aTanBudget = Math.sqrt(Math.max(0, maxAccel * maxAccel - aUp * aUp))
+  const aTan = Math.max(-aTanBudget, Math.min(aTanBudget, (wantVt - vt) / 0.85))
+  const aCmd = { x: up.x * aUp + tan.x * aTan, y: up.y * aUp + tan.y * aTan }
+  const mag = len(aCmd)
+  let targetAngle = mag > 1e-4 ? Math.atan2(aCmd.y, aCmd.x) : s.theta
+  if (s.alt < 38) {
+    const tilt = wrapPi(targetAngle - s.theta)
+    targetAngle = s.theta + Math.max(-0.24, Math.min(0.24, tilt))
+  }
+  const align = Math.cos(wrapPi(v.angle - targetAngle))
+  v.throttle = align > 0.35 && mag > 1e-4 ? Math.max(0, Math.min(1, mag / maxAccel)) : 0
+  return targetAngle
+}
+
+/** Filo takip rehberliği: lider roketi güvenli V-formasyonunda takip eder (gezegen içinden geçmez, dronu sınırdan korur). */
+export function autoFollowGuidance(
+  v: Vessel,
+  st: VesselStats,
+  body: BodyDef,
+  s: Situation,
+  pressure: number,
+  leader: FollowLeaderRef,
+  elapsedSub = 0,
+): number | null {
+  const row = Math.floor(leader.slotIndex / 2) + 1
+  const side = leader.slotIndex % 2 === 0 ? -1 : 1
+  const up = { x: v.pos.x / s.r, y: v.pos.y / s.r }
+  const tan = { x: -up.y, y: up.x }
+  const g = arcade.on ? 0 : body.mu / (s.r * s.r)
+  const vt = v.vel.x * tan.x + v.vel.y * tan.y
+
+  // Liderin alt-adım anındaki konum ve hızını kestir
+  let lPos = { ...leader.pos }
+  let lVel = { ...leader.vel }
+  let lThrust = { x: 0, y: 0 }
+  if (leader.landed) {
+    const lr = Math.max(1, len(leader.pos))
+    const lUp = { x: leader.pos.x / lr, y: leader.pos.y / lr }
+    const gL = arcade.on ? 0 : body.mu / (lr * lr)
+    lVel = { x: 0, y: 0 }
+    lThrust = { x: lUp.x * gL, y: lUp.y * gL }
+  } else {
+    const tm = Math.max(0, Math.min(1, leader.throttle)) * leader.accel
+    lThrust = { x: Math.cos(leader.angle) * tm, y: Math.sin(leader.angle) * tm }
+    let axL = lThrust.x
+    let ayL = lThrust.y
+    if (!arcade.on && body.id !== 'sun') {
+      const lr = Math.max(1, len(leader.pos))
+      const gL = body.mu / (lr * lr)
+      axL -= (leader.pos.x / lr) * gL
+      ayL -= (leader.pos.y / lr) * gL
+    }
+    if (elapsedSub > 0) {
+      lPos = {
+        x: leader.pos.x + leader.vel.x * elapsedSub + 0.5 * axL * elapsedSub * elapsedSub,
+        y: leader.pos.y + leader.vel.y * elapsedSub + 0.5 * ayL * elapsedSub * elapsedSub,
+      }
+      lVel = { x: leader.vel.x + axL * elapsedSub, y: leader.vel.y + ayL * elapsedSub }
+    }
+  }
+
+  const maxF = maxThrustAvailable(v, pressure)
+  const maxAccel = maxF / Math.max(0.1, st.mass)
+
+  // Lider yüzeye inmişse yanına in veya yerde kalkışını bekle
+  if (leader.landed && body.landable && !arcade.on) {
+    const lTheta = Math.atan2(lPos.y, lPos.x)
+    const rawDist = Math.hypot(lPos.x - v.pos.x, lPos.y - v.pos.y)
+    if (v.landed && rawDist < 420) {
+      v.throttle = 0
+      v.autopilotNote = `⏳ ${leader.name} kalkışı bekleniyor…`
+      return s.theta
+    }
+    if (maxAccel <= 0.01) {
+      v.throttle = 0
+      v.autopilotNote = v.drone ? 'Fan bataryası şarj ediliyor…' : 'Takip otopilotu: bu kademede itki/yakıt yok!'
+      return s.theta
+    }
+    if (v.landed) {
+      v.throttle = 1
+      v.autopilotNote = `🚀 ${leader.name} yanına uçuş için kalkış…`
+      return s.theta
+    }
+    const slotTheta = wrapPi(lTheta + side * Math.min(0.08, (row * 52) / body.radius))
+    const dTheta = wrapPi(slotTheta - s.theta)
+    const arcDist = Math.abs(dTheta) * s.r
+    if (arcDist < 650) {
+      const aNet = Math.max(0.8, maxAccel * 0.85 - g)
+      const wantVt = Math.max(-35, Math.min(35, dTheta * s.r * 0.35))
+      const vSink = Math.max(1.8, Math.min(35, Math.sqrt(2 * aNet * Math.max(0, s.alt - 1.5)) * 0.72))
+      const desVr = arcDist < 120 ? -vSink : Math.max(-30, Math.min(50, (Math.max(55, arcDist * 0.22) - s.alt) * 0.45))
+      const reqUp = Math.max(0, g + (desVr - s.vr) / 0.75)
+      const reqTan = Math.max(-maxAccel * 0.45, Math.min(maxAccel * 0.45, (wantVt - vt) / 0.8))
+      const ax = up.x * reqUp + tan.x * reqTan
+      const ay = up.y * reqUp + tan.y * reqTan
+      let targetAngle = Math.hypot(ax, ay) > 1e-4 ? Math.atan2(ay, ax) : s.theta
+      if (s.alt < 40) {
+        const tilt = wrapPi(targetAngle - s.theta)
+        targetAngle = s.theta + Math.max(-0.28, Math.min(0.28, tilt))
+      }
+      const align = Math.cos(wrapPi(v.angle - targetAngle))
+      v.throttle = align > 0.35 ? Math.max(0, Math.min(1, Math.hypot(ax, ay) / maxAccel)) : 0
+      v.autopilotNote = arcDist < 120 ? `🛬 ${leader.name} yanına iniyor…` : `🤝 ${leader.name} yaklaşıyor (${Math.round(arcDist)} m)`
+      return targetAngle
+    }
+    const maxCapAlt = v.drone ? (v.drone.maxAlt || 15_000) * 0.48 : Math.max(2400, body.atmoHeight * 0.35 + 1500)
+    const cruiseAlt = Math.min(maxCapAlt, Math.max(1200, body.radius * 0.016))
+    const wantVt = Math.sign(dTheta || 1) * Math.min(420, Math.sqrt(2 * Math.max(1, maxAccel * 0.35) * arcDist))
+    const wantVr = Math.max(-90, Math.min(120, (cruiseAlt - s.alt) * 0.35))
+    const reqUp = Math.max(0, g + (wantVr - s.vr) / 0.85)
+    const reqTan = Math.max(-maxAccel * 0.55, Math.min(maxAccel * 0.55, (wantVt - vt) / 0.9))
+    const ax = up.x * reqUp + tan.x * reqTan
+    const ay = up.y * reqUp + tan.y * reqTan
+    const targetAngle = Math.hypot(ax, ay) > 1e-4 ? Math.atan2(ay, ax) : s.theta
+    const align = Math.cos(wrapPi(v.angle - targetAngle))
+    v.throttle = align > 0.35 ? Math.max(0, Math.min(1, Math.hypot(ax, ay) / maxAccel)) : 0
+    v.autopilotNote = `🤝 ${leader.name} bölgesine uçuluyor (${(arcDist / 1000).toFixed(1)} km)`
+    return targetAngle
+  }
+
+  // Havada/yörüngede/arenada V-formasyon slotu hesapla
+  const heading = len(lVel) > 6 ? Math.atan2(lVel.y, lVel.x) : leader.angle
+  const lFwd = { x: Math.cos(heading), y: Math.sin(heading) }
+  const lRight = { x: lFwd.y, y: -lFwd.x }
+  let slotPos = {
+    x: lPos.x - lFwd.x * (46 * row) + lRight.x * (side * 48 * row),
+    y: lPos.y - lFwd.y * (46 * row) + lRight.y * (side * 48 * row),
+  }
+  if (!arcade.on && body.landable) {
+    const sr = len(slotPos)
+    const sa = Math.atan2(slotPos.y, slotPos.x)
+    const minSafeR = body.radius + terrainHeight(body.id, sa) + (v.drone ? 14 : 24)
+    if (sr > 1 && sr < minSafeR) {
+      slotPos = { x: (slotPos.x / sr) * minSafeR, y: (slotPos.y / sr) * minSafeR }
+    }
+  }
+  let ceilingHold = false
+  if (v.drone) {
+    const maxAlt = v.drone.maxAlt || 15_000
+    const lAlt = len(lPos) - body.radius
+    if (lAlt > maxAlt * 0.85) {
+      ceilingHold = true
+      const capR = body.radius + maxAlt * 0.62
+      const sr = Math.max(1, len(slotPos))
+      slotPos = { x: (slotPos.x / sr) * capR, y: (slotPos.y / sr) * capR }
+    }
+  }
+
+  if (maxAccel <= 0.01) {
+    v.throttle = 0
+    v.autopilotNote = v.drone ? 'Fan bataryası şarj ediliyor…' : 'Takip otopilotu: bu kademede itki/yakıt yok!'
+    return leader.angle
+  }
+  if (v.landed) {
+    v.throttle = 1
+    v.autopilotNote = `🚀 ${leader.name} takibi için kalkış…`
+    return s.theta
+  }
+
+  const err = { x: slotPos.x - v.pos.x, y: slotPos.y - v.pos.y }
+  const dist = len(err)
+  const relVel = { x: lVel.x - v.vel.x, y: lVel.y - v.vel.y }
+  const relSpeed = len(relVel)
+
+  // Uzak/gezegen gölgeli yörünge kovalaması: gezegenin içinden kestirme geçme
+  let occluded = false
+  if (!arcade.on && body.id !== 'sun') {
+    const segLen2 = err.x * err.x + err.y * err.y
+    const tProj = segLen2 > 1 ? Math.max(0, Math.min(1, -(v.pos.x * err.x + v.pos.y * err.y) / segLen2)) : 0
+    const minR = Math.hypot(v.pos.x + err.x * tProj, v.pos.y + err.y * tProj)
+    const safeFloorR = body.radius + (body.atmoHeight > 0 ? Math.min(body.atmoHeight * 0.45, 8000) : 1800)
+    occluded = minR < safeFloorR
+  }
+
+  if (!v.drone && !arcade.on && body.id !== 'sun' && (dist > 28_000 || occluded)) {
+    const dTheta = wrapPi(Math.atan2(slotPos.y, slotPos.x) - s.theta)
+    if (s.alt < 1200) {
+      v.throttle = 1
+      v.autopilotNote = `🛰️ ${leader.name} yörünge yakalaması…`
+      return s.theta + Math.max(-0.22, Math.min(0.22, dTheta))
+    }
+    const lR = Math.max(1, len(lPos))
+    const lUp = { x: lPos.x / lR, y: lPos.y / lR }
+    const lTan = { x: -lUp.y, y: lUp.x }
+    const vtL = lVel.x * lTan.x + lVel.y * lTan.y
+    const wantR = Math.max(lR, body.radius + (body.atmoHeight > 0 ? body.atmoHeight + 8000 : 12_000))
+    const wantVr = Math.max(-180, Math.min(260, (wantR - s.r) * 0.14))
+    const wantVt = vtL + Math.max(-360, Math.min(360, dTheta * s.r * 0.08))
+    const gEff = Math.max(0, g - (vt * vt) / s.r)
+    const reqUp = gEff + (wantVr - s.vr) / 1.3
+    const reqTan = (wantVt - vt) / 1.3
+    const ax = up.x * reqUp + tan.x * reqTan
+    const ay = up.y * reqUp + tan.y * reqTan
+    const mag = Math.hypot(ax, ay)
+    const targetAngle = mag > 1e-4 ? Math.atan2(ay, ax) : s.theta
+    const align = Math.cos(wrapPi(v.angle - targetAngle))
+    v.throttle = align > 0.4 && mag > 1e-4 ? Math.max(0.05, Math.min(1, mag / maxAccel)) : 0
+    v.autopilotNote = `🛰️ ${leader.name} yakalanıyor (${(dist / 1000).toFixed(1)} km)`
+    return targetAngle
+  }
+
+  // Yakın süzülme koruma bandı: yörüngede gereksiz yakıt harcamadan formasyonda kal
+  if (dist < 18 && relSpeed < 0.7 && leader.throttle < 0.05) {
+    v.throttle = 0
+    v.autopilotNote = ceilingHold
+      ? `⚠ ${leader.name} uzaya çıktı — dron yükseklik sınırında bekliyor!`
+      : `🤝 ${leader.name} takipte (${Math.round(dist)} m)`
+    return leader.angle
+  }
+
+  const brakeA = Math.max(0.4, arcade.on ? maxAccel * 0.75 : Math.max(0.4, (maxAccel - g * 0.35) * 0.55))
+  const capSpd = arcade.on ? 380 : Math.min(850, Math.sqrt(2 * brakeA * Math.max(0, dist - 8)))
+  const kpSpeed = Math.min(capSpd, dist * 0.45)
+  const desVel = dist > 0.5 ? { x: lVel.x + (err.x / dist) * kpSpeed, y: lVel.y + (err.y / dist) * kpSpeed } : lVel
+  const tau = dist < 120 ? 1.15 : 1.45
+  const reqAx = lThrust.x + (desVel.x - v.vel.x) / tau
+  const reqAy = lThrust.y + (desVel.y - v.vel.y) / tau
+  const reqMag = Math.hypot(reqAx, reqAy)
+  if (reqMag < maxAccel * 0.035 && dist < 30 && relSpeed < 1.0 && leader.throttle < 0.05) {
+    v.throttle = 0
+    v.autopilotNote = ceilingHold
+      ? `⚠ ${leader.name} uzaya çıktı — dron yükseklik sınırında bekliyor!`
+      : `🤝 ${leader.name} takipte (${Math.round(dist)} m)`
+    return leader.angle
+  }
+  let targetAngle = reqMag > 1e-4 ? Math.atan2(reqAy, reqAx) : leader.angle
+  if (s.alt < 40 && !arcade.on) {
+    const tilt = wrapPi(targetAngle - s.theta)
+    targetAngle = s.theta + Math.max(-0.35, Math.min(0.35, tilt))
+  }
+  const align = Math.cos(wrapPi(v.angle - targetAngle))
+  v.throttle = align > 0.35 && reqMag > 1e-4 ? Math.max(0.05, Math.min(1, reqMag / maxAccel)) : 0
+  v.autopilotNote = ceilingHold
+    ? `⚠ ${leader.name} uzaya çıktı — dron yükseklik sınırında bekliyor!`
+    : `🤝 ${leader.name} takipte (${dist >= 1000 ? `${(dist / 1000).toFixed(1)} km` : `${Math.round(dist)} m`})`
+  return targetAngle
+}
+
 /** Tek bir fizik adımı (yarı-örtük Euler). Aracı yerinde değiştirir. */
 export function stepPhysics(
   v: Vessel,
@@ -484,6 +804,8 @@ export function stepPhysics(
   ctrl: Controls | null,
   manualScale = 1,
   externalAutoTarget: number | null = null,
+  followRef: FollowLeaderRef | null = null,
+  elapsedSub = 0,
 ): StepResult {
   const body = BODIES[v.bodyId]
   const st = vesselStats(v.parts, v.cargo)
@@ -495,6 +817,10 @@ export function stepPhysics(
   const autoTarget =
     externalAutoTarget !== null
       ? externalAutoTarget
+      : ap === 'follow' && followRef
+        ? autoFollowGuidance(v, st, body, s, pressure, followRef, elapsedSub)
+      : ap === 'nextQuad'
+        ? autoDroneNextQuadGuidance(v, st, body, s, pressure)
       : ap === 'land'
         ? autoLandGuidance(v, st, body, s, pressure, rho)
         : ap === 'orbit' || ap === 'transfer'
@@ -555,7 +881,8 @@ export function stepPhysics(
 
   if (rho > 0 && s.speed > 0.05) {
     const width = Math.max(0.5, st.maxX - st.minX)
-    const cdA = (st.hasNose ? 0.3 : 0.6) * width * 1.2 + st.chutesDeployed * 420
+    const cdBase = v.drone ? 0.1 : st.hasNose ? 0.3 : 0.6
+    const cdA = cdBase * width * 1.2 + st.chutesDeployed * 420
     const dragAcc = (0.5 * rho * s.speed * s.speed * cdA) / 1000 / mass
     const sp = len(v.vel)
     const k = Math.max(0, 1 - Math.min(sp, dragAcc * dt) / Math.max(sp, 1e-6))
@@ -580,10 +907,15 @@ export function stepPhysics(
       const tilt = Math.abs(wrapPi(v.angle - theta2))
       if (speed > landingTolerance(st)) return { firing: out.firing, crash: `${speed.toFixed(0)} m/s hızla yüzeye çarptı`, crashSpeed: speed }
       if (tilt > 0.75) return { firing: out.firing, crash: 'yan yattı ve parçalandı', crashSpeed: landingTolerance(st) * 2 }
+      const keepFollow = ap === 'follow' && Boolean(v.followId)
       v.landed = true
       v.autoLand = false
-      v.autopilot = 'off'
-      v.autopilotNote = undefined
+      if (!keepFollow) {
+        v.autopilot = 'off'
+        v.autopilotNote = undefined
+      } else {
+        v.autopilotNote = '⏳ Filo lideri ile yüzeyde beklemede…'
+      }
       v.approachWarn = null
       v.throttle = 0
       v.vel = { x: 0, y: 0 }
@@ -624,10 +956,12 @@ export function orbitCoastWait(v: Vessel, body: BodyDef, s: Situation): number |
 /** Araç şu an sayısal fiziğe mi ihtiyaç duyuyor (itki, atmosfer, yüzeye yakınlık)? */
 export function needsPhysics(v: Vessel, ctrl: Controls | null): boolean {
   const st = vesselStats(v.parts, v.cargo)
-  const burning = v.throttle > 0 && st.fuel > 0 && activeEngines(v.parts).length > 0
+  const engines = activeEngines(v.parts)
+  const hasFan = engines.some((i) => !!partDef(v.parts[i]!.def).electricFan)
+  const burning = v.throttle > 0 && engines.length > 0 && (st.fuel > 0 || (hasFan && v.ec > 0.1))
   const ap = effectiveAutopilot(v)
-  if (v.landed) return burning || ap === 'orbit' || ap === 'transfer'
-  if (burning || ap === 'land') return true
+  if (v.landed) return burning || ap === 'orbit' || ap === 'transfer' || ap === 'nextQuad'
+  if (burning || ap === 'land' || ap === 'nextQuad') return true
   if (v.debris || arcade.on) return true
   const body = BODIES[v.bodyId]
   const s = situation(v, st)
@@ -643,6 +977,21 @@ export function needsPhysics(v: Vessel, ctrl: Controls | null): boolean {
     return false
   }
   return !!(ctrl && v.rcsOn && st.rcs > 0 && (ctrl.tx !== 0 || ctrl.ty !== 0))
+}
+
+/** Takip otopilotu şu an fizik adımı gerektiriyor mu, yoksa liderle eşzamanlı yörünge raylarında süzülebilir mi? */
+export function followNeedsPhysics(v: Vessel, leader: Vessel | undefined, ctrl: Controls | null): boolean {
+  if (!leader || leader.cruise || v.bodyId !== leader.bodyId) return true
+  const dist = Math.hypot(leader.pos.x - v.pos.x, leader.pos.y - v.pos.y)
+  if (v.landed) return v.throttle > 0 || !leader.landed || dist > 420
+  if (arcade.on || v.throttle > 0) return true
+  if (ctrl && v.rcsOn && vesselStats(v.parts, v.cargo).rcs > 0 && (ctrl.tx !== 0 || ctrl.ty !== 0)) return true
+  const body = BODIES[v.bodyId]
+  const s = situation(v)
+  if (s.altSea < body.atmoHeight || (body.landable && s.alt < 1500)) return true
+  if (leader.landed || leader.throttle > 0.05) return true
+  const relSpeed = Math.hypot(leader.vel.x - v.vel.x, leader.vel.y - v.vel.y)
+  return dist > 260 || relSpeed > 1.4
 }
 
 /** Motorlar kapalıyken Kepler yörüngesinde analitik ilerleme. */

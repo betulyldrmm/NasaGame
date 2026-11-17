@@ -1,21 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { audio } from '../audio'
-import { MODULES, ISS_SUPPLY } from '../game/base'
+import { MODULES, ISS_SUPPLY, quadrantCenterAngle, type QuadrantId } from '../game/base'
 import { COMBAT_PRESETS, LOOT_PRESETS, GRID_H, GRID_W, partDef, PARTS, SHIP_PRESETS, SHIP_SLOT_COUNT } from '../game/data'
 import { bump, saveGame, setIdleWarp, sim, useActiveGame, useAuthState } from '../game/store'
 import { isModuleUnlocked, isPartUnlocked, requiredTechForModule, requiredTechForPart } from '../game/tech'
 import type { PartCategory, PartInst } from '../game/types'
-import { canPlace, cargoMass, estimateDeltaV, partAt, vesselStats, centerDesign } from '../game/vessel'
+import { canPlace, cargoMass, estimateDeltaV, modulesMass, partAt, vesselStats, centerDesign } from '../game/vessel'
 import { wrapPi } from '../flight/orbit'
-import { BODIES } from '../nasa/bodies'
+import { BODIES, type BodyId } from '../nasa/bodies'
 import { getLocalMpDesign, sendMpCommand, setLocalMpDesign, useMultiplayer } from '../flight/mpClient'
-import { playerPadAngle, playerPassiveIncomePerHour } from '../flight/multiplayerSim'
-import { designCost, launchDesign, totalPassiveIncomePerHour, validateDesign } from '../flight/world'
+import { LOOT_VALUE_PER_TON } from '../flight/combat'
+import { playerPadAngle, playerPassiveIncomePerMin } from '../flight/multiplayerSim'
+import { availableLaunchSites, designCost, getActorBase, launchDesign, totalPassiveIncomePerMin, validateDesign } from '../flight/world'
 import { drawPart } from '../render/partArt'
 import PartIcon from './PartIcon'
 import PlanetGridPanel from './ColonyPanel'
 
-const CATEGORIES: PartCategory[] = ['Komuta', 'Silahlar', 'Savunma', 'Yakıt', 'Motorlar', 'Kademe', 'Güç', 'İniş', 'Kargo']
+const CATEGORIES: PartCategory[] = ['Komuta', 'Dron', 'Silahlar', 'Savunma', 'Yakıt', 'Motorlar', 'Kademe', 'Güç', 'İniş', 'Kargo']
 const IDLE_WARPS = [1, 5, 25]
 const fmt = (n: number) => Math.round(n).toLocaleString('tr-TR')
 
@@ -29,11 +30,17 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
   const auth = useAuthState()
   const mp = useMultiplayer()
   const inMp = mp.active && mp.inMatch
-  const isLoot = inMp && mp.room?.config.mode === 'loot-raid'
+  const isLoot = inMp && (mp.room?.config.mode === 'loot-raid' || (mp.room?.config.mode === 'orbital-warfare' && mp.room?.config.warfareGoal === 'raid'))
   const isWarfare = inMp && (mp.room?.config.mode === 'orbital-warfare' || isLoot)
   const isColonyRace = inMp && !isWarfare
   const categories = isColonyRace ? CATEGORIES.filter((c) => c !== 'Silahlar' && c !== 'Savunma') : CATEGORIES
   const presets = isLoot ? LOOT_PRESETS : isWarfare ? [...COMBAT_PRESETS, ...SHIP_PRESETS] : isColonyRace ? SHIP_PRESETS : [...SHIP_PRESETS, ...COMBAT_PRESETS]
+  const launchSites = useMemo(() => availableLaunchSites(gs, gs.ownerId ?? 'local'), [gs])
+  const [siteKey, setSiteKey] = useState<string>(() => {
+    const ls = gs.launchSite
+    return ls ? `${ls.bodyId}:${ls.quadrant}` : 'earth:0'
+  })
+  const activeSite = launchSites.find((s) => `${s.bodyId}:${s.quadrant}` === siteKey) ?? launchSites[0]!
   const [selected, setSelected] = useState<string | null>(null)
   const [mirror, setMirror] = useState(true)
   const [hover, setHover] = useState<{ x: number; y: number } | null>(null)
@@ -46,20 +53,54 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
   }, [])
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [cell, setCell] = useState(24)
+  const [animTick, setAnimTick] = useState(0)
+  const placeFxRef = useRef<{ x: number; y: number; w: number; h: number; born: number; color: string; label: string }[]>([])
+
+  const triggerPlaceFx = (spots: { x: number; y: number }[], def: string) => {
+    const d = partDef(def)
+    const now = performance.now()
+    const col = d.kind === 'weapon' ? '#f59e0b' : d.kind === 'droneBay' ? '#38bdf8' : d.kind === 'engine' ? '#fb923c' : '#4ade80'
+    for (const sp of spots) {
+      placeFxRef.current.push({ x: sp.x, y: sp.y, w: d.w, h: d.h, born: now, color: col, label: d.name })
+    }
+    if (placeFxRef.current.length > 10) placeFxRef.current.splice(0, placeFxRef.current.length - 10)
+    setAnimTick((n) => n + 1)
+  }
 
   const localMp = inMp ? getLocalMpDesign() : null
   const design = localMp ? localMp.design : gs.design
   const designCargo = localMp ? localMp.cargo : gs.designCargo
+  const designDroneCargo = localMp ? localMp.droneCargo : (gs.designDroneCargo ?? {})
   const setDesign = (next: PartInst[]) => {
     setError(null)
+    const hasDroneBay = next.some((p) => partDef(p.def).kind === 'droneBay')
+    const nextDroneCargo = hasDroneBay ? designDroneCargo : {}
     if (inMp) {
-      setLocalMpDesign(next, designCargo)
+      setLocalMpDesign(next, designCargo, nextDroneCargo)
       return
     }
     sim.gs.design = next
+    if (!hasDroneBay) sim.gs.designDroneCargo = {}
     void saveGame()
     bump()
   }
+
+  useEffect(() => {
+    if (!placeFxRef.current.length) return
+    let raf = 0
+    const step = () => {
+      const now = performance.now()
+      placeFxRef.current = placeFxRef.current.filter((fx) => now - fx.born < 520)
+      if (placeFxRef.current.length > 0) {
+        setAnimTick((n) => (n + 1) % 100000)
+        raf = requestAnimationFrame(step)
+      } else {
+        setAnimTick(0)
+      }
+    }
+    raf = requestAnimationFrame(step)
+    return () => cancelAnimationFrame(raf)
+  }, [design.length, animTick > 0 ? 1 : 0])
 
   useEffect(() => {
     const el = wrapRef.current
@@ -90,13 +131,15 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
   }, [cell])
 
   const stats = useMemo(() => vesselStats(design), [design])
+  const effectiveDroneCargo = useMemo(() => (stats.droneCargoCap > 0 ? designDroneCargo : {}), [stats.droneCargoCap, designDroneCargo])
   const cargoT = cargoMass({ modules: designCargo, ore: 0, oreFrom: null })
-  const stages = useMemo(() => estimateDeltaV(design, cargoT), [design, cargoT])
+  const droneCargoT = modulesMass(effectiveDroneCargo)
+  const stages = useMemo(() => estimateDeltaV(design, cargoT + droneCargoT), [design, cargoT, droneCargoT])
   const totalDv = stages.reduce((s, x) => s + x.dv, 0)
-  const cost = designCost(design, designCargo)
-  const problem = validateDesign(design, designCargo, gs)
+  const cost = designCost(design, designCargo, effectiveDroneCargo)
+  const problem = validateDesign(design, designCargo, gs, effectiveDroneCargo)
   const twr = stages[0]?.twr ?? 0
-  const passivePerHr = inMp && gs.ownerId ? playerPassiveIncomePerHour(gs, gs.ownerId) : totalPassiveIncomePerHour(gs)
+  const passivePerMin = inMp && gs.ownerId ? playerPassiveIncomePerMin(gs, gs.ownerId) : totalPassiveIncomePerMin(gs)
 
   const mirrorX = (x: number, w: number) => GRID_W - x - w
 
@@ -138,34 +181,71 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
     ctx.lineTo((GRID_W / 2) * cell, H)
     ctx.stroke()
     ctx.setLineDash([])
+    const now = performance.now()
     const mid = (stats.minX + stats.maxX) / 2
     const order = [...design].sort((a, b) => (partDef(a.def).kind === 'chute' ? 1 : 0) - (partDef(b.def).kind === 'chute' ? 1 : 0))
     for (const p of order) {
       const d = partDef(p.def)
+      const fx = placeFxRef.current.find((f) => f.x === p.x && f.y === p.y && now - f.born < 320)
+      const pop = fx ? 1 + 0.14 * Math.sin(((now - fx.born) / 320) * Math.PI) : 1
       ctx.save()
-      ctx.translate(p.x * cell, p.y * cell)
-      ctx.shadowColor = 'rgba(0,0,0,.35)'
-      ctx.shadowBlur = cell * 0.25
-      ctx.shadowOffsetY = cell * 0.08
+      ctx.translate((p.x + (d.w * (1 - pop)) / 2) * cell, (p.y + (d.h * (1 - pop)) / 2) * cell)
+      ctx.scale(pop, pop)
+      ctx.shadowColor = fx ? fx.color : 'rgba(0,0,0,.35)'
+      ctx.shadowBlur = fx ? cell * 0.65 : cell * 0.25
+      ctx.shadowOffsetY = fx ? 0 : cell * 0.08
       drawPart(ctx, p, cell, { flip: p.x + d.w / 2 < mid })
+      ctx.restore()
+    }
+    // Yeni parça yerleştirme şok halkası + kıvılcım animasyonu
+    for (const fx of placeFxRef.current) {
+      const age = (now - fx.born) / 520
+      if (age < 0 || age >= 1) continue
+      const cx = (fx.x + fx.w / 2) * cell
+      const cy = (fx.y + fx.h / 2) * cell
+      const rw = (fx.w * 0.55 + age * 0.9) * cell
+      const rh = (fx.h * 0.55 + age * 0.9) * cell
+      ctx.save()
+      ctx.globalAlpha = Math.max(0, 1 - age)
+      ctx.strokeStyle = fx.color
+      ctx.lineWidth = Math.max(1.5, 3 * (1 - age))
+      ctx.strokeRect(cx - rw, cy - rh, rw * 2, rh * 2)
+      for (let i = 0; i < 10; i += 1) {
+        const a = (i / 10) * Math.PI * 2 + fx.x * 0.7
+        const dist = age * cell * (1.2 + (i % 3) * 0.45)
+        ctx.fillStyle = i % 2 ? '#ffffff' : fx.color
+        ctx.fillRect(cx + Math.cos(a) * dist - 1.5, cy + Math.sin(a) * dist - 1.5, 3, 3)
+      }
       ctx.restore()
     }
     if (selected && hover) {
       const d = partDef(selected)
       const spots = [{ x: hover.x, y: hover.y }]
       const mx = mirrorX(hover.x, d.w)
-      if (mirror && mx !== hover.x) spots.push({ x: mx, y: hover.y })
+      if (mirror && mx !== hover.x && d.kind !== 'droneBay') spots.push({ x: mx, y: hover.y })
       let acc = design
+      const droneLimitHit = d.kind === 'droneBay' && design.some((q) => partDef(q.def).kind === 'droneBay')
       for (const s of spots) {
-        const ok = canPlace(acc, d, s.x, s.y)
+        const ok = !droneLimitHit && canPlace(acc, d, s.x, s.y)
         ctx.save()
-        ctx.globalAlpha = 0.6
+        ctx.fillStyle = ok ? 'rgba(74,222,128,.12)' : 'rgba(251,113,133,.16)'
+        ctx.fillRect(s.x * cell, s.y * cell, d.w * cell, d.h * cell)
+        ctx.globalAlpha = 0.7
         ctx.translate(s.x * cell, s.y * cell)
         drawPart(ctx, { def: selected, x: s.x, y: s.y }, cell, { flip: s.x + d.w / 2 < GRID_W / 2 })
         ctx.globalAlpha = 1
         ctx.strokeStyle = ok ? '#4ade80' : '#fb7185'
         ctx.lineWidth = 2
         ctx.strokeRect(1, 1, d.w * cell - 2, d.h * cell - 2)
+        // Kilitli köşe nişangah tırnakları
+        const br = Math.min(8, cell * 0.35)
+        ctx.lineWidth = 2.6
+        ctx.beginPath()
+        ctx.moveTo(0, br); ctx.lineTo(0, 0); ctx.lineTo(br, 0)
+        ctx.moveTo(d.w * cell - br, 0); ctx.lineTo(d.w * cell, 0); ctx.lineTo(d.w * cell, br)
+        ctx.moveTo(0, d.h * cell - br); ctx.lineTo(0, d.h * cell); ctx.lineTo(br, d.h * cell)
+        ctx.moveTo(d.w * cell - br, d.h * cell); ctx.lineTo(d.w * cell, d.h * cell); ctx.lineTo(d.w * cell, d.h * cell - br)
+        ctx.stroke()
         ctx.restore()
         if (ok) acc = [...acc, { def: selected, x: s.x, y: s.y }]
       }
@@ -179,7 +259,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
         ctx.strokeRect(p.x * cell + 1, p.y * cell + 1, d.w * cell - 2, d.h * cell - 2)
       }
     }
-  }, [design, cell, selected, hover, mirror, stats])
+  }, [design, cell, selected, hover, mirror, stats, animTick])
 
   const cellFromEvent = (e: React.MouseEvent) => {
     const rect = canvasRef.current!.getBoundingClientRect()
@@ -209,12 +289,26 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
   /** Seçili parçayı (simetriyle birlikte) verilen hücreye yerleştirir; yerleşti mi? */
   const placeAt = (base: PartInst[], def: string, c: { x: number; y: number }): PartInst[] | null => {
     const d = partDef(def)
+    if (d.kind === 'droneBay' && base.some((q) => partDef(q.def).kind === 'droneBay')) {
+      setError('Bir rokette yalnızca 1 Dron Fırlatıcı olabilir (1 dron taşır).')
+      return null
+    }
     let next = base
     const spots = [{ x: c.x, y: c.y }]
     const mx = mirrorX(c.x, d.w)
-    if (mirror && mx !== c.x) spots.push({ x: mx, y: c.y })
-    for (const sp of spots) if (canPlace(next, d, sp.x, sp.y)) next = [...next, { def, x: sp.x, y: sp.y }]
-    return next !== base ? next : null
+    if (mirror && mx !== c.x && d.kind !== 'droneBay') spots.push({ x: mx, y: c.y })
+    const placed: { x: number; y: number }[] = []
+    for (const sp of spots) {
+      if (canPlace(next, d, sp.x, sp.y)) {
+        next = [...next, { def, x: sp.x, y: sp.y }]
+        placed.push(sp)
+      }
+    }
+    if (placed.length > 0) {
+      triggerPlaceFx(placed, def)
+      return next
+    }
+    return null
   }
 
   // Yerleşik parçayı tutup sürükleme: basılı tutup kaydırınca parça kalkar ve imleçle gelir.
@@ -303,21 +397,56 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
     bump()
   }
 
+  const changeDroneCargo = (id: string, delta: number) => {
+    const cur = designDroneCargo[id] ?? 0
+    const n = Math.max(0, cur + delta)
+    const next = { ...designDroneCargo, [id]: n }
+    if (!n) delete next[id]
+    setError(null)
+    if (inMp) {
+      setLocalMpDesign(design, designCargo, next)
+      return
+    }
+    sim.gs.designDroneCargo = next
+    void saveGame()
+    bump()
+  }
+
+  const applyDronePreset = (preset: Record<string, number>) => {
+    setError(null)
+    if (inMp) {
+      setLocalMpDesign(design, designCargo, { ...preset })
+      return
+    }
+    sim.gs.designDroneCargo = { ...preset }
+    void saveGame()
+    bump()
+  }
+
   const launch = () => {
+    const targetBody: BodyId = activeSite.bodyId
+    const targetQuad: QuadrantId = activeSite.quadrant
+    if (!inMp) {
+      sim.gs.launchSite = { bodyId: targetBody, quadrant: targetQuad }
+    }
     if (inMp) {
       if (!isLoot && cost > gs.money) {
         setError(`Bütçe yetersiz: ${fmt(cost)} ₡ gerekli.`)
         return
       }
-      const padTheta = playerPadAngle(gs, gs.ownerId)
+      const qBase = getActorBase(gs, targetBody, gs.ownerId ?? 'local', targetQuad)
+      const padTheta =
+        targetBody === 'earth' && targetQuad === 0
+          ? playerPadAngle(gs, gs.ownerId)
+          : qBase?.siteAngle ?? quadrantCenterAngle(targetQuad)
       const onPad = gs.vessels.find(
-        (v) => v.bodyId === 'earth' && v.landed && Math.abs(wrapPi(Math.atan2(v.pos.y, v.pos.x) - padTheta)) * BODIES.earth.radius < 25,
+        (v) => v.bodyId === targetBody && v.landed && Math.abs(wrapPi(Math.atan2(v.pos.y, v.pos.x) - padTheta)) * BODIES[targetBody].radius < 25,
       )
       if (onPad && !isLoot) {
         setError('Rampa dolu: önce rampadaki aracı kurtar veya sil.')
         return
       }
-      const res = sendMpCommand({ type: 'launch', design, designCargo })
+      const res = sendMpCommand({ type: 'launch', design, designCargo, designDroneCargo: effectiveDroneCargo, bodyId: targetBody, quadrant: targetQuad })
       if (res.error) {
         setError(res.error)
         return
@@ -325,7 +454,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
       onFly()
       return
     }
-    const err = launchDesign(sim)
+    const err = launchDesign(sim, gs.ownerId ?? 'local', undefined, undefined, targetBody, targetQuad, effectiveDroneCargo)
     if (err) {
       setError(err)
       return
@@ -341,20 +470,32 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
     void saveGame(true)
     bump()
   }
-  const loadShip = (d: PartInst[], cargo: Record<string, number>) => {
+  const loadShip = (d: PartInst[], cargo: Record<string, number>, dCargo: Record<string, number> = {}) => {
     setSelected(null)
     const cloned = centerDesign(d.map((p) => ({ def: p.def, x: p.x, y: p.y })))
     if (inMp) {
-      setLocalMpDesign(cloned, { ...cargo })
+      setLocalMpDesign(cloned, { ...cargo }, { ...dCargo })
       return
     }
     sim.gs.designCargo = { ...cargo }
+    sim.gs.designDroneCargo = { ...dCargo }
     setDesign(cloned)
   }
   const saveSlot = (i: number) => {
     const name = window.prompt('Gemi adı:', slots[i]?.name ?? `Gemim ${i + 1}`)?.trim()
     if (!name) return
-    writeSlots(slots.map((s, j) => (j === i ? { name: name.slice(0, 18), design: design.map((p) => ({ def: p.def, x: p.x, y: p.y })), cargo: { ...designCargo } } : s)))
+    writeSlots(
+      slots.map((s, j) =>
+        j === i
+          ? {
+              name: name.slice(0, 18),
+              design: design.map((p) => ({ def: p.def, x: p.x, y: p.y })),
+              cargo: { ...designCargo },
+              ...(Object.keys(effectiveDroneCargo).length ? { droneCargo: { ...effectiveDroneCargo } } : {}),
+            }
+          : s,
+      ),
+    )
   }
   const clearSlot = (i: number) => {
     if (window.confirm('Bu slot boşaltılsın mı?')) writeSlots(slots.map((s, j) => (j === i ? null : s)))
@@ -393,7 +534,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
           🏗️ Koloni
         </button>
         <div className="builder-money">
-          Bütçe <b>{fmt(gs.money)} ₡</b> <small className="income-sub">+{fmt(passivePerHr)} ₡/sa</small>
+          Bütçe <b>{fmt(gs.money)} ₡</b> <small className="income-sub">+{fmt(passivePerMin)} ₡/dk</small>
         </div>
         <button className="hud-btn" onClick={onFly}>
           {myVesselCount > 0 ? `Uçuşa dön (${myVesselCount} araç) →` : 'Uzay & Üs Ekranı →'}
@@ -454,7 +595,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
             <span className="ship-bar-label">Gemilerim</span>
             {slots.map((slot, i) => (
               <span key={i} className={`ship-slot${slot ? ' is-filled' : ''}`}>
-                <button className="ship-slot-load" disabled={!slot} title={slot ? 'Tasarımı yükle' : 'Boş slot'} onClick={() => slot && loadShip(slot.design, slot.cargo)}>
+                <button className="ship-slot-load" disabled={!slot} title={slot ? 'Tasarımı yükle' : 'Boş slot'} onClick={() => slot && loadShip(slot.design, slot.cargo, slot.droneCargo)}>
                   {slot ? slot.name : `Slot ${i + 1}`}
                 </button>
                 <button title="Şu anki tasarımı bu slota kaydet" aria-label={`Slot ${i + 1}: kaydet`} disabled={!design.length} onClick={() => saveSlot(i)}>💾</button>
@@ -504,19 +645,38 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
         <aside className="builder-stats">
           <h3>Araç</h3>
           <dl>
-            <div><dt>Kütle</dt><dd>{(stats.mass + cargoT).toFixed(2)} t</dd></div>
+            <div><dt>Kütle</dt><dd>{(stats.mass + cargoT + droneCargoT).toFixed(2)} t</dd></div>
             <div><dt>TWR</dt><dd className={twr >= 1.2 ? 'ok' : twr >= 1 ? 'warn' : 'bad'}>{twr.toFixed(2)}</dd></div>
             <div><dt>Toplam Δv</dt><dd>{fmt(totalDv)} m/s</dd></div>
             <div><dt>Maliyet</dt><dd className={cost > gs.money ? 'bad' : ''}>{fmt(cost)} ₡</dd></div>
-            {(stats.hasCombatParts || isWarfare) && (
+            {(stats.hasCombatParts || isWarfare || stats.droneCount > 0) && (
               <>
-                <div><dt>Silah / DPS</dt><dd className={stats.weaponCount > 0 ? 'ok' : 'warn'}>{stats.weaponCount} · {fmt(stats.weaponDps)}</dd></div>
-                <div><dt>Gövde / Kalkan</dt><dd>{fmt(stats.maxHp)} / {fmt(stats.shieldCap)}</dd></div>
+                {(stats.hasCombatParts || isWarfare) && (
+                  <>
+                    <div><dt>Silah / DPS</dt><dd className={stats.weaponCount > 0 ? 'ok' : 'warn'}>{stats.weaponCount} · {fmt(stats.weaponDps)}</dd></div>
+                    <div><dt>Gövde / Kalkan</dt><dd>{fmt(stats.maxHp)} / {fmt(stats.shieldCap)}</dd></div>
+                  </>
+                )}
+                {stats.droneCount > 0 && (
+                  <div><dt>Dron Fırlatıcı</dt><dd className="ok">{stats.droneCount} hangar</dd></div>
+                )}
               </>
             )}
           </dl>
+          {!isLoot && (
+            <div className="launch-site-picker">
+              <label>
+                <span>📍 Fırlatma Rampası</span>
+                <select value={`${activeSite.bodyId}:${activeSite.quadrant}`} onChange={(e) => setSiteKey(e.target.value)}>
+                  {launchSites.map((s) => (
+                    <option key={`${s.bodyId}:${s.quadrant}`} value={`${s.bodyId}:${s.quadrant}`}>{s.label}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          )}
           {isLoot ? (
-            <p className="dv-guide">Yağma modu: gemi uzayda üssünden doğar, yerçekimi yok. Kademe ve iniş takımı gerekmez; kargo, zırh ve silaha yatırım yap. Yakıt ve onarım üssünde bedava.</p>
+            <p className="dv-guide">Yağma modu: gemi uzayda üssünden doğar, gezegen yolculuğu ve yerçekimi yok. Kargo, zırh, dron ve silaha yatırım yap. Üssünü Koloni menüsünden Sv.5&apos;e yükselt!</p>
           ) : (
           <div className="twr-meter" title="1,0 altı kalkamaz · 1,2 ve üstü güvenli">
             <i><em className={twr >= 1.2 ? 'ok' : twr >= 1 ? 'warn' : 'bad'} style={{ width: `${Math.min(100, (twr / 2.4) * 100)}%` }} /></i>
@@ -530,11 +690,13 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
             ))}
             {!stages.length && <li><span>Motor + yakıt ekle</span></li>}
           </ol>
-          <p className="dv-guide">
-            Hedef Δv: Yörünge <b>2.400</b> · Ay <b>+1.300</b> · Mars/Venüs <b>+1.100</b> · Uzak gezegenler <b>+2.200+</b> m/s
-          </p>
+          {!isLoot && (
+            <p className="dv-guide">
+              Hedef Δv: Yörünge <b>2.400</b> · Ay <b>+1.300</b> · Mars/Venüs <b>+1.100</b> · Uzak gezegenler <b>+2.200+</b> m/s
+            </p>
+          )}
           {isLoot ? (
-            <p className="dv-guide">Kargo kapasitesi: <b>{stats.cargoCap} t</b> ganimet (üste {fmt(stats.cargoCap * 2500)} ₡ eder).</p>
+            <p className="dv-guide">Kargo kapasitesi: <b>{stats.cargoCap} t</b> ganimet (taban değer {fmt(stats.cargoCap * LOOT_VALUE_PER_TON)} ₡; üs seviyesiyle artar).</p>
           ) : (stats.cargoCap > 0 || cargoT > 0) ? (
             <>
               <h3>Kargo <small>{cargoT.toFixed(1)} / {stats.cargoCap} t</small></h3>
@@ -551,7 +713,7 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
                     </>
                   ) : (
                     <>
-                      <button type="button" className="mini-warp-btn" onClick={() => applyCargoPreset({ 'colony-station': 1 })} title="Uzay İstasyonu (4 t, 7 ⚡ ister)">
+                      <button type="button" className="mini-warp-btn" onClick={() => applyCargoPreset({ 'colony-station': 1 })} title="Uzay İstasyonu (4 t, 5 ⚡ ister)">
                         🛰️ İstasyon (4t)
                       </button>
                       <button type="button" className="mini-warp-btn" onClick={() => applyCargoPreset({ 'solar-farm': 2 })} title="2× Güneş Paneli (2 t, +8 ⚡)">
@@ -587,10 +749,55 @@ export default function BuilderScreen({ onBack, onFly }: Props) {
               </ul>
             </>
           ) : (
-            <p className="dv-guide">Dünya dışına modül götürmek için <b>Kargo Gövdesi</b> ekle ve yükle — uzay kolonilerinde yalnızca getirdiğin yapılar kurulur.</p>
+            <p className="dv-guide">Dünya dışına modül götürmek için <b>Kargo Gövdesi</b> ya da <b>Dron Fırlatıcı</b> ekle; çeyrekte Uzay İstasyonu kurunca oradan doğrudan bina dikebilirsin.</p>
+          )}
+          {!isLoot && stats.droneCargoCap > 0 && (
+            <>
+              <h3>🛸 Dron Kargosu <small>{droneCargoT.toFixed(1)} / {stats.droneCargoCap} t</small></h3>
+              <div className="cargo-presets">
+                {stats.droneCargoCap >= 6 ? (
+                  <>
+                    <button type="button" className="mini-warp-btn" onClick={() => applyDronePreset({ 'colony-station': 1, 'solar-farm': 2 })} title="Dronla başka çeyreğe koloni kur (6 t)">
+                      🛰️ Çeyrek Koloni (6 t)
+                    </button>
+                    <button type="button" className="mini-warp-btn" onClick={() => applyDronePreset({ 'colony-station': 1, 'rtg-reactor': 1 })} title="Dronla reaktörlü koloni kur (6 t)">
+                      ☢️ Uzak Çeyrek (6 t)
+                    </button>
+                  </>
+                ) : (
+                  <button type="button" className="mini-warp-btn" onClick={() => applyDronePreset({ 'solar-farm': 2 })} title="2× Güneş Paneli (2 t)">
+                    🔆 2× Panel (2t)
+                  </button>
+                )}
+                {droneCargoT > 0 && (
+                  <button type="button" className="mini-warp-btn" onClick={() => applyDronePreset({})}>
+                    Temizle
+                  </button>
+                )}
+              </div>
+              <ul className="cargo-list">
+                {MODULES.filter((m) => !m.warfare || !isColonyRace).map((m) => {
+                  const unlocked = isModuleUnlocked(gs, m.id)
+                  const req = unlocked ? null : requiredTechForModule(m.id)
+                  return (
+                    <li key={`dc-${m.id}`} className={unlocked ? '' : 'is-locked'} title={unlocked ? m.desc : `Kilitli: ${req?.name ?? 'Teknoloji'}`}>
+                      <span>
+                        {m.icon} {m.name}
+                        <small>{unlocked ? `${m.mass} t · ${fmt(m.cost)} ₡` : `🔒 ${req?.name ?? 'Teknoloji'}`}</small>
+                      </span>
+                      <span className="stepper">
+                        <button onClick={() => changeDroneCargo(m.id, -1)} disabled={!designDroneCargo[m.id]}>−</button>
+                        <b>{designDroneCargo[m.id] ?? 0}</b>
+                        <button onClick={() => changeDroneCargo(m.id, 1)} disabled={!unlocked || droneCargoT + m.mass > stats.droneCargoCap + 1e-9}>＋</button>
+                      </span>
+                    </li>
+                  )
+                })}
+              </ul>
+            </>
           )}
           {(error ?? problem) && <p className="builder-error">{error ?? problem}</p>}
-          <button className="launch-btn" onClick={launch} disabled={!!problem}>{isLoot ? 'Üsten fırlat' : 'Rampaya çıkar'} — {fmt(cost)} ₡</button>
+          <button className="launch-btn" onClick={launch} disabled={!!problem}>{isLoot ? 'Üsten fırlat' : `${activeSite.label} · Çıkar`} — {fmt(cost)} ₡</button>
         </aside>
       </div>
 

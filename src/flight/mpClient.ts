@@ -113,11 +113,14 @@ type WireVessel = Omit<Vessel, 'parts'> & {
 const r2 = (x: number) => Math.round(x * 100) / 100
 const r4 = (x: number) => Math.round(x * 10000) / 10000
 
-/** Parçaların yapısal imzası: parça kimliği, konumu, açılma ve motor durumları. Değişince tam yapı gönderilir. */
+/** Parçaların yapısal imzası: parça kimliği, konumu, açılma, motor ve dron kargosu. Değişince tam yapı gönderilir. */
 function partsKey(parts: PartInst[]): string {
   let k = `${parts.length}:`
   for (const p of parts) {
-    k += `${p.def}@${p.x},${p.y}${(p.deployed ? 'd' : '')}${(p.on === false ? 'o' : '')}|`
+    const dc = p.droneCargo
+      ? '~' + Object.entries(p.droneCargo).filter(([, n]) => n > 0).sort(([a], [b]) => a.localeCompare(b)).map(([id, n]) => `${id}:${n}`).join(',')
+      : ''
+    k += `${p.def}@${p.x},${p.y}${(p.deployed ? 'd' : '')}${(p.on === false ? 'o' : '')}${dc}|`
   }
   return k
 }
@@ -202,6 +205,7 @@ let hostSim: Sim | null = null
 let clientSim: Sim | null = null
 let localDesign: PartInst[] = DEFAULT_DESIGN.map((p) => ({ ...p }))
 let localDesignCargo: Record<string, number> = {}
+let localDesignDroneCargo: Record<string, number> = {}
 
 const peerControls = new Map<string, Controls>()
 let pendingHostEvents: GameEvent[] = []
@@ -230,7 +234,7 @@ let pendingLaunchUntil = 0
 let pendingLaunchMinId = 0
 let pendingThrottle: { vesselId: number; value: number; until: number } | null = null
 let pendingActive: { vesselId: number; until: number } | null = null
-let pendingAutopilot: { vesselId: number; mode: AutopilotMode; until: number } | null = null
+let pendingAutopilot: { vesselId: number; mode: AutopilotMode; followId?: number; until: number } | null = null
 let pendingTarget: { bodyId: BodyId; until: number } | null = null
 let pendingWarpPref: { warpIdx: number; anchor?: boolean; until: number } | null = null
 
@@ -242,6 +246,9 @@ const STATIC_DIRTY_CMDS = new Set<GameCommand['type']>([
   'pickupModule',
   'loadOre',
   'refuelAtBase',
+  'launchPadDrone',
+  'transferDroneCargo',
+  'buyCargoModule',
 ])
 
 function wrapPi(a: number): number {
@@ -475,7 +482,7 @@ export function buildCompactSnapshot(sim: Sim, includeStatic: boolean): Snapshot
   if (sim.fx?.length) {
     sim.fx = sim.fx.filter((f) => clock - f.born < (f.kind === 'beam' || f.kind === 'hit' || f.kind === 'shield' || f.kind === 'muzzle' ? 0.65 : 3.5))
   }
-  const fxList = (sim.fx ?? []).slice(-24)
+  const fxList = (sim.fx ?? []).slice(-36)
 
   let mpOut = gs.mp
   if (gs.mp) {
@@ -501,7 +508,7 @@ export function buildCompactSnapshot(sim: Sim, includeStatic: boolean): Snapshot
     if (!includeStatic) {
       const slimPlayers: typeof gs.mp.players = {}
       for (const [pid, p] of Object.entries(gs.mp.players)) {
-        const { earthBase: _omitBase, colonies: _omitCols, ...rest } = p
+        const { earthBase: _omitBase, colonies: _omitCols, quadrantColonies: _omitQCols, ...rest } = p
         slimPlayers[pid] = rest
       }
       mpOut = {
@@ -540,6 +547,7 @@ export function buildCompactSnapshot(sim: Sim, includeStatic: boolean): Snapshot
     activeId: gs.activeId,
     nextId: gs.nextId,
     bases: includeStatic ? gs.bases : {},
+    quadrantBases: includeStatic ? gs.quadrantBases : {},
     missionsDone: [],
     techDone: [INITIAL_TECH],
     design: [],
@@ -632,20 +640,43 @@ export function hydrateCompactSnapshot(
 
   if (omitStatic && prevGs) {
     cleanGs.bases = prevGs.bases
+    cleanGs.quadrantBases = prevGs.quadrantBases
     if (cleanGs.mp && prevGs.mp) {
       const restored: typeof cleanGs.mp.players = {}
       for (const [pid, p] of Object.entries(cleanGs.mp.players)) {
         const prevP = prevGs.mp.players[pid]
         const earthBase = p.earthBase ?? prevP?.earthBase
         const colonies = p.colonies ?? prevP?.colonies
+        const quadrantColonies = p.quadrantColonies ?? prevP?.quadrantColonies
+        if (quadrantColonies && earthBase && !quadrantColonies.earth?.[0]) {
+          ;(quadrantColonies.earth ??= [undefined, undefined, undefined, undefined])[0] = earthBase
+        }
         restored[pid] = {
           ...p,
           ...(earthBase ? { earthBase } : {}),
           ...(colonies ? { colonies } : {}),
+          ...(quadrantColonies ? { quadrantColonies } : {}),
         }
       }
       cleanGs.mp = { ...cleanGs.mp, players: restored }
       if (cleanGs.mp.loot && prevGs.mp.loot) cleanGs.mp.loot = { ...cleanGs.mp.loot, sites: prevGs.mp.loot.sites }
+    }
+  } else {
+    // JSON parse Q0 referanslarını ayırır: yeniden birleştir ki tek nesne kalsın
+    if (cleanGs.quadrantBases) {
+      for (const [bid, b] of Object.entries(cleanGs.bases ?? {})) {
+        if (b && cleanGs.quadrantBases[bid as BodyId]) cleanGs.quadrantBases[bid as BodyId]![0] = b
+      }
+    }
+    if (cleanGs.mp) {
+      for (const p of Object.values(cleanGs.mp.players)) {
+        if (p.quadrantColonies?.earth && p.earthBase) p.quadrantColonies.earth[0] = p.earthBase
+        if (p.quadrantColonies && p.colonies) {
+          for (const [bid, b] of Object.entries(p.colonies)) {
+            if (b && p.quadrantColonies[bid as BodyId]) p.quadrantColonies[bid as BodyId]![0] = b
+          }
+        }
+      }
     }
   }
 
@@ -806,11 +837,13 @@ function applyClientSnapshot(raw: SnapshotWire, events?: GameEvent[]) {
   if (pendingAutopilot) {
     const v = gs.vessels.find((o) => o.id === pendingAutopilot!.vesselId && o.ownerId === you!.id)
     const curMode = v ? effectiveAutopilot(v) : 'off'
-    if (!v || curMode === pendingAutopilot.mode || now >= pendingAutopilot.until) {
+    const followMatches = pendingAutopilot.mode !== 'follow' || v?.followId === pendingAutopilot.followId
+    if (!v || (curMode === pendingAutopilot.mode && followMatches) || now >= pendingAutopilot.until) {
       pendingAutopilot = null
     } else {
       v.autopilot = pendingAutopilot.mode
       v.autoLand = pendingAutopilot.mode === 'land'
+      if (pendingAutopilot.followId !== undefined) v.followId = pendingAutopilot.followId
     }
   }
 
@@ -1110,11 +1143,14 @@ function handleServerMessage(msg: ServerMessage) {
       error = null
       chat = []
       clearPendingOptimistic()
+      const isRaid =
+        msg.room.config.mode === 'loot-raid' ||
+        (msg.room.config.mode === 'orbital-warfare' && msg.room.config.warfareGoal === 'raid')
       localDesign = (
-        msg.room.config.mode === 'orbital-warfare'
-          ? COMBAT_PRESETS[0].design
-          : msg.room.config.mode === 'loot-raid'
-            ? LOOT_PRESETS[0].design
+        isRaid
+          ? LOOT_PRESETS[0].design
+          : msg.room.config.mode === 'orbital-warfare'
+            ? COMBAT_PRESETS[0].design
             : DEFAULT_DESIGN
       ).map((p) => ({
         ...p,
@@ -1214,7 +1250,7 @@ function handleServerMessage(msg: ServerMessage) {
         if (res.error) {
           pendingHostEvents.push({ type: 'toast', ownerId: msg.fromId, text: res.error })
         }
-        if (msg.cmd.type === 'launch' && !res.error) {
+        if ((msg.cmd.type === 'launch' || msg.cmd.type === 'launchPadDrone' || msg.cmd.type === 'launchDrone') && !res.error) {
           forceImmediateSnapshot = true
         }
         urgentSnapshot = true
@@ -1381,14 +1417,16 @@ export function sendMpCommand(cmd: GameCommand): { ok: boolean; error?: string; 
       notifyEvents(res.events)
     }
     if (res.error) notifyEvents([{ type: 'toast', text: res.error }])
-    if (cmd.type === 'launch' && !res.error) forceImmediateSnapshot = true
+    if ((cmd.type === 'launch' || cmd.type === 'launchPadDrone' || cmd.type === 'launchDrone') && !res.error) {
+      forceImmediateSnapshot = true
+    }
     urgentSnapshot = true
     sendHostSnapshot(performance.now())
     emitUi(true)
     return { ok: !res.error, error: res.error, events: res.events }
   }
   const now = Date.now()
-  if (cmd.type === 'launch') {
+  if (cmd.type === 'launch' || cmd.type === 'launchPadDrone') {
     const ownedIds = (clientSim?.gs.vessels ?? []).filter((v) => v.ownerId === you!.id).map((v) => v.id)
     pendingLaunchMinId = ownedIds.length ? Math.max(...ownedIds) : 0
     pendingLaunchUntil = now + 2500
@@ -1404,6 +1442,7 @@ export function sendMpCommand(cmd: GameCommand): { ok: boolean; error?: string; 
     if (v) {
       v.throttle = 0
       v.autopilot = 'off'
+      v.followId = undefined
       v.autoLand = false
     }
   } else if (cmd.type === 'setActive') {
@@ -1428,12 +1467,16 @@ export function sendMpCommand(cmd: GameCommand): { ok: boolean; error?: string; 
       }
     }
   } else if (cmd.type === 'setAutopilot') {
-    pendingAutopilot = { vesselId: cmd.vesselId, mode: cmd.mode, until: now + pendWindow() }
+    pendingAutopilot = { vesselId: cmd.vesselId, mode: cmd.mode, followId: cmd.followId, until: now + pendWindow() }
     const v = clientSim?.gs.vessels.find((o) => o.id === cmd.vesselId && o.ownerId === you!.id)
     if (v) {
       v.autopilot = cmd.mode
       v.autoLand = cmd.mode === 'land'
+      if (cmd.mode === 'follow' && cmd.followId !== undefined) v.followId = cmd.followId
+      if (cmd.mode === 'off') v.followId = undefined
     }
+  } else if (cmd.type === 'fleetOrder') {
+    urgentSnapshot = true
   }
   sendRaw({ type: 'clientCmd', cmd })
   return { ok: true }
@@ -1463,17 +1506,19 @@ export function isMpLootActive(): boolean {
   return active && room?.config.mode === 'loot-raid'
 }
 
-export function getLocalMpDesign(): { design: PartInst[]; cargo: Record<string, number> } {
-  return { design: localDesign, cargo: localDesignCargo }
+export function getLocalMpDesign(): { design: PartInst[]; cargo: Record<string, number>; droneCargo: Record<string, number> } {
+  return { design: localDesign, cargo: localDesignCargo, droneCargo: localDesignDroneCargo }
 }
 
-export function setLocalMpDesign(design: PartInst[], cargo: Record<string, number>) {
+export function setLocalMpDesign(design: PartInst[], cargo: Record<string, number>, droneCargo?: Record<string, number>) {
   localDesign = design
   localDesignCargo = cargo
+  if (droneCargo !== undefined) localDesignDroneCargo = droneCargo
   const s = getMpSim()
   if (s) {
     s.gs.design = design
     s.gs.designCargo = cargo
+    if (droneCargo !== undefined) s.gs.designDroneCargo = droneCargo
   }
   emitUi(true)
 }

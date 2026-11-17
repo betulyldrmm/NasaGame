@@ -411,9 +411,9 @@ h1 span { color: var(--color-orange); }
 .toast.mission { border-color: var(--color-success); color: #d8ffe6; font-weight: 700; font-size: 14px; padding: 12px 18px; }
 .toast.warn { border-color: var(--color-orange); }
 .side-panel { position: absolute; top: 60px; left: 14px; width: min(430px, calc(100vw - 28px)); max-height: calc(100vh - 150px); overflow-y: auto; background: #0b1424f2; border: 1px solid #8296b340; border-radius: 14px; padding: 14px 16px; z-index: 4; box-shadow: 0 20px 70px #000a; }
-.side-panel header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.side-panel > header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .side-panel h2 { font-size: 16px; margin: 0; }
-.side-panel header button { background: none; border: 0; font-size: 22px; cursor: pointer; color: var(--color-muted); }
+.side-panel > header > button { background: none; border: 0; font-size: 22px; cursor: pointer; color: var(--color-muted); }
 .mission-list, .help-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .mission-list li { display: grid; grid-template-columns: 20px 1fr auto; gap: 8px; align-items: start; background: #16253f77; border-radius: 8px; padding: 8px 10px; font-size: 12.5px; }
 .mission-list p { margin: 2px 0 0; color: var(--color-muted); font-size: 11.5px; }
@@ -590,7 +590,7 @@ kbd { background: #1b2b47; border: 1px solid #8296b355; border-bottom-width: 2px
 .colony-mars .colony-ground { background: linear-gradient(#e08a5c 0 6px, #b8603c 6px 14px, #7a3b24 14px); }
 .colony-cable { position: absolute; left: 4%; right: 4%; bottom: 52px; height: 4px; background: repeating-linear-gradient(90deg, #4fb8ff 0 10px, #f5c542 10px 14px); border-radius: 2px; }
 .colony-cable.is-low { background: repeating-linear-gradient(90deg, #7a2f3d 0 10px, #3a2228 10px 14px); }
-.colony-slots { position: absolute; left: 2%; right: 2%; bottom: 56px; display: grid; grid-template-columns: repeat(8, 1fr); align-items: end; gap: 4px; }
+.colony-slots { position: absolute; left: 2%; right: 2%; bottom: 56px; display: grid; grid-template-columns: repeat(12, 1fr); align-items: end; gap: 3px; }
 .colony-slot { position: relative; height: 150px; background: none; border: 0; padding: 0; display: flex; align-items: flex-end; justify-content: center; cursor: pointer; }
 .colony-slot img { width: 100%; max-height: 150px; object-fit: contain; object-position: bottom; image-rendering: pixelated; filter: drop-shadow(0 3px 0 #0005); }
 .colony-slot img.is-off { filter: grayscale(1) brightness(.55); }
@@ -598,7 +598,20 @@ kbd { background: #1b2b47; border: 1px solid #8296b355; border-bottom-width: 2px
 .colony-plus { width: 100%; height: 34px; border: 2px dashed #ffffff40; border-radius: 6px; display: grid; place-items: center; color: #ffffff70; font-size: 16px; background: #0003; }
 .colony-slot.is-target .colony-plus { border-color: #4ade80; color: #4ade80; background: #4ade8022; animation: colonyPulse 1s infinite alternate; }
 .colony-slot.is-hover .colony-plus { background: #4ade8055; height: 50px; }
+.colony-ghost-img { opacity: .54; filter: drop-shadow(0 0 8px #4ade8099) brightness(1.15); animation: colonyGhostBob .95s ease-in-out infinite alternate; }
+.colony-slot.is-just-built img { animation: colonyBuildBounce .55s cubic-bezier(.22, 1.38, .36, 1) both; }
+.colony-build-fx { position: absolute; left: 50%; bottom: 14px; width: 88px; height: 26px; transform: translateX(-50%); border-radius: 50%; border: 2px solid #7feaff; box-shadow: 0 0 18px #38d9e8, inset 0 0 10px #4ade80; pointer-events: none; animation: colonyBuildRing .65s ease-out forwards; }
 @keyframes colonyPulse { to { background: #4ade8044; } }
+@keyframes colonyGhostBob { from { transform: translateY(0) scale(.98); } to { transform: translateY(-4px) scale(1.02); } }
+@keyframes colonyBuildBounce {
+  0% { transform: translateY(-22px) scale(.86); filter: brightness(1.9) drop-shadow(0 0 12px #38d9e8); }
+  65% { transform: translateY(3px) scale(1.05, .94); }
+  100% { transform: translateY(0) scale(1); }
+}
+@keyframes colonyBuildRing {
+  0% { opacity: 1; transform: translateX(-50%) scale(.35); }
+  100% { opacity: 0; transform: translateX(-50%) scale(1.45); }
+}
 .colony-nopower { position: absolute; top: 34%; left: 50%; transform: translateX(-50%); background: #fb7185; color: #2a0610; font: 700 11px 'DM Mono', monospace; padding: 2px 5px; border-radius: 5px; white-space: nowrap; }
 .colony-locked { position: absolute; inset: 0; display: grid; place-items: center; background: #050a16c0; text-align: center; padding: 20px; font-weight: 700; }
 .colony-info { min-height: 44px; display: flex; gap: 10px; align-items: center; justify-content: space-between; font-size: 12.5px; line-height: 1.45; background: #0b1424; border: 1px solid #8296b333; border-radius: 9px; padding: 8px 12px; color: #cfd8e6; }
@@ -645,9 +658,11 @@ kbd { background: #1b2b47; border: 1px solid #8296b355; border-bottom-width: 2px
 .app-shell .wordmark-icon { color: #7fb8f0; }
 .app-shell .account-pill, .app-shell .income-pill, .app-shell .topbar .hud-btn, .app-shell .idle-warp-group { background: #1d3763; border: 2px solid #3d65a0; border-radius: 6px; color: #f3d9a4; }
 .app-shell .income-pill small { color: #4ade80; }
-.app-shell > .hero { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) 350px; gap: 0; padding: 0; margin: 0; max-width: none; width: 100%; min-height: 0; align-items: stretch; }
-.app-shell > .hero::before { content: ''; grid-column: 1; grid-row: 1; background: linear-gradient(#3d7fe066, #1e4c9a59), #0a1630 url(/assets/menu-hangar.jpg) center / cover no-repeat; background-blend-mode: screen, normal; image-rendering: pixelated; min-height: 420px; }
-.app-shell .hero-copy { grid-column: 2; grid-row: 1; margin: 10px; padding: 26px 22px 22px; background: linear-gradient(#21406f, #172f55); border: 3px solid #4a76b3; border-radius: 8px; box-shadow: inset 0 0 0 2px #10213f, 0 10px 40px #0009; position: relative; max-width: none; display: flex; flex-direction: column; }
+.app-shell > .hero { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) 350px; gap: 0; padding: 0; margin: 0; max-width: none; width: 100%; min-height: 0; align-items: stretch; position: relative; }
+.menu-hangar-canvas { grid-column: 1; grid-row: 1; width: 100%; height: 100%; min-height: 420px; display: block; z-index: 0; background: #0a1630; }
+.app-shell > .hero::before { content: ''; grid-column: 1; grid-row: 1; background: radial-gradient(circle at 42% 48%, rgba(56, 130, 232, .12), rgba(8, 18, 40, .34) 75%), linear-gradient(180deg, rgba(61, 127, 224, .14), rgba(15, 36, 78, .22)); pointer-events: none; z-index: 1; min-height: 420px; }
+.app-shell .hero-copy { grid-column: 2; grid-row: 1; margin: 10px; padding: 26px 22px 22px; background: linear-gradient(180deg, #24477b, #152b4f); border: 3px solid #4a76b3; border-radius: 8px; box-shadow: inset 0 0 0 2px #10213f, inset 0 1px 0 #7cb2f444, 0 12px 42px #000a; position: relative; z-index: 2; max-width: none; display: flex; flex-direction: column; animation: menuPanelIn .45s cubic-bezier(.2, .9, .2, 1) both; }
+@keyframes menuPanelIn { from { opacity: 0; transform: translateX(14px); } to { opacity: 1; transform: translateX(0); } }
 .app-shell .hero-copy::before, .app-shell .hero-copy::after { content: ''; position: absolute; width: 26px; height: 26px; border: 5px solid #c0703a; }
 .app-shell .hero-copy::before { top: -4px; left: -4px; border-right: 0; border-bottom: 0; border-radius: 8px 0 0 0; box-shadow: calc(350px - 56px) 0 0 -100px transparent; }
 .app-shell .hero-copy::after { bottom: -4px; right: -4px; border-left: 0; border-top: 0; border-radius: 0 0 8px 0; }
@@ -658,14 +673,15 @@ kbd { background: #1b2b47; border: 1px solid #8296b355; border-bottom-width: 2px
 .app-shell .hero-copy h1 span { color: #f0a050; }
 .app-shell .hero-copy .intro { font-size: 13.5px; line-height: 1.45; color: #cddcf0; margin: 0 0 18px; max-width: none; }
 .app-shell .actions { display: flex; flex-direction: column; gap: 10px; margin: 0; }
-.app-shell .actions .button { width: 100%; justify-content: center; padding: 11px 12px; border-radius: 6px; font: 600 18px 'Manrope', sans-serif; letter-spacing: .02em; background: #234574; border: 3px solid #10213f; box-shadow: inset 0 0 0 2px #4a76b3; color: #eef4fc; }
-.app-shell .actions .button:hover { box-shadow: inset 0 0 0 2px #9cc4f2; transform: none; }
-.app-shell .actions .button-primary { background: #3a2a1c; color: #ffd9a0; box-shadow: inset 0 0 0 2px #f08a3c, 0 0 18px #f08a3c88; border-color: #7a4a22; }
-.app-shell .actions .button-primary:hover { box-shadow: inset 0 0 0 2px #ffb46b, 0 0 24px #f08a3caa; }
-.app-shell .actions .mp-entry-btn { background: #19313d; color: #b7f5ff; box-shadow: inset 0 0 0 2px #38d9e8, 0 0 16px #38d9e844; border-color: #21576c; }
-.app-shell .actions .mp-entry-btn:hover { box-shadow: inset 0 0 0 2px #7feaff, 0 0 22px #38d9e888; }
+.app-shell .actions .button { width: 100%; justify-content: center; padding: 11px 12px; border-radius: 6px; font: 600 18px 'Manrope', sans-serif; letter-spacing: .02em; background: linear-gradient(180deg, #294e82, #1f3c66); border: 3px solid #10213f; box-shadow: inset 0 0 0 2px #4a76b3; color: #eef4fc; transition: transform .14s ease, box-shadow .18s ease, filter .18s ease; }
+.app-shell .actions .button:hover { box-shadow: inset 0 0 0 2px #9cc4f2, 0 4px 16px #38d9e833; transform: translateY(-1px); filter: brightness(1.06); }
+.app-shell .actions .button:active { transform: translateY(1px); }
+.app-shell .actions .button-primary { background: linear-gradient(180deg, #4b3421, #352417); color: #ffd9a0; box-shadow: inset 0 0 0 2px #f08a3c, 0 0 18px #f08a3c88; border-color: #7a4a22; }
+.app-shell .actions .button-primary:hover { box-shadow: inset 0 0 0 2px #ffb46b, 0 0 26px #f08a3cbb; }
+.app-shell .actions .mp-entry-btn { background: linear-gradient(180deg, #1d3b49, #152b36); color: #b7f5ff; box-shadow: inset 0 0 0 2px #38d9e8, 0 0 16px #38d9e844; border-color: #21576c; }
+.app-shell .actions .mp-entry-btn:hover { box-shadow: inset 0 0 0 2px #7feaff, 0 0 24px #38d9e899; }
 .app-shell .offline-banner { margin: 0; border-radius: 0; }
-@media (max-width: 820px) { .app-shell > .hero { grid-template-columns: 1fr; } .app-shell > .hero::before { min-height: 220px; } .app-shell .hero-copy { grid-column: 1; grid-row: 2; } }
+@media (max-width: 820px) { .app-shell > .hero { grid-template-columns: 1fr; } .menu-hangar-canvas, .app-shell > .hero::before { min-height: 240px; } .app-shell .hero-copy { grid-column: 1; grid-row: 2; } }
 
 /* ───────── Çok oyunculu lobi & Gezegen Fetih HUD ───────── */
 .mp-shell { min-height: 100vh; padding: 14px 20px 28px; background: #070c16; position: relative; color: var(--color-text); display: flex; flex-direction: column; gap: 16px; }
@@ -795,7 +811,9 @@ kbd { background: #1b2b47; border: 1px solid #8296b355; border-bottom-width: 2px
 .cargo-window { position: absolute; right: 14px; top: 300px; width: min(470px, 46vw); max-height: calc(100vh - 420px); min-height: 220px; display: flex; flex-direction: column; background: #0b1424f2; border: 1px solid #38d9e855; border-radius: 12px; box-shadow: 0 14px 40px #000a; z-index: 6; padding: 10px 12px 12px; }
 .cargo-window > header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .cargo-window > header h2 { font-size: 15px; margin: 0; }
-.cargo-window > header button { background: none; border: 0; color: #cbd5e1; font-size: 20px; cursor: pointer; }
+.cargo-window > header > button { background: none; border: 0; color: #cbd5e1; font-size: 20px; cursor: pointer; }
+.cargo-head-r { display: flex; align-items: center; gap: 6px; }
+.cargo-head-r > button:last-child { background: none; border: 0; color: #cbd5e1; font-size: 20px; cursor: pointer; padding: 0 4px; line-height: 1; }
 .cargo-capbar { display: grid; grid-template-columns: 52px 1fr auto; gap: 8px; align-items: center; font: 600 11.5px 'DM Mono', monospace; color: #94a3b8; margin-bottom: 10px; }
 .cargo-capbar i { height: 8px; background: #1e2c45; border-radius: 4px; overflow: hidden; }
 .cargo-capbar em { display: block; height: 100%; background: linear-gradient(90deg, #38d9e8, #4ade80); }
@@ -873,8 +891,8 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 
 /* Yan paneller, pencereler */
 .side-panel, .cargo-window { background: var(--ui-glass-strong); border: 1px solid var(--ui-line); border-radius: 14px; backdrop-filter: blur(14px); box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5); }
-.side-panel header button, .cargo-window > header button { width: 30px; height: 30px; border-radius: 8px; line-height: 1; transition: background .15s; }
-.side-panel header button:hover, .cargo-window > header button:hover { background: rgba(255, 255, 255, 0.08); }
+.side-panel > header > button, .cargo-window > header > button { width: 30px; height: 30px; border-radius: 8px; line-height: 1; transition: background .15s; }
+.side-panel > header > button:hover, .cargo-window > header > button:hover { background: rgba(255, 255, 255, 0.08); }
 .dialog { background: linear-gradient(#15294b, #101f3b); border: 1px solid var(--ui-line-strong); border-radius: 14px; }
 .dialog-backdrop { backdrop-filter: blur(6px); }
 
@@ -998,6 +1016,246 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .sh-inspector { background: rgba(255,255,255,.04); border: 1px solid var(--ui-line); border-radius: 8px; padding: 8px 10px; font-size: 11.5px; color: #cbd5e1; }
 .sh-insp-head { display: flex; justify-content: space-between; margin-bottom: 3px; font-size: 12.5px; color: #fff; }
 
-/* Yağma modu */
+/* Yağma modu, 4 çeyrek koloni, dron uyarısı, rampa seçici */
 .mp-war-pill.is-loot { background: rgba(251,191,36,.12); border-color: rgba(251,191,36,.45); color: #fde68a; }
 .mp-war-pill.is-loot.is-full { background: rgba(74,222,128,.16); border-color: rgba(74,222,128,.55); color: #bbf7d0; }
+.colony-quad-tabs { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 5px; width: 100%; }
+.colony-quad-btn { display: inline-flex; align-items: center; justify-content: space-between; gap: 5px; width: auto; height: auto; min-height: 28px; padding: 5px 8px; border-radius: 8px; border: 1px solid #3d7f86; background: #0d2a31; color: #bfe3e6; font: 600 11px/1.2 'DM Mono', monospace; cursor: pointer; transition: background .15s, border-color .15s, transform .1s; white-space: nowrap; }
+.colony-quad-btn:hover { background: #143f48; transform: translateY(-1px); }
+.colony-quad-btn.is-active { background: #1b5964; border-color: #38d9e8; color: #fff; box-shadow: 0 0 0 1px rgba(56,217,232,.4) inset; }
+.colony-quad-btn.is-col { border-color: rgba(74,222,128,.6); }
+.colony-quad-icons { display: inline-flex; align-items: center; gap: 3px; }
+.colony-quad-btn small { font-size: 10.5px; line-height: 1; }
+.outpost-upgrade-list { display: flex; flex-direction: column; gap: 8px; }
+.outpost-tier-card { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 10px; background: rgba(255,255,255,.04); border: 1px solid var(--ui-line); }
+.outpost-tier-card.is-owned { border-color: rgba(74,222,128,.45); background: rgba(22,163,74,.12); }
+.outpost-tier-card.is-next { border-color: rgba(56,217,232,.6); background: rgba(14,42,74,.45); }
+.outpost-tier-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; }
+.outpost-tier-badge { font: 700 11px 'DM Mono', monospace; color: #fde68a; background: rgba(0,0,0,.35); padding: 2px 8px; border-radius: 99px; }
+.outpost-tier-card.is-owned .outpost-tier-badge { color: #86efac; }
+.outpost-tier-card small { font-size: 11.5px; color: #cbd5e1; }
+.launch-site-picker { margin: 8px 0 4px; padding: 7px 9px; border-radius: 9px; background: rgba(56,217,232,.09); border: 1px solid rgba(56,217,232,.35); }
+.launch-site-picker label { display: flex; flex-direction: column; gap: 4px; font: 600 11px 'DM Mono', monospace; color: #9fd6ff; }
+.launch-site-picker select { background: #070d19; border: 1px solid #38d9e866; color: #f1f5f9; border-radius: 7px; padding: 5px 8px; font: 600 12px 'Manrope', sans-serif; }
+.drone-limit-banner { margin-bottom: 6px; padding: 7px 14px; border-radius: 9px; background: rgba(153,27,27,.9); border: 1.5px solid #f87171; color: #fee2e2; font: 700 12px 'DM Mono', monospace; animation: alarmBlink .45s steps(2) infinite; box-shadow: 0 0 24px rgba(248,113,113,.45); }
+.mp-planet-pill { transition: transform .14s ease, border-color .16s ease, box-shadow .18s ease, background .18s ease; }
+.mp-planet-pill:hover { transform: translateY(-1px); box-shadow: 0 0 12px #38d9e844; }
+.mp-planet-pill .q-count { color: #7feaff; font-size: 10px; opacity: .9; }
+
+/* Oyun geneli mikro-animasyonlar */
+@keyframes uiPopIn { from { opacity: 0; transform: translateY(8px) scale(.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
+.modal, .colony-panel, .ship-health-panel, .mp-card, .mp-room-card { animation: uiPopIn .24s cubic-bezier(.22, 1, .36, 1) both; }
+.launch-btn:hover:not(:disabled) { box-shadow: 0 12px 32px rgba(240, 138, 60, .55); filter: brightness(1.06); }
+.mini-warp-btn { transition: transform .12s ease, background .15s ease, border-color .15s ease, box-shadow .15s ease; }
+.mini-warp-btn:hover:not(:disabled) { transform: translateY(-1px); border-color: #7feaff; }
+.mini-warp-btn.is-on { box-shadow: 0 0 14px rgba(56, 217, 232, .42); }
+
+/* ───────── Dron Merkezi Penceresi ───────── */
+.drone-window {
+  width: min(760px, 94vw);
+  max-height: min(86vh, 760px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 18px;
+  background: var(--ui-glass-strong, #0b1424f5);
+  border: 1px solid rgba(56, 217, 232, .42);
+  color: #e2e8f0;
+  animation: uiPopIn .22s cubic-bezier(.22, 1, .36, 1) both;
+}
+.drone-win-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--ui-line);
+}
+.drone-win-head h2 { margin: 2px 0 0; font-size: 19px; color: #f8fafc; }
+.drone-win-head-r { display: flex; align-items: center; gap: 10px; }
+.drone-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.drone-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  min-height: 0;
+  padding-right: 2px;
+}
+.drone-pad-top {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+.drone-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font: 600 11.5px 'DM Mono', monospace;
+  color: #9fd6ff;
+}
+.drone-field select {
+  background: #070d19;
+  border: 1px solid rgba(56, 217, 232, .4);
+  color: #f1f5f9;
+  border-radius: 8px;
+  padding: 7px 10px;
+  font: 600 12.5px 'Manrope', sans-serif;
+}
+.drone-tier-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.drone-tier-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 6px 11px;
+  border-radius: 9px;
+  border: 1px solid var(--ui-line);
+  background: #0d1a30;
+  color: #cbd5e1;
+  cursor: pointer;
+  transition: border-color .15s, background .15s, transform .1s;
+}
+.drone-tier-btn:hover { border-color: rgba(56, 217, 232, .65); transform: translateY(-1px); }
+.drone-tier-btn.is-on {
+  background: linear-gradient(145deg, #133952, #0d2740);
+  border-color: #38d9e8;
+  color: #fff;
+  box-shadow: 0 0 0 1px rgba(56, 217, 232, .35) inset;
+}
+.drone-tier-btn b { font-size: 12.5px; }
+.drone-tier-btn small { font: 600 10.5px 'DM Mono', monospace; color: #94a3b8; }
+.drone-tier-btn.is-on small { color: #bae6fd; }
+.drone-window .cargo-capbar { grid-template-columns: minmax(115px, auto) 1fr auto; margin-bottom: 2px; }
+.drone-mod-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 7px;
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 2px 2px 4px;
+}
+.drone-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--ui-line);
+}
+.drone-footer small { flex: 1 1 260px; font-size: 11.5px; color: #94a3b8; line-height: 1.35; }
+.drone-empty-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 10px;
+  padding: 24px 16px;
+  background: rgba(16, 29, 51, .7);
+  border: 1px dashed rgba(56, 217, 232, .35);
+  border-radius: 12px;
+}
+.drone-empty-box p { margin: 0; max-width: 460px; font-size: 13px; color: #cbd5e1; line-height: 1.45; }
+.drone-list { display: flex; flex-direction: column; gap: 10px; }
+.drone-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 11px 12px;
+  background: rgba(13, 25, 46, .88);
+  border: 1px solid var(--ui-line);
+  border-radius: 11px;
+}
+.drone-card.is-cur { border-color: rgba(74, 222, 128, .65); box-shadow: 0 0 0 1px rgba(74, 222, 128, .25) inset; }
+.drone-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.drone-card-head b { display: block; font-size: 14px; color: #f8fafc; }
+.drone-card-head small { display: block; font: 600 11px 'DM Mono', monospace; color: #94a3b8; margin-top: 2px; }
+.drone-nav-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: rgba(7, 13, 25, .65);
+  border: 1px solid rgba(148, 163, 184, .18);
+  border-radius: 8px;
+  font-size: 12px;
+  color: #bae6fd;
+}
+.drone-subhead { margin-top: 6px; }
+.drone-list .cargo-row { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+.drone-list .cargo-row > div { flex: 1 1 130px; min-width: 0; }
+/* ───────── Filo Merkezi Penceresi & HUD Seçici ───────── */
+.target-bar select {
+  max-width: 145px;
+  text-overflow: ellipsis;
+}
+.fleet-window { width: min(780px, 94vw); }
+.fleet-cmd-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 11px;
+  background: rgba(16, 29, 51, .82);
+  border: 1px solid rgba(56, 217, 232, .32);
+}
+.fleet-cmd-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.fleet-order-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.drone-card.is-follow {
+  border-color: rgba(56, 217, 232, .52);
+  box-shadow: 0 0 0 1px rgba(56, 217, 232, .18) inset;
+}
+.fleet-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 99px;
+  font: 600 10.5px 'DM Mono', monospace;
+  vertical-align: middle;
+}
+.fleet-badge.is-leader {
+  background: rgba(251, 191, 36, .16);
+  border: 1px solid rgba(251, 191, 36, .45);
+  color: #fde68a;
+}
+.fleet-badge.is-follow {
+  background: rgba(56, 217, 232, .14);
+  border: 1px solid rgba(56, 217, 232, .45);
+  color: #a5f3fc;
+}
+.fleet-note {
+  font: 600 11.5px 'DM Mono', monospace;
+  color: #9fd6ff;
+  background: rgba(7, 13, 25, .55);
+  border-radius: 7px;
+  padding: 4px 8px;
+}
+.fleet-inline-select {
+  background: #070d19;
+  border: 1px solid rgba(56, 217, 232, .38);
+  color: #f1f5f9;
+  border-radius: 7px;
+  padding: 4px 8px;
+  font: 600 11.5px 'Manrope', sans-serif;
+  max-width: 220px;
+}
+.fleet-muted { color: #94a3b8; font-size: 11.5px; }
+
+@media (max-width: 720px) {
+  .drone-pad-top { grid-template-columns: 1fr; }
+  .drone-window .cargo-cols { grid-template-columns: 1fr; }
+  .drone-window .cargo-capbar { grid-template-columns: 1fr; gap: 4px; }
+  .fleet-cmd-row { grid-template-columns: 1fr; }
+}

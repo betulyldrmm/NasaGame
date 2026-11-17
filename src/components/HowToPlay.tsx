@@ -232,7 +232,7 @@ const SECTIONS: Section[] = [
         </li>
         <li>
           <b>🏗️ {L('Koloni geliri', 'Colony income')}</b>
-          <span>{L('Telemetri, Lab, Yaşam Küresi, Uzay Tarlası gibi yapılar saat başı gelir getirir; oyunu kapatsan da birikir.', 'Telemetry, Labs, Habitats, Space Farms earn money every hour — even while the game is closed.')}</span>
+          <span>{L('Telemetri, Lab, Yaşam Küresi, Uzay Tarlası ve Uzay İstasyonu gibi yapılar gerçek zamanla dakika başı yüksek gelir getirir; oyunu kapatsan da birikir.', 'Telemetry, Labs, Habitats, Space Farms, and Space Stations earn high income every real minute — even while the game is closed.')}</span>
         </li>
         <li>
           <b>⛏️ {L('Madencilik', 'Mining')}</b>
@@ -253,16 +253,16 @@ const SECTIONS: Section[] = [
     body: () => (
       <>
         <ol className="guide-steps">
-          <li>{L(<>Hangarda roketine <b>Kargo Gövdesi</b> ekle ve Kargo bölümünden götürmek istediğin yapıları seç (Güneş Paneli, Yaşam Küresi, Uzay İstasyonu…).</>, <>In the hangar add a <b>Cargo Bay</b> and pick the buildings you want to carry in the Cargo section (Solar Panel, Habitat, Space Station…).</>)}</li>
-          <li>{L(<>Hedef gezegene <b>sağlam in</b>. Altta beliren <b>Kargodaki modülleri kur</b> düğmesine bas: yapılar boş yuvalara yerleşir.</>, <><b>Land safely</b> on the target. Press <b>Unload buildings from cargo</b>: buildings drop into empty slots.</>)}</li>
-          <li>{L(<>Koloni panelinde yapıları sürükleyip yerini değiştirebilirsin. <b>Uzayda yalnızca getirdiğin yapıları kurabilirsin</b>; eksik olanı bir sonraki uçuşta getir.</>, <>In the Colony panel you can drag buildings around. <b>In space you can only build what you brought</b>; bring missing ones on your next flight.</>)}</li>
+          <li>{L(<>Hangarda roketine <b>Kargo Gövdesi</b> veya <b>Dron Fırlatıcı</b> ekle ve götürmek istediğin yapıları yükle (Güneş Paneli, Uzay İstasyonu, Fırlatma Rampası…).</>, <>In the hangar add a <b>Cargo Bay</b> or <b>Drone Bay</b> and load the buildings you want to deliver (Solar Panel, Space Station, Launch Pad…).</>)}</li>
+          <li>{L(<>Hedef gezegenin bir çeyreğine <b>sağlam in</b> ve Kargo penceresinden yapıları indir. <b>Uzay İstasyonu</b> kurulan çeyrek kolonileşir ve doğrudan inşa açılır.</>, <><b>Land safely</b> in a planet quadrant and unload from Cargo. A working <b>Space Station</b> colonizes that quadrant and unlocks local building.</>)}</li>
+          <li>{L(<><b>🛸 Dron Penceresi:</b> elektrikli fan dronlara ayrı kargo yükle, roketten veya doğrudan <b>Fırlatma Rampasından</b> kaldırıp gezegenin diğer çeyreklerine otonom gönder.</>, <><b>🛸 Drone Window:</b> load cargo specifically into electric fan drones, launch from your rocket or directly from any <b>Launch Pad</b>, and autopilot across quadrants.</>)}</li>
         </ol>
         <GuideScene scene="colony" height={170} />
         <ul className="guide-list">
           <li>{L(<><b>Elektrik:</b> her yapı elektrikle çalışır. Güneş Paneli üretir; üretim Güneş&apos;e uzaklığın karesiyle düşer (Mars&apos;ta yaklaşık %43). Reaktör güneşten bağımsızdır.</>, <><b>Power:</b> every building runs on electricity. Solar Panels make it; output falls with the square of the distance to the Sun (about 43% at Mars). The Reactor doesn&apos;t need the Sun.</>)}</li>
-          <li>{L(<><b>Uzay İstasyonu</b> (−7 ⚡) çalışınca gezegen kolonileşir ve gelir getirir: yanına yeterli panel götür.</>, <>A working <b>Space Station</b> (−7 ⚡) colonizes the planet and earns income: bring enough panels with it.</>)}</li>
+          <li>{L(<><b>Fırlatma Rampası:</b> aktif Uzay İstasyonu ile aynı çeyrekteyken buradan doğrudan roket ve dron fırlatabilirsin.</>, <><b>Launch Pad:</b> while paired with an active Space Station in the same quadrant, lets you launch rockets and drones directly from there.</>)}</li>
           <li>{L(<><b>Yakıt Tesisi</b> madenden roket yakıtı üretir (1 t maden → 4 t yakıt): koloniden yakıt alıp yola devam edebilirsin.</>, <>A <b>Fuel Plant</b> turns ore into rocket fuel (1 t ore → 4 t fuel): refuel at your colony and keep going.</>)}</li>
-          <li>{L(<>Dünya&apos;da tesisler (Telemetri, Lab, Batarya, Güneş tarlası) doğrudan parayla kurulur.</>, <>On Earth, facilities (Telemetry, Lab, Battery, Solar farm) are bought directly with money.</>)}</li>
+          <li>{L(<>Dünya ana üssünde tesisler (Telemetri, Lab, Batarya, Güneş tarlası) doğrudan parayla kurulur.</>, <>On Earth home base, facilities (Telemetry, Lab, Battery, Solar farm) are bought directly with money.</>)}</li>
         </ul>
       </>
     ),
@@ -273,10 +273,10 @@ const SECTIONS: Section[] = [
     title: ['Çok oyunculu', 'Multiplayer'],
     body: () => (
       <ul className="guide-list">
-        <li>{L('Bir oda kur ve kodu arkadaşlarına ver; herkes kendi rampasından kalkar.', 'Create a room and share the code; everyone launches from their own pad.')}</li>
+        <li>{L('Bir oda kur ve kodu arkadaşlarına ver; Koloni Yarışı veya Uzay Savaşı (Kuşatma / Puan / Yağma) seç.', 'Create a room and share the code; pick Colony Race or Space Warfare (Siege / Score / Raid).')}</li>
         <li>{L(<>Uzaya çıkınca <b>Hedefe Git</b> hızlı yolculuk yapar: yol için gereken yakıt düşülür, gemi birkaç saniyede hedefin atmosferine varır; inişi sen yaparsın.</>, <>Once in space, <b>Go to Target</b> fast-travels: the fuel for the trip is deducted and the ship reaches the target&apos;s atmosphere in seconds; you do the landing.</>)}</li>
-        <li>{L('Gezegene in, kargodan Uzay İstasyonu ve panelleri kur: çalışan istasyon gezegeni senin kolonin yapar. En çok koloni kuran kazanır.', 'Land, build a Space Station and panels from cargo: a working station makes the planet your colony. Whoever founds the most colonies wins.')}</li>
-        <li>{L('Dikkat: roketler birbirine çarparsa iki taraf da hasar görür.', 'Careful: if rockets collide, both get damaged.')}</li>
+        <li>{L('Gezegen çeyreklerine (Q1–Q4) Uzay İstasyonu ve rampa kur, FTL tarzı silahlarla rakipleri püskürt ya da Yağma kategorisinde üssünü Seviye 5\'e yükseltip ganimet topla.', 'Colonize quadrants (Q1–Q4) with Space Stations & Launch Pads, battle with FTL weapons, or upgrade your base to Lv.5 in Raid.')}</li>
+        <li>{L('Dikkat: roketler çarpışırsa hasar alır; gezegen dronları uzay sınırını aşarsa parçalanır.', 'Careful: colliding rockets take damage, and planetary drones break apart if flown above the space boundary.')}</li>
       </ul>
     ),
   },

@@ -1,6 +1,6 @@
 import { menuState } from './components/menuState'
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
-import { effectiveIncomeDt, tickBasesOnly, totalPassiveIncomePerHour } from './flight/world'
+import { effectiveIncomeDt, tickBasesOnly, totalPassiveIncomePerMin } from './flight/world'
 import { enterMpMode, exitMpMode, useMultiplayer } from './flight/mpClient'
 import { resetViewCache } from './render/renderer'
 import AuthScreen from './components/AuthScreen'
@@ -9,6 +9,7 @@ import IntroCutscene from './components/IntroCutscene'
 import HowToPlay from './components/HowToPlay'
 import MultiplayerLobby from './components/MultiplayerLobby'
 import PlanetGridPanel from './components/ColonyPanel'
+import MenuHangarCanvas from './components/MenuHangarCanvas'
 import { bump, clearOfflineGain, initAuth, logoutAccount, resetGame, saveGame, setIdleWarp, sim, useAuthState, useGame } from './game/store'
 import { audio } from './audio'
 import { messages } from './i18n/tr'
@@ -108,7 +109,7 @@ function App() {
     )
   }
 
-  const passivePerHr = totalPassiveIncomePerHour(gs)
+  const passivePerMin = totalPassiveIncomePerMin(gs)
 
   return (
     <main className="app-shell">
@@ -124,8 +125,8 @@ function App() {
           <span className="account-pill" title="Aktif hesap">
             👤 {auth.user.username}
           </span>
-          <span className="income-pill" title="Saatlik pasif gelir">
-            💰 {fmt(gs.money)} ₡ <small>(+{fmt(passivePerHr)} ₡/sa)</small>
+          <span className="income-pill" title="Dakikalık pasif gelir">
+            💰 {fmt(gs.money)} ₡ <small>(+{fmt(passivePerMin)} ₡/dk)</small>
           </span>
           <div className="idle-warp-group" title="Oyun hızı (pasif gelir en fazla 5× artar)">
             {IDLE_WARPS.map((w) => (
@@ -156,6 +157,7 @@ function App() {
       )}
 
       <section className="hero" id="home">
+        <MenuHangarCanvas />
         <div className="hero-copy">
           <p className="eyebrow">
             <span /> {messages.eyebrow}

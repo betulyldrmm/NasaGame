@@ -503,7 +503,7 @@ function sceneColony(ctx: Ctx, w: number, h: number, t: number) {
   })
   const power = clamp01((tl - 1.2) / 3)
   pill(ctx, L(`⚡ ${(8 * power).toFixed(0)} üretim`, `⚡ ${(8 * power).toFixed(0)} power`), w * 0.3, h * 0.1, '#facc15')
-  pill(ctx, L('₡ gelir / saat', '₡ income / hour'), w * 0.62, h * 0.1, '#4ade80')
+  pill(ctx, L('₡ gelir / dk', '₡ income / min'), w * 0.62, h * 0.1, '#4ade80')
   label(ctx, L('Paneller elektrik üretir; yapılar elektrikle çalışıp para kazandırır.', 'Panels make power; buildings run on it and earn money.'), w * 0.5, h * 0.93, '#fde68a', 12, 'center')
 }
 

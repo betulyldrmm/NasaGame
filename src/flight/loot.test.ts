@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { LOOT_PRESETS, OUTPOST_UPGRADE_COST, PARTS, outpostDesign, partDef, partMaxHp } from '../game/data'
+import { LOOT_PRESETS, OUTPOST_INCOME_PER_MIN, OUTPOST_MAX_LEVEL, OUTPOST_UPGRADE_COST, PARTS, outpostDesign, partDef, partMaxHp } from '../game/data'
 import type { GameEvent, PartInst, Vessel } from '../game/types'
 import { arcade, freshParts, isConnected, partAlive, runEngines, vesselStats } from '../game/vessel'
 import { applyVesselDamage, BREAKOFF_RATIO, dropLoot, isLootMode, isWarfareMode, LOOT_VALUE_PER_TON } from './combat'
-import { ARENA_RADIUS, arenaCenter, findLootShip, findOutpost, outpostPos, TURRET_RANGE } from './loot'
+import { ARENA_RADIUS, arenaCenter, findLootShip, findOutpost, LOOT_START_MONEY, outpostPos, TURRET_RANGE } from './loot'
 import { buildCompactSnapshot, hydrateCompactSnapshot } from './mpClient'
-import { newMultiplayerGame } from './multiplayerSim'
-import { dispatchCommand, stepWorld, validateDesign, type Sim } from './world'
+import { newMultiplayerGame, stepMultiplayerIncome } from './multiplayerSim'
+import { availableLaunchSites, dispatchCommand, stepWorld, validateDesign, type Sim } from './world'
 
 function makeLootSim(lootGoal = 60, money = 100_000): Sim {
   const gs = newMultiplayerGame(
@@ -156,6 +156,11 @@ describe('Yağma modu: kurulum, arcade uçuş ve ganimet döngüsü', () => {
     sim.gs.mp!.loot!.crates = []
     stepWorld(sim, 0.05, new Map())
     expect(findOutpost(sim.gs, 'p2')).toBeUndefined()
+    expect(sim.fx?.some((f) => f.kind === 'shockwave')).toBe(true)
+    expect(sim.fx?.some((f) => f.kind === 'debrisBurst')).toBe(true)
+    expect(sim.fx?.some((f) => f.kind === 'smokePlume')).toBe(true)
+    expect(sim.fx?.some((f) => f.kind === 'boom')).toBe(true)
+    expect(sim.gs.vessels.some((v) => v.debris && v.outpost === undefined)).toBe(true)
     expect(sim.gs.mp!.players.p2!.money).toBeLessThan(before * 0.75)
     expect(sim.gs.mp!.loot!.crates.length).toBeGreaterThan(0)
     expect(sim.gs.mp!.players.p1!.coloniesDestroyed).toBe(1)
@@ -260,5 +265,62 @@ describe('Parça bazlı hasar: gemi tek isabetle dağılmaz', () => {
     expect(hpOf(armored)).toBeCloseTo(240 - 30, 5)
     expect(armored.parts[0]!.hp).toBeCloseTo(640 - 60, 5)
     expect(PARTS.filter((p) => p.armor).length).toBe(4)
+  })
+})
+
+describe('Raid category in Space Warfare and 5-tier Outpost upgrades', () => {
+  it('merges Raid as a Space Warfare goal, removes planetary launch distractions, and upgrades Outpost cleanly through Lv 5', () => {
+    const gs = newMultiplayerGame(
+      'RAID-MERGED',
+      'p1',
+      [
+        { id: 'p1', username: 'Ada', color: '#38d9e8', slot: 0 },
+        { id: 'p2', username: 'Bora', color: '#ff8a3d', slot: 1 },
+      ],
+      { mode: 'orbital-warfare', warfareGoal: 'raid' },
+    )
+    gs.mp!.started = true
+    const sim: Sim = { gs, warpIdx: 0, firing: new Map(), fx: [], clock: 0 }
+
+    expect(isLootMode(gs)).toBe(true)
+    expect(isWarfareMode(gs)).toBe(true)
+    expect(LOOT_START_MONEY).toBe(45_000)
+    expect(LOOT_VALUE_PER_TON).toBe(7200)
+    expect(OUTPOST_INCOME_PER_MIN).toEqual([0, 3_000, 6_000, 10_000, 16_000, 25_000])
+    expect(gs.mp!.players.p1.money).toBe(LOOT_START_MONEY)
+
+    // 60 gerçek saniye sonunda Sv.1 üs dakikada +3.000 ₡ pasif gelir verir (10 sn uçuşta +500 ₡)
+    const mStart = gs.mp!.players.p1.money
+    for (let i = 0; i < 200; i += 1) stepWorld(sim, 0.05, new Map())
+    expect(gs.mp!.players.p1.money - mStart).toBeCloseTo(500, 1)
+    stepMultiplayerIncome(gs, 50)
+    expect(gs.mp!.players.p1.money - mStart).toBeCloseTo(3_000, 1)
+    // Yağma modunda gezegen üs/rampa fırlatma listesi yoktur; yalnızca üs sektörü vardır
+    expect(availableLaunchSites(gs, 'p1')).toHaveLength(1)
+    expect(availableLaunchSites(gs, 'p1')[0]!.bodyId).toBe('earth')
+    expect(availableLaunchSites(gs, 'p1')[0]!.quadrant).toBe(0)
+
+    // Seviye 1..5 üs tasarımlarının tamamı grid olarak bağlıdır
+    expect(OUTPOST_MAX_LEVEL).toBe(5)
+    for (let lvl = 1; lvl <= OUTPOST_MAX_LEVEL; lvl += 1) {
+      const parts = freshParts(outpostDesign(lvl))
+      expect(isConnected(parts)).toBe(true)
+    }
+
+    // Yeterli bütçe ile Üs Lv 1 -> Lv 5 adım adım yükseltilir
+    gs.mp!.players.p1.money = 300_000
+    for (let nextLvl = 2; nextLvl <= OUTPOST_MAX_LEVEL; nextLvl += 1) {
+      const moneyBefore = gs.mp!.players.p1.money
+      const res = dispatchCommand(sim, { type: 'upgradeOutpost' }, 'p1')
+      expect(res.error).toBeUndefined()
+      expect(gs.mp!.players.p1.outpostLevel).toBe(nextLvl)
+      expect(moneyBefore - gs.mp!.players.p1.money).toBe(OUTPOST_UPGRADE_COST[nextLvl - 1])
+      const outpost = findOutpost(gs, 'p1')
+      expect(outpost?.outpost?.level).toBe(nextLvl)
+      expect(outpost?.parts.length).toBe(outpostDesign(nextLvl).length)
+    }
+
+    // Maksimum seviyeden sonra tekrar yükseltme hata verir
+    expect(dispatchCommand(sim, { type: 'upgradeOutpost' }, 'p1').error).toBeTruthy()
   })
 })

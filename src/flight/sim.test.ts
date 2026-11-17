@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { baseReport, colonyTier, emptyBase, syncModules } from '../game/base'
-import { DEFAULT_DESIGN } from '../game/data'
-import { estimateDeltaV, freshParts, isConnected, vesselStats } from '../game/vessel'
+import { baseReport, COLONY_SLOTS, colonyTier, emptyBase, hasActiveLaunchPad, isQuadrantColonized, MODULE_BY_ID, quadrantCenterAngle, quadrantOfAngle, syncModules } from '../game/base'
+import { DEFAULT_DESIGN, INITIAL_MONEY, partDef } from '../game/data'
+import { MISSION_BY_ID } from '../game/missions'
+import { estimateDeltaV, freshParts, isConnected, runEngines, trimCargoToCap, vesselStats } from '../game/vessel'
 import { BODIES, solarFlux } from '../nasa/bodies'
 import { elementsFromState, hohmann, len, propagate, wrapPi } from './orbit'
 import { type Controls, PAD_ANGLE, situation, terrainHeight } from './physics'
 import { predictTrajectory } from './predict'
+import { droneMaxAlt, getActorQuadrantBase } from './combat'
 import {
   computeDynamicWarp,
   newMultiplayerGame,
@@ -14,7 +16,12 @@ import {
 } from './multiplayerSim'
 import {
   activeVessel,
+  availableLaunchSites,
   canControlVessel,
+  canLaunchFromQuadrant,
+  canTransferCargoBetween,
+  createsFollowCycle,
+  deleteVessel,
   dispatchCommand,
   earthModuleCost,
   effectiveIncomeDt,
@@ -27,7 +34,8 @@ import {
   stageNext,
   stepWorld,
   tickBasesOnly,
-  totalPassiveIncomePerHour,
+  totalPassiveIncomePerMin,
+  validateDesign,
   WARPS,
 } from './world'
 
@@ -152,20 +160,19 @@ describe('solar system expansion', () => {
 })
 
 describe('idle passive income & tech tree', () => {
-  it('starts new games with an active Earth passive income base', () => {
+  it('starts new games with an active Earth passive income base measured per real minute', () => {
     const gs = newGame()
     expect(gs.bases.earth).toBeDefined()
     expect(gs.bases.earth!.modules.telemetry).toBeGreaterThan(0)
-    const rate = totalPassiveIncomePerHour(gs)
-    expect(rate).toBeGreaterThan(900)
+    const rate = totalPassiveIncomePerMin(gs)
+    expect(rate).toBe(3_000)
 
     const money0 = gs.money
-    const earned = tickBasesOnly(gs, 3600)
+    const earned = tickBasesOnly(gs, 60)
     expect(earned).toBeCloseTo(rate, 2)
     expect(gs.money).toBeCloseTo(money0 + rate, 2)
-    expect(gs.time).toBe(3600)
+    expect(gs.time).toBe(60)
   })
-
 })
 
 describe('25x warp & auto-land', () => {
@@ -411,12 +418,12 @@ describe('economy balance & controlled rotation', () => {
     expect(effectiveIncomeDt(1, 1)).toBeCloseTo(1, 4)
     expect(effectiveIncomeDt(1, 100_000)).toBeLessThanOrEqual(5)
 
-    // 100.000× yörünge hızlandırması pasif geliri sömürmemeli
+    // 100.000× yörünge hızlandırması pasif geliri sömürmemeli (en fazla 5× hızlanır: 1 sn -> 5/60 dk)
     const sim: Sim = { gs: newGame(), warpIdx: WARPS.length - 1, firing: new Map() }
     const m0 = sim.gs.money
     for (let i = 0; i < 20; i += 1) stepWorld(sim, 0.05, ctrl)
     const gained = sim.gs.money - m0
-    expect(gained).toBeLessThan(10)
+    expect(gained).toBeCloseTo((totalPassiveIncomePerMin(sim.gs) * 5) / 60, 1)
 
     // Aynı Dünya modülünü tekrar eklemek giderek pahalanmalı
     const firstTelCost = earthModuleCost(sim.gs, 'telemetry')
@@ -482,13 +489,13 @@ describe('colony power & inverse-square law', () => {
     }
     const moon = baseReport(mk(), solarFlux(BODIES.earth.orbit!.a))
     expect(moon.unpowered).toBe(0)
-    expect(moon.orePerHour).toBeGreaterThan(0)
+    expect(moon.orePerMin).toBeGreaterThan(0)
     const flux = solarFlux(BODIES.mars.orbit!.a)
     expect(flux).toBeGreaterThan(0.4)
     expect(flux).toBeLessThan(0.46)
     const mars = baseReport(mk(), flux)
     expect(mars.unpowered).toBe(1)
-    expect(mars.orePerHour).toBe(0)
+    expect(mars.orePerMin).toBe(0)
     const two = mk()
     two.sites![2] = 'solar-farm'
     expect(baseReport(two, flux).unpowered).toBe(0)
@@ -1090,16 +1097,16 @@ describe('multiplayer colony race', () => {
     expect(pickupModule(sim, v, 'battery')).not.toBeNull()
   })
 
-  it('uzay kolonisinde yalnızca kargoyla getirilen yapılar kurulur (istasyon olsa da)', async () => {
-    const { colonyStationStatus, isBodyColonized } = await import('../game/base')
+  it('uzay kolonisinde istasyon aktifken doğrudan krediyle inşa açılır, istasyon yoksa yalnızca kargo çalışır', async () => {
+    const { colonyStationStatus, isBodyColonized, MODULE_BY_ID } = await import('../game/base')
     const { removePlanetModule } = await import('./world')
     const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map() }
     sim.gs.money = 100_000
-    const moon = emptyBase(0)
+    const moon = emptyBase(Math.PI / 2)
     sim.gs.bases.moon = moon
     const flux = solarFlux(BODIES.earth.orbit!.a)
 
-    // Stokta olmayan yapı parayla kurulamaz
+    // İstasyon veya stok olmadan yapı parayla kurulamaz
     expect(placePlanetModule(sim, 'moon', 0, 'solar-farm')).not.toBeNull()
     expect(sim.gs.money).toBe(100_000)
 
@@ -1112,14 +1119,15 @@ describe('multiplayer colony race', () => {
     expect(isBodyColonized(moon, flux)).toBe(true)
     expect(sim.gs.money).toBe(100_000)
 
-    // İstasyon çalışsa bile getirilmeyen yapı kurulamaz
-    expect(placePlanetModule(sim, 'moon', 3, 'habitat')).not.toBeNull()
+    // İstasyon aktif olunca bu çeyrekte krediyle doğrudan bina inşa edilebilir!
+    expect(placePlanetModule(sim, 'moon', 3, 'habitat')).toBeNull()
+    expect(sim.gs.money).toBe(100_000 - MODULE_BY_ID.habitat!.cost)
 
-    // Sökülen yapı depoya döner ve yeniden kurulabilir
+    // Sökülen yapı depoya döner ve yeniden ücretsiz kurulabilir
     expect(removePlanetModule(sim, 'moon', 0).error).toBeUndefined()
     expect(moon.stock['solar-farm']).toBe(1)
     expect(placePlanetModule(sim, 'moon', 4, 'solar-farm')).toBeNull()
-    expect(sim.gs.money).toBe(100_000)
+    expect(sim.gs.money).toBe(100_000 - MODULE_BY_ID.habitat!.cost)
   })
 
 
@@ -1490,5 +1498,593 @@ describe('auto-land orbital, mp stuck protection & fast-travel upgrades', () => 
     expect(v.throttle).toBe(0)
     expect(v.autopilot).toBe('off')
     expect(v.autopilotNote).toBeUndefined()
+  })
+})
+
+describe('economy, 4 quadrants, launch pads, and controllable drones', () => {
+  it('scales economy, mission rewards, Earth module cost curve, and COLONY_SLOTS = 12 cleanly', () => {
+    expect(INITIAL_MONEY).toBe(34_000)
+    expect(COLONY_SLOTS).toBe(12)
+    expect(MISSION_BY_ID['venus-land']!.reward).toBeGreaterThan(MISSION_BY_ID['mars-land']!.reward)
+    expect(MODULE_BY_ID['colony-station']!.power).toBe(-5)
+    expect(MODULE_BY_ID['launch-pad']!.cost).toBe(5200)
+    expect(MODULE_BY_ID['launch-pad']!.power).toBe(-1)
+    expect(MODULE_BY_ID['telemetry']!.income).toBeLessThan(MODULE_BY_ID['habitat']!.income)
+    expect(MODULE_BY_ID['habitat']!.income).toBeLessThan(MODULE_BY_ID['sampler']!.income)
+    expect(MODULE_BY_ID['sampler']!.income).toBeLessThan(MODULE_BY_ID['biodome']!.income)
+    expect(MODULE_BY_ID['biodome']!.income).toBeLessThan(MODULE_BY_ID['lab']!.income)
+    expect(MODULE_BY_ID['lab']!.income).toBe(10_000)
+
+    const gs = newGame()
+    expect(totalPassiveIncomePerMin(gs)).toBe(3_000)
+    const sim: Sim = { gs, warpIdx: 0, firing: new Map(), fx: [], clock: 0 }
+    expect(placePlanetModule(sim, 'earth', 3, 'solar-farm')).toBeNull()
+    expect(placePlanetModule(sim, 'earth', 4, 'lab')).toBeNull()
+    expect(totalPassiveIncomePerMin(gs)).toBe(13_000)
+
+    const gs2 = newGame()
+    const baseSolarCost = earthModuleCost(gs2, 'solar-farm')
+    expect(baseSolarCost).toBe(Math.round(MODULE_BY_ID['solar-farm']!.cost * 1.35))
+    gs2.bases.earth!.sites![3] = 'solar-farm'
+    syncModules(gs2.bases.earth!)
+    expect(earthModuleCost(gs2, 'solar-farm')).toBe(Math.round(MODULE_BY_ID['solar-farm']!.cost * 1.7))
+  })
+
+  it('keeps 4 quadrants independent, enables local builds with Space Station, and launches rockets from Moon Launch Pad in SP', () => {
+    const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map(), fx: [], clock: 0 }
+    sim.gs.money = 120_000
+    expect(canLaunchFromQuadrant(sim.gs, 'earth', 0, 'local')).toBe(true)
+    expect(canLaunchFromQuadrant(sim.gs, 'earth', 1, 'local')).toBe(false)
+    expect(isQuadrantColonized(sim.gs.quadrantBases?.earth?.[1], 1)).toBe(false)
+
+    // Ay Çeyrek 1'de İstasyon olmadan krediyle bina dikilemez ve fırlatma yapılamaz
+    expect(placePlanetModule(sim, 'moon', 0, 'launch-pad', 'local', 1)).toBeTruthy()
+    expect(canLaunchFromQuadrant(sim.gs, 'moon', 1, 'local')).toBe(false)
+
+    // Kargo aracını Ay Q1'e indirip Uzay İstasyonu + Reaktör kur
+    const q1 = quadrantCenterAngle(1)
+    const moonR = BODIES.moon.radius
+    const id = sim.gs.nextId
+    sim.gs.nextId += 1
+    const cargoShip = {
+      id,
+      name: 'Koloni Gemisi',
+      ownerId: 'local',
+      bodyId: 'moon' as const,
+      pos: { x: Math.cos(q1) * moonR, y: Math.sin(q1) * moonR },
+      vel: { x: 0, y: 0 },
+      angle: q1,
+      angVel: 0,
+      throttle: 0,
+      landed: true,
+      ec: 60,
+      rcsOn: false,
+      sas: 'off' as const,
+      autopilot: 'off' as const,
+      visited: ['earth' as const, 'moon' as const],
+      assist: null,
+      dvUsed: 0,
+      parts: freshParts([{ def: 'capsule', x: 6, y: 1 }, { def: 'cargo-lg', x: 6, y: 3 }]),
+      cargo: { modules: { 'colony-station': 1, 'rtg-reactor': 1 }, ore: 0, oreFrom: null },
+    }
+    sim.gs.vessels.push(cargoShip)
+    sim.gs.activeId = id
+
+    expect(dispatchCommand(sim, { type: 'deployModules', vesselId: id, quadrant: 1 }).error).toBeUndefined()
+    // Rampayı boş bırakmak için kargo aracını aynı çeyrek içinde kenara al
+    cargoShip.pos = { x: Math.cos(q1 + 0.002) * moonR, y: Math.sin(q1 + 0.002) * moonR }
+
+    const moonQ1 = sim.gs.quadrantBases?.moon?.[1]
+    expect(isQuadrantColonized(moonQ1, 1)).toBe(true)
+    expect(baseReport(moonQ1!, 1, BODIES.moon.incomeMult).incomePerMin).toBe(10_800)
+    expect(isQuadrantColonized(sim.gs.bases.moon, 1)).toBe(false)
+    expect(hasActiveLaunchPad(moonQ1, 1)).toBe(false)
+
+    // Aktif İstasyon sayesinde doğrudan krediyle Fırlatma Rampası kurulur ve oradan roket fırlatılır
+    expect(placePlanetModule(sim, 'moon', 2, 'launch-pad', 'local', 1)).toBeNull()
+    expect(hasActiveLaunchPad(moonQ1, 1)).toBe(true)
+    expect(canLaunchFromQuadrant(sim.gs, 'moon', 1, 'local')).toBe(true)
+    expect(availableLaunchSites(sim.gs, 'local').some((s) => s.bodyId === 'moon' && s.quadrant === 1)).toBe(true)
+    expect(launchDesign(sim, 'local', DEFAULT_DESIGN, {}, 'moon', 1)).toBeNull()
+    const onMoon = activeVessel(sim.gs)!
+    expect(onMoon.bodyId).toBe('moon')
+    expect(quadrantOfAngle(Math.atan2(onMoon.pos.y, onMoon.pos.x))).toBe(1)
+  })
+
+  it('launches unarmed controllable cargo drones in Colony Race and SP, colonizes quadrants, and breaks above planetary ceiling', () => {
+    const carrierDesign = [
+      { def: 'capsule', x: 6, y: 1 },
+      { def: 'drone-bay-l', x: 8, y: 1 },
+      { def: 'cargo-lg', x: 6, y: 3 },
+      { def: 'tank-m', x: 6, y: 6 },
+      { def: 'frontier', x: 6, y: 8 },
+    ]
+    expect(isConnected(freshParts(carrierDesign))).toBe(true)
+
+    const gs = newMultiplayerGame(
+      'DRN1',
+      'p1',
+      [{ id: 'p1', username: 'Ada', color: '#38d9e8', slot: 0 }],
+      { mode: 'colony-race', startingMoney: 100_000 },
+    )
+    gs.mp!.started = true
+    const sim: Sim = { gs, warpIdx: 0, firing: new Map(), fx: [], clock: 0 }
+
+    // Koloni Yarışı'nda Dron Hangarı + kargo taşıyan roketi fırlat
+    const launchRes = dispatchCommand(
+      sim,
+      {
+        type: 'launch',
+        design: carrierDesign,
+        designCargo: { 'colony-station': 1, 'rtg-reactor': 1 },
+      },
+      'p1',
+    )
+    expect(launchRes.error).toBeUndefined()
+    const carrier = gs.vessels.find((v) => v.ownerId === 'p1')!
+
+    // Ateş tuşuyla Dron Hangarından silahsız dronu çıkar
+    const evs = stepWorld(
+      sim,
+      0.05,
+      new Map([['p1', { rotate: 0, tx: 0, ty: 0, fire: true, weaponKey: 'drone-bay-l', aimAngle: PAD_ANGLE }]]),
+    )
+    expect(evs.some((e) => e.type === 'toast')).toBe(true)
+    const drone = gs.vessels.find((v) => v.drone && v.ownerId === 'p1')!
+    expect(drone).toBeDefined()
+    expect(drone.drone!.tier).toBe(3)
+    expect(drone.drone!.homeBodyId).toBe('earth')
+    expect(vesselStats(drone.parts, drone.cargo).weaponCount).toBe(0)
+
+    // Dron silahsızdır: ateş komutu mermi üretmez ve gezegenler arası transfer otopilotu reddedilir
+    stepWorld(
+      sim,
+      0.05,
+      new Map([['p1', { rotate: 0, tx: 0, ty: 0, fire: true, weaponKey: 'gun-vulcan', aimAngle: 0 }]]),
+    )
+    expect(gs.projectiles?.length ?? 0).toBe(0)
+    expect(setVesselAutopilot(sim, drone, 'transfer')).toBeTruthy()
+
+    // Kargo gemiden drona otomatik aktarılmıştır; transferCargo komutu da çalışır
+    expect(drone.cargo.modules['colony-station']).toBe(1)
+    expect(drone.cargo.modules['rtg-reactor']).toBe(1)
+    expect(carrier.cargo.modules['colony-station']).toBeUndefined()
+    // 1 modülü geri ana gemiye, sonra tekrar drona aktar (480 m menzil testi)
+    drone.pos = { x: carrier.pos.x + 20, y: carrier.pos.y }
+    expect(
+      dispatchCommand(
+        sim,
+        { type: 'transferCargo', fromVesselId: drone.id, toVesselId: carrier.id, moduleId: 'rtg-reactor', count: 1 },
+        'p1',
+      ).error,
+    ).toBeUndefined()
+    expect(carrier.cargo.modules['rtg-reactor']).toBe(1)
+    expect(
+      dispatchCommand(
+        sim,
+        { type: 'transferCargo', fromVesselId: carrier.id, toVesselId: drone.id, moduleId: 'rtg-reactor', count: 1 },
+        'p1',
+      ).error,
+    ).toBeUndefined()
+    expect(drone.cargo.modules['rtg-reactor']).toBe(1)
+
+    // Dron Dünya Çeyrek 1'e inip Uzay İstasyonunu indirerek çeyreği kolonileştirir
+    const q1 = quadrantCenterAngle(1)
+    const earthR = BODIES.earth.radius + terrainHeight('earth', q1)
+    drone.pos = { x: Math.cos(q1) * earthR, y: Math.sin(q1) * earthR }
+    drone.vel = { x: 0, y: 0 }
+    drone.landed = true
+    drone.angle = q1
+    gs.mp!.players.p1.activeVesselId = drone.id
+    expect(dispatchCommand(sim, { type: 'deployModules', vesselId: drone.id, quadrant: 1 }, 'p1').error).toBeUndefined()
+    expect(isQuadrantColonized(getActorQuadrantBase(gs, 'earth', 'p1', 1), 1)).toBe(true)
+
+    // Uzay sınırı denetimi: 0.75 * maxAlt üstünde uyarır, maxAlt üstünde kalınca parçalanır
+    const maxAlt = droneMaxAlt('earth', 3)
+    drone.landed = false
+    drone.pos = { x: 0, y: BODIES.earth.radius + maxAlt * 0.85 }
+    drone.vel = { x: 0, y: 0 }
+    const warnEvs = stepWorld(sim, 0.05, new Map())
+    expect(drone.drone!.warn).toBe(true)
+    expect(warnEvs.some((e) => e.type === 'toast' && e.text.includes('DRON UYARISI'))).toBe(true)
+
+    drone.pos = { x: 0, y: BODIES.earth.radius + maxAlt + 600 }
+    drone.vel = { x: 0, y: 40 }
+    let crashSeen = false
+    for (let i = 0; i < 60 && gs.vessels.some((v) => v.id === drone.id); i += 1) {
+      const ev = stepWorld(sim, 0.05, new Map())
+      if (ev.some((e) => e.type === 'crash' && e.vesselId === drone.id)) crashSeen = true
+    }
+    expect(crashSeen).toBe(true)
+    expect(gs.vessels.some((v) => v.id === drone.id)).toBe(false)
+
+    // Tek Oyunculu modda da Dron Hangarı doğrudan çalışır
+    const spSim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map(), fx: [], clock: 0 }
+    spSim.gs.money = 120_000
+    expect(launchDesign(spSim, 'local', carrierDesign, { 'solar-farm': 2 })).toBeNull()
+    stepWorld(spSim, 0.05, { rotate: 0, tx: 0, ty: 0, fire: true, weaponKey: 'drone-bay-l', aimAngle: PAD_ANGLE })
+    const spDrone = spSim.gs.vessels.find((v) => v.drone)
+    expect(spDrone).toBeDefined()
+    expect(spDrone!.cargo.modules['solar-farm']).toBe(2)
+  })
+
+  it('enforces 1 drone bay max with ammo=1, powers drones by electric fans without liquid fuel, and autopilots to next quadrant', () => {
+    for (const id of ['drone-bay-s', 'drone-bay-m', 'drone-bay-l']) {
+      expect(partDef(id).droneSpec?.ammo).toBe(1)
+    }
+    const twoBays = [
+      { def: 'capsule', x: 6, y: 1 },
+      { def: 'drone-bay-s', x: 5, y: 1 },
+      { def: 'drone-bay-s', x: 8, y: 1 },
+      { def: 'tank-m', x: 6, y: 3 },
+      { def: 'hawk', x: 6, y: 5 },
+    ]
+    expect(validateDesign(twoBays, {})).toBeTruthy()
+
+    const spSim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map(), fx: [], clock: 0 }
+    spSim.gs.money = 120_000
+    const carrierDesign = [
+      { def: 'capsule', x: 6, y: 1 },
+      { def: 'drone-bay-l', x: 8, y: 1 },
+      { def: 'tank-m', x: 6, y: 3 },
+      { def: 'hawk', x: 6, y: 5 },
+    ]
+    expect(launchDesign(spSim, 'local', carrierDesign)).toBeNull()
+    const carrier = activeVessel(spSim.gs)!
+    stepWorld(spSim, 0.05, { rotate: 0, tx: 0, ty: 0, fire: true, weaponKey: 'drone-bay-l', aimAngle: PAD_ANGLE })
+    // Fırlatma sonrası hangarda ikinci dron kalmaz (ammo = 1)
+    const bayPart = carrier.parts.find((p) => p.def === 'drone-bay-l')!
+    expect(bayPart.ammo).toBe(0)
+
+    const drone = spSim.gs.vessels.find((v) => v.drone)!
+    expect(drone).toBeDefined()
+    const dst = vesselStats(drone.parts, drone.cargo)
+    expect(dst.fuelCap).toBe(0)
+    expect(dst.ecCap).toBeGreaterThan(0)
+    expect(drone.parts.some((p) => partDef(p.def).electricFan)).toBe(true)
+
+    const fanParts = drone.parts.map((p) => ({ ...p }))
+    const engCheck = runEngines(fanParts, 1, 1.0, 0.1, dst.ecCap)
+    expect(engCheck.thrust).toBeGreaterThan(0)
+    expect(vesselStats(fanParts, drone.cargo).fuel).toBe(0)
+    expect(engCheck.ecUsed).toBeGreaterThan(0)
+
+    // Dronu Q0 yüzeyine koyup "Sonraki Çeyrek" (nextQuad) otopilotu ile Q1'e uçur
+    const q0 = quadrantCenterAngle(0)
+    const r0 = BODIES.earth.radius + terrainHeight('earth', q0)
+    drone.pos = { x: Math.cos(q0) * r0, y: Math.sin(q0) * r0 }
+    drone.vel = { x: 0, y: 0 }
+    drone.landed = true
+    drone.angle = q0
+    spSim.gs.activeId = drone.id
+
+    expect(setVesselAutopilot(spSim, drone, 'nextQuad')).toBeNull()
+    expect(drone.autopilot).toBe('nextQuad')
+    expect(drone.targetQuad).toBe(1)
+
+    const maxAlt = droneMaxAlt('earth', 3)
+    for (let i = 0; i < 9000 && drone.autopilot === 'nextQuad'; i += 1) {
+      stepWorld(spSim, 0.1, { rotate: 0, tx: 0, ty: 0 })
+      const alt = Math.hypot(drone.pos.x, drone.pos.y) - BODIES.earth.radius
+      expect(alt).toBeLessThan(maxAlt * 0.8)
+    }
+    expect(spSim.gs.vessels.some((v) => v.id === drone.id)).toBe(true)
+    expect(drone.landed).toBe(true)
+    expect(drone.autopilot).toBe('off')
+    expect(quadrantOfAngle(Math.atan2(drone.pos.y, drone.pos.x))).toBe(1)
+  })
+
+  it('supports dedicated designDroneCargo without main cargo bay, transfers Ship <-> Drone <-> Base, and preserves staged payload', () => {
+    const bayOnlyDesign = [
+      { def: 'capsule', x: 6, y: 1 },
+      { def: 'drone-bay-m', x: 8, y: 1 },
+      { def: 'tank-m', x: 6, y: 3 },
+      { def: 'hawk', x: 6, y: 5 },
+    ]
+    // Kargo gövdesi olmayan rokette sadece dron kargosu doğrulanır
+    expect(validateDesign(bayOnlyDesign, {}, undefined, { 'colony-station': 1, 'solar-farm': 2 })).toBeNull()
+    expect(validateDesign(bayOnlyDesign, { 'solar-farm': 1 })).toBeTruthy()
+    expect(validateDesign(bayOnlyDesign, {}, undefined, { 'colony-station': 2 })).toBeTruthy() // > 7.5 t
+
+    const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map(), fx: [], clock: 0 }
+    sim.gs.money = 120_000
+    const res = dispatchCommand(
+      sim,
+      {
+        type: 'launch',
+        design: bayOnlyDesign,
+        designCargo: {},
+        designDroneCargo: { 'colony-station': 1, 'solar-farm': 2 },
+      },
+      'local',
+    )
+    expect(res.error).toBeUndefined()
+    const rocket = activeVessel(sim.gs)!
+    const bayIdx = rocket.parts.findIndex((p) => p.def === 'drone-bay-m')
+    expect(rocket.parts[bayIdx]!.droneCargo).toEqual({ 'colony-station': 1, 'solar-farm': 2 })
+
+    // Roket + Kargo Gövdesi olan ikinci senaryoda Ship <-> Drone Bay <-> Colony aktarımı
+    const withCargoDesign = [
+      { def: 'capsule', x: 6, y: 1 },
+      { def: 'drone-bay-m', x: 8, y: 1 },
+      { def: 'cargo', x: 6, y: 3 },
+      { def: 'tank-m', x: 6, y: 5 },
+      { def: 'hawk', x: 6, y: 7 },
+    ]
+    const sim2: Sim = { gs: newGame(), warpIdx: 0, firing: new Map(), fx: [], clock: 0 }
+    sim2.gs.money = 150_000
+    expect(
+      dispatchCommand(
+        sim2,
+        {
+          type: 'launch',
+          design: withCargoDesign,
+          designCargo: { 'solar-farm': 1 },
+          designDroneCargo: { 'colony-station': 1 },
+        },
+        'local',
+      ).error,
+    ).toBeUndefined()
+    const carrier = activeVessel(sim2.gs)!
+    const cBayIdx = carrier.parts.findIndex((p) => p.def === 'drone-bay-m')
+    // Gemiden Drona yük aktar
+    expect(
+      dispatchCommand(
+        sim2,
+        {
+          type: 'transferDroneCargo',
+          vesselId: carrier.id,
+          partIndex: cBayIdx,
+          moduleId: 'solar-farm',
+          delta: 1,
+          source: 'ship',
+        },
+        'local',
+      ).error,
+    ).toBeUndefined()
+    expect(carrier.cargo.modules['solar-farm']).toBeUndefined()
+    expect(carrier.parts[cBayIdx]!.droneCargo).toEqual({ 'colony-station': 1, 'solar-farm': 1 })
+
+    // Yüzeyde Dünya Ana Üssü'nden doğrudan Drona 1 adet daha ekle (toplam 6 t <= 7.5 t)
+    const moneyBeforeBuy = sim2.gs.money
+    expect(
+      dispatchCommand(
+        sim2,
+        {
+          type: 'transferDroneCargo',
+          vesselId: carrier.id,
+          partIndex: cBayIdx,
+          moduleId: 'solar-farm',
+          delta: 1,
+          source: 'colony',
+        },
+        'local',
+      ).error,
+    ).toBeUndefined()
+    expect(sim2.gs.money).toBe(moneyBeforeBuy - MODULE_BY_ID['solar-farm']!.cost)
+    expect(carrier.parts[cBayIdx]!.droneCargo).toEqual({ 'colony-station': 1, 'solar-farm': 2 })
+
+    // Dron fırlatıldığında yalnızca kendi droneCargo yükünü alır (gemiye ait kalan cargo varsa dokunmaz)
+    expect(
+      dispatchCommand(
+        sim2,
+        {
+          type: 'buyCargoModule',
+          vesselId: carrier.id,
+          moduleId: 'drill',
+          delta: 1,
+        },
+        'local',
+      ).error,
+    ).toBeUndefined()
+    expect(
+      dispatchCommand(sim2, { type: 'launchDrone', vesselId: carrier.id, partIndex: cBayIdx }, 'local').error,
+    ).toBeUndefined()
+    const spawned = activeVessel(sim2.gs)!
+    expect(spawned.drone?.tier).toBe(2)
+    expect(spawned.cargo.modules).toEqual({ 'colony-station': 1, 'solar-farm': 2 })
+    expect(carrier.cargo.modules['drill']).toBe(1)
+  })
+
+  it('launches electric drones directly from Earth Q0 and colonized Moon Q1 Launch Pad pulling base stock', () => {
+    const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map(), fx: [], clock: 0 }
+    sim.gs.money = 100_000
+
+    // Dünya Q0 rampasından Mk-II dron + 2× Güneş Paneli fırlat
+    const earthRes = dispatchCommand(
+      sim,
+      {
+        type: 'launchPadDrone',
+        bodyId: 'earth',
+        quadrant: 0,
+        tier: 2,
+        modules: { 'solar-farm': 2 },
+      },
+      'local',
+    )
+    expect(earthRes.error).toBeUndefined()
+    const eDrone = activeVessel(sim.gs)!
+    expect(eDrone.drone?.tier).toBe(2)
+    expect(eDrone.bodyId).toBe('earth')
+    expect(eDrone.cargo.modules).toEqual({ 'solar-farm': 2 })
+    expect(eDrone.parts.some((p) => partDef(p.def).electricFan)).toBe(true)
+
+    // Ay Q1'de Uzay İstasyonu + Fırlatma Rampası + Güneş Paneli ve depoda 1× Güneş Paneli hazırla
+    const q1 = emptyBase(quadrantCenterAngle(1))
+    q1.sites = ['colony-station', 'launch-pad', 'solar-farm', 'solar-farm', null, null, null, null, null, null, null, null]
+    q1.stock = { 'solar-farm': 1 }
+    syncModules(q1)
+    sim.gs.quadrantBases ??= {}
+    sim.gs.quadrantBases.moon = [
+      emptyBase(quadrantCenterAngle(0)),
+      q1,
+      emptyBase(quadrantCenterAngle(2)),
+      emptyBase(quadrantCenterAngle(3)),
+    ]
+
+    const moneyBeforeMoon = sim.gs.money
+    const moonRes = dispatchCommand(
+      sim,
+      {
+        type: 'launchPadDrone',
+        bodyId: 'moon',
+        quadrant: 1,
+        tier: 3,
+        modules: { 'solar-farm': 2 },
+      },
+      'local',
+    )
+    expect(moonRes.error).toBeUndefined()
+    const mDrone = activeVessel(sim.gs)!
+    expect(mDrone.drone?.tier).toBe(3)
+    expect(mDrone.bodyId).toBe('moon')
+    expect(quadrantOfAngle(Math.atan2(mDrone.pos.y, mDrone.pos.x))).toBe(1)
+    expect(mDrone.cargo.modules).toEqual({ 'solar-farm': 2 })
+    // 1 modül stoktan bedava düştü, sadece 1 modül + Mk-III dron ücreti kesildi
+    expect(q1.stock?.['solar-farm']).toBeUndefined()
+    expect(sim.gs.money).toBe(moneyBeforeMoon - 9_500 - MODULE_BY_ID['solar-farm']!.cost)
+  })
+
+  it('allows cargo transfer within 2km or same landed quadrant and preserves fitting cargo on partial bay loss', () => {
+    const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map(), fx: [], clock: 0 }
+    sim.gs.money = 120_000
+    expect(
+      dispatchCommand(
+        sim,
+        {
+          type: 'launchPadDrone',
+          bodyId: 'earth',
+          quadrant: 0,
+          tier: 2,
+          modules: { 'solar-farm': 2 },
+        },
+        'local',
+      ).error,
+    ).toBeUndefined()
+    const drone = activeVessel(sim.gs)!
+
+    const rocketDesign = [
+      { def: 'capsule', x: 6, y: 1 },
+      { def: 'cargo', x: 6, y: 3 },
+      { def: 'tank-m', x: 6, y: 5 },
+      { def: 'hawk', x: 6, y: 7 },
+    ]
+    expect(launchDesign(sim, 'local', rocketDesign)).toBeNull()
+    const rocket = activeVessel(sim.gs)!
+
+    // İki araç aynı çeyrekte inmişken 1200 m mesafede bile kargo aktarılabilir
+    const shiftedAngle = Math.atan2(rocket.pos.y, rocket.pos.x) + 1200 / BODIES.earth.radius
+    const sr = BODIES.earth.radius + terrainHeight('earth', shiftedAngle)
+    drone.pos = { x: Math.cos(shiftedAngle) * sr, y: Math.sin(shiftedAngle) * sr }
+    drone.landed = true
+    expect(canTransferCargoBetween(drone, rocket)).toBe(true)
+
+    expect(
+      dispatchCommand(
+        sim,
+        {
+          type: 'transferCargo',
+          fromVesselId: drone.id,
+          toVesselId: rocket.id,
+          moduleId: 'solar-farm',
+          count: 1,
+        },
+        'local',
+      ).error,
+    ).toBeUndefined()
+    expect(rocket.cargo.modules['solar-farm']).toBe(1)
+    expect(drone.cargo.modules['solar-farm']).toBe(1)
+
+    // Kargo kapasitesi küçüldüğünde tüm yük silinmez; sığan modüller + kalan maden korunur
+    const cargo = { ore: 3, oreFrom: 'moon' as const, modules: { 'colony-station': 1, 'solar-farm': 1 } }
+    const trimRes1 = trimCargoToCap(cargo, 6)
+    expect(cargo.modules['colony-station']).toBe(1)
+    expect(cargo.modules['solar-farm']).toBe(1)
+    expect(cargo.ore).toBe(1)
+    expect(trimRes1.droppedOre).toBe(2)
+
+    const modCargo = { ore: 2, oreFrom: 'moon' as const, modules: { 'colony-station': 1, 'solar-farm': 3 } }
+    const trimRes2 = trimCargoToCap(modCargo, 6)
+    expect(modCargo.modules['colony-station']).toBe(1)
+    expect(modCargo.modules['solar-farm']).toBe(2)
+    expect(modCargo.ore).toBe(0)
+    expect(modCargo.oreFrom).toBeNull()
+    expect(trimRes2.droppedModules['solar-farm']).toBe(1)
+    expect(trimRes2.droppedOre).toBe(2)
+  })
+
+  it('supports fleet follow formation in orbit, rejects follow cycles, executes fleet orders, and detaches on leader removal', () => {
+    const sim: Sim = { gs: newGame(), warpIdx: 0, firing: new Map(), fx: [], clock: 0 }
+    sim.gs.money = 250_000
+    const shipDesign = [
+      { def: 'capsule', x: 6, y: 1 },
+      { def: 'tank-l', x: 6, y: 3 },
+      { def: 'hawk', x: 6, y: 6 },
+    ]
+
+    expect(launchDesign(sim, 'local', shipDesign)).toBeNull()
+    const leader = activeVessel(sim.gs)!
+    // İlk aracı Ay yörüngesine al (240 km) ve ikinci aracı aynı yörüngenin 1400 m gerisine yerleştir
+    const rOrb = BODIES.moon.radius + 35_000
+    const vOrb = Math.sqrt(BODIES.moon.mu / rOrb)
+    leader.bodyId = 'moon'
+    leader.landed = false
+    leader.pos = { x: rOrb, y: 0 }
+    leader.vel = { x: 0, y: vOrb }
+    leader.angle = Math.PI / 2
+
+    expect(launchDesign(sim, 'local', shipDesign)).toBeNull()
+    const wingman1 = activeVessel(sim.gs)!
+    wingman1.bodyId = 'moon'
+    wingman1.landed = false
+    wingman1.pos = { x: rOrb, y: -1400 }
+    wingman1.vel = { x: 0, y: vOrb }
+    wingman1.angle = Math.PI / 2
+
+    expect(launchDesign(sim, 'local', shipDesign)).toBeNull()
+    const wingman2 = activeVessel(sim.gs)!
+    wingman2.bodyId = 'moon'
+    wingman2.landed = false
+    wingman2.pos = { x: rOrb + 400, y: -900 }
+    wingman2.vel = { x: 0, y: vOrb }
+    wingman2.angle = Math.PI / 2
+
+    // Döngü koruması: kendi kendini veya takipçisini lider olarak seçemez
+    expect(dispatchCommand(sim, { type: 'setAutopilot', vesselId: wingman1.id, mode: 'follow', followId: leader.id }, 'local').error).toBeUndefined()
+    expect(createsFollowCycle(sim.gs, leader.id, wingman1.id)).toBe(true)
+    expect(dispatchCommand(sim, { type: 'setAutopilot', vesselId: leader.id, mode: 'follow', followId: wingman1.id }, 'local').error).toBeTruthy()
+
+    // Toplu filo komutu: followAll tüm boş gemileri liderin arkasında formasyona katar
+    expect(dispatchCommand(sim, { type: 'fleetOrder', leaderId: leader.id, order: 'followAll' }, 'local').error).toBeUndefined()
+    expect(wingman1.autopilot).toBe('follow')
+    expect(wingman1.followId).toBe(leader.id)
+    expect(wingman2.autopilot).toBe('follow')
+    expect(wingman2.followId).toBe(leader.id)
+
+    // İlerlet: kanat gemileri yörüngedeki lidere 200 m formasyon içine yaklaşır
+    for (let i = 0; i < 1600; i += 1) {
+      stepWorld(sim, 0.05, { rotate: 0, tx: 0, ty: 0 })
+    }
+    const d1 = Math.hypot(leader.pos.x - wingman1.pos.x, leader.pos.y - wingman1.pos.y)
+    const d2 = Math.hypot(leader.pos.x - wingman2.pos.x, leader.pos.y - wingman2.pos.y)
+    expect(d1).toBeLessThan(200)
+    expect(d2).toBeLessThan(200)
+    // Çarpışma yok — iki araç hala yaşıyor ve ayrı V-formasyon yuvalarında
+    expect(Math.hypot(wingman1.pos.x - wingman2.pos.x, wingman1.pos.y - wingman2.pos.y)).toBeGreaterThan(20)
+
+    // Toplu filo emri: stop tüm filoyu durdurur, disband takibi çözer
+    expect(dispatchCommand(sim, { type: 'fleetOrder', leaderId: leader.id, order: 'followAll' }, 'local').error).toBeUndefined()
+    expect(dispatchCommand(sim, { type: 'fleetOrder', leaderId: leader.id, order: 'stop' }, 'local').error).toBeUndefined()
+    expect(leader.autopilot).toBe('off')
+    expect(wingman1.autopilot).toBe('off')
+    expect(wingman1.followId).toBeUndefined()
+
+    // Lider silinince aktif takipçiler güvenle ayrılır
+    expect(dispatchCommand(sim, { type: 'fleetOrder', leaderId: leader.id, order: 'followAll' }, 'local').error).toBeUndefined()
+    expect(deleteVessel(sim, leader.id, 'local')).toBe(true)
+    expect(wingman1.autopilot).toBe('off')
+    expect(wingman1.followId).toBeUndefined()
+    expect(wingman2.autopilot).toBe('off')
+    expect(wingman2.followId).toBeUndefined()
   })
 })

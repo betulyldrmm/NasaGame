@@ -687,6 +687,11 @@ function drawWeapon(
         ctx.lineTo(c * 0.32 * recoil, -h * 0.82)
         ctx.closePath()
         ctx.fill()
+        ctx.strokeStyle = `rgba(255,225,130,${(recoil * 0.7).toFixed(2)})`
+        ctx.lineWidth = Math.max(1, c * 0.06)
+        ctx.beginPath()
+        ctx.ellipse(0, -h * 0.88, c * (0.55 - recoil * 0.25), c * 0.14, 0, 0, Math.PI * 2)
+        ctx.stroke()
       }
       break
     }
@@ -702,6 +707,15 @@ function drawWeapon(
       outline(ctx, c)
       ctx.fillStyle = recoil > 0.3 ? '#fef08a' : accent
       ctx.fillRect(-c * 0.22, -h * 0.58, c * 0.44, c * 0.11)
+      if (recoil > 0.2) {
+        ctx.fillStyle = `rgba(253,224,71,${(recoil * 0.55).toFixed(2)})`
+        ctx.beginPath()
+        ctx.moveTo(0, -h * 0.6)
+        ctx.lineTo(-c * 0.48 * recoil, -h * (0.85 + 0.3 * recoil))
+        ctx.lineTo(c * 0.48 * recoil, -h * (0.85 + 0.3 * recoil))
+        ctx.closePath()
+        ctx.fill()
+      }
       break
     }
     case 'gun-railgun': {
@@ -716,6 +730,15 @@ function drawWeapon(
         const by = -h * (0.16 + b * 0.16)
         ctx.fillStyle = lit ? '#e0f2fe' : '#1e3a5f'
         ctx.fillRect(-c * 0.11, by, c * 0.22, c * 0.1)
+      }
+      if (ch > 0.5 || recoil > 0.15) {
+        ctx.strokeStyle = `rgba(186,230,253,${Math.min(1, ch * 0.8 + recoil).toFixed(2)})`
+        ctx.lineWidth = Math.max(0.8, c * 0.05)
+        ctx.beginPath()
+        ctx.moveTo(-c * 0.14, -h * 0.3)
+        ctx.lineTo(Math.sin(t * 60) * c * 0.12, -h * 0.52)
+        ctx.lineTo(c * 0.14, -h * 0.7)
+        ctx.stroke()
       }
       if (ch > 0.05 || recoil > 0.2) {
         ctx.fillStyle = `rgba(56,217,232,${Math.min(1, ch + recoil).toFixed(2)})`
@@ -859,11 +882,183 @@ function drawWeapon(
   ctx.restore()
 }
 
+function drawDroneBay(ctx: Ctx, d: PartDef, p: PartInst, w: number, h: number, c: number, t: number) {
+  const spec = d.droneSpec
+  const col = spec?.color ?? '#38bdf8'
+  const ammoLeft = p.ammo ?? spec?.ammo ?? 2
+  const fireAge = p.fireAt !== undefined ? Math.max(0, t - p.fireAt) : 99
+  const doorOpen = fireAge < 0.75 ? Math.sin((fireAge / 0.75) * Math.PI) : 0
+
+  rr(ctx, 0.03 * c, 0.04 * c, w - 0.06 * c, h - 0.08 * c, c * 0.12)
+  ctx.fillStyle = metal(ctx, 0, w, DARK)
+  ctx.fill()
+  outline(ctx, c)
+
+  // Hangar içi
+  ctx.fillStyle = '#090f1a'
+  ctx.fillRect(w * 0.14, h * 0.16, w * 0.72, h * 0.68)
+
+  // Hazır bekleyen mini dron silüeti + bekleme ışığı
+  if (ammoLeft > 0) {
+    ctx.fillStyle = col
+    ctx.globalAlpha = 0.55 + 0.35 * Math.sin(t * 4)
+    ctx.beginPath()
+    ctx.ellipse(w * 0.5, h * 0.5, w * 0.22, h * 0.16, 0, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.globalAlpha = 1
+  }
+
+  // Kayan zırh hangar kapakları (fırlatmada açılır)
+  const gap = doorOpen * w * 0.34
+  ctx.fillStyle = metal(ctx, 0, w * 0.5, STEEL)
+  ctx.fillRect(w * 0.12 - gap * 0.35, h * 0.16, Math.max(0, w * 0.38 - gap * 0.65), h * 0.68)
+  ctx.fillRect(w * 0.5 + gap * 0.9, h * 0.16, Math.max(0, w * 0.38 - gap * 0.65), h * 0.68)
+
+  // Kademe ışıkları & işaret şeridi
+  const tier = spec?.tier ?? 1
+  for (let i = 0; i < tier; i += 1) {
+    ctx.fillStyle = ammoLeft > 0 ? col : '#475569'
+    ctx.beginPath()
+    ctx.arc(w * (0.25 + i * 0.25), h * 0.1, c * 0.075, 0, Math.PI * 2)
+    ctx.fill()
+  }
+
+  if (doorOpen > 0.15) {
+    ctx.fillStyle = `rgba(56,217,232,${(doorOpen * 0.55).toFixed(2)})`
+    ctx.beginPath()
+    ctx.arc(w * 0.5, h * 0.5, c * 0.55 * doorOpen, 0, Math.PI * 2)
+    ctx.fill()
+  }
+}
+
+function drawDronePart(ctx: Ctx, d: PartDef, w: number, h: number, c: number, t: number, activeThrust = false) {
+  const tier = Number(d.id.slice(-1)) || 1
+  const accent = tier === 3 ? '#f59e0b' : tier === 2 ? '#34d399' : '#38bdf8'
+  const spin = t * (activeThrust ? 54 : 18)
+  const fanArm = (cx: number, cy: number, armSpan: number, ductR: number, phase: number) => {
+    // Karbon rotor kolu + koruyucu hava kanalı (ducted fan) + dönen yüksek devirli fan pervanesi
+    ctx.strokeStyle = STEEL[0][1]
+    ctx.lineWidth = Math.max(1.2, c * 0.1)
+    ctx.beginPath()
+    ctx.moveTo(w * 0.5, cy + h * 0.08)
+    ctx.lineTo(cx, cy)
+    ctx.stroke()
+
+    // Hava kanalı halkası
+    ctx.fillStyle = '#141d2b'
+    ctx.strokeStyle = STEEL[2][1]
+    ctx.lineWidth = Math.max(1, c * 0.075)
+    ctx.beginPath()
+    ctx.ellipse(cx, cy, ductR, ductR * 0.36, 0, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.stroke()
+
+    // Pervane bulanık hava diski
+    const airAlpha = activeThrust ? 0.42 : 0.2
+    ctx.fillStyle = `rgba(186,230,253,${airAlpha.toFixed(2)})`
+    ctx.beginPath()
+    ctx.ellipse(cx, cy, ductR * 0.88, ductR * 0.28, 0, 0, Math.PI * 2)
+    ctx.fill()
+
+    // Dönen pervane kanatları
+    const blade = ductR * 0.86 * Math.cos(spin + phase)
+    ctx.strokeStyle = '#f8fafc'
+    ctx.lineWidth = Math.max(1.1, c * 0.075)
+    ctx.beginPath()
+    ctx.moveTo(cx - blade, cy)
+    ctx.lineTo(cx + blade, cy)
+    ctx.stroke()
+    ctx.fillStyle = accent
+    ctx.beginPath()
+    ctx.arc(cx, cy, Math.max(1, c * 0.07), 0, Math.PI * 2)
+    ctx.fill()
+    void armSpan
+  }
+
+  if (d.id.startsWith('drone-core-')) {
+    // Aerodinamik drone gövdesi + optik tarayıcı kamera + üst çift pervane kolları
+    ctx.beginPath()
+    ctx.moveTo(w * 0.14, h)
+    ctx.lineTo(w * 0.04, h * 0.38)
+    ctx.lineTo(w * 0.5, 0)
+    ctx.lineTo(w * 0.96, h * 0.38)
+    ctx.lineTo(w * 0.86, h)
+    ctx.closePath()
+    ctx.fillStyle = metal(ctx, 0, w, WHITE)
+    ctx.fill()
+    outline(ctx, c)
+    const scanX = w * (0.5 + 0.18 * Math.sin(t * 4.5))
+    ctx.fillStyle = '#0f172a'
+    ctx.fillRect(w * 0.2, h * 0.44, w * 0.6, h * 0.24)
+    ctx.fillStyle = accent
+    ctx.beginPath()
+    ctx.arc(scanX, h * 0.56, c * 0.085, 0, Math.PI * 2)
+    ctx.fill()
+    fanArm(-w * 0.38, h * 0.32, w * 0.4, c * (0.36 + tier * 0.04), 0)
+    fanArm(w * 1.38, h * 0.32, w * 0.4, c * (0.36 + tier * 0.04), Math.PI * 0.5)
+    return
+  }
+  if (d.id.startsWith('drone-cargo-')) {
+    rr(ctx, 0.06 * c, 0.04 * c, w - 0.12 * c, h - 0.08 * c, c * 0.1)
+    ctx.fillStyle = metal(ctx, 0, w, GOLD)
+    ctx.fill()
+    outline(ctx, c)
+    ctx.fillStyle = '#1e293b'
+    ctx.fillRect(w * 0.15, h * 0.22, w * 0.7, h * 0.56)
+    ctx.fillStyle = accent
+    ctx.fillRect(w * 0.2, h * 0.36, w * 0.6, h * 0.28)
+    return
+  }
+  if (d.id.startsWith('drone-bat-') || d.id.startsWith('drone-tank-')) {
+    // Lityum güç hücresi: doluluk LED barları
+    rr(ctx, 0.08 * c, 0.04 * c, w - 0.16 * c, h - 0.08 * c, c * 0.1)
+    ctx.fillStyle = metal(ctx, 0, w, DARK)
+    ctx.fill()
+    outline(ctx, c)
+    ctx.fillStyle = '#22c55e'
+    for (let k = 0; k < 4; k += 1) {
+      const glow = 0.55 + 0.45 * Math.sin(t * 4 - k * 0.9)
+      ctx.globalAlpha = glow
+      ctx.fillRect(w * (0.2 + k * 0.16), h * 0.28, w * 0.11, h * 0.44)
+    }
+    ctx.globalAlpha = 1
+    return
+  }
+  // drone-fan-* (veya eski drone-jet-*): 4 kanallı hava fanı podu + yerleşik iniş kızakları (ateş nozülü yok)
+  rr(ctx, w * 0.12, h * 0.06, w * 0.76, h * 0.68, c * 0.12)
+  ctx.fillStyle = metal(ctx, 0, w, DARK)
+  ctx.fill()
+  outline(ctx, c)
+  // Merkez fan ızgarası
+  ctx.strokeStyle = '#64748b'
+  ctx.lineWidth = Math.max(0.8, c * 0.05)
+  for (let gx = 0.24; gx <= 0.76; gx += 0.13) {
+    ctx.beginPath()
+    ctx.moveTo(w * gx, h * 0.16)
+    ctx.lineTo(w * gx, h * 0.64)
+    ctx.stroke()
+  }
+  // Dış sağ/sol büyük fan rotorları + iniş kızakları
+  fanArm(-w * 0.52, h * 0.34, w * 0.5, c * (0.44 + tier * 0.05), 1.1)
+  fanArm(w * 1.52, h * 0.34, w * 0.5, c * (0.44 + tier * 0.05), 2.6)
+  ctx.strokeStyle = STEEL[1][1]
+  ctx.lineWidth = Math.max(1.2, c * 0.09)
+  ctx.beginPath()
+  ctx.moveTo(w * 0.18, h * 0.64)
+  ctx.lineTo(-w * 0.22, h * 1.18)
+  ctx.lineTo(w * 0.1, h * 1.18)
+  ctx.moveTo(w * 0.82, h * 0.64)
+  ctx.lineTo(w * 1.22, h * 1.18)
+  ctx.lineTo(w * 0.9, h * 1.18)
+  ctx.stroke()
+}
+
 export interface PartDrawOpts {
   /** parça gövdenin solunda mı (yan parçalar aynalanır) */
   flip?: boolean
   time?: number
   rcsPulse?: boolean
+  activeThrust?: boolean
   /** namlu yönü farkı (rad, roket burnuna göre CCW) */
   aimDelta?: number
 }
@@ -878,24 +1073,29 @@ export function drawPart(ctx: Ctx, p: PartInst, c: number, opts: PartDrawOpts = 
     ctx.translate(w, 0)
     ctx.scale(-1, 1)
   }
-  switch (d.kind) {
-    case 'tank': drawTank(ctx, w, h, c, d.fuel ? (p.fuel ?? d.fuel) / d.fuel : 0); break
-    case 'engine': drawEngine(ctx, d, w, h, c, p.on !== false); break
-    case 'command': if (d.id === 'probe' || d.id === 'probe-ai') drawProbe(ctx, d, w, h, c); else drawCapsule(ctx, w, h, c); break
-    case 'nose': drawNose(ctx, w, h, c); break
-    case 'decoupler': drawDecoupler(ctx, w, h, c); break
-    case 'radialDecoupler': drawRadial(ctx, w, h, c); break
-    case 'chute': drawChute(ctx, w, h, c, !!p.deployed, opts.time ?? 0); break
-    case 'leg': drawLeg(ctx, d, w, h, c, p.deployProgress ?? (p.deployed ? 1 : 0)); break
-    case 'rcs': drawRcs(ctx, w, h, c, !!opts.rcsPulse, opts.time ?? 0, !!opts.flip); break
-    case 'solar': drawSolar(ctx, w, h, c, !!p.deployed); break
-    case 'rtg': drawRtg(ctx, w, h, c); break
-    case 'battery': drawBattery(ctx, w, h, c); break
-    case 'cargo': drawCargo(ctx, w, h, c); break
-    case 'station': drawStation(ctx, d.id, w, h, c); break
-    case 'armor': drawArmor(ctx, w, h, c); break
-    case 'shield': drawShieldGen(ctx, w, h, c, opts.time ?? 0); break
-    case 'weapon': drawWeapon(ctx, d, p, w, h, c, !!opts.flip, opts.aimDelta ?? 0, opts.time ?? 0); break
+  if (d.id.startsWith('drone-') && d.kind !== 'droneBay') {
+    drawDronePart(ctx, d, w, h, c, opts.time ?? 0, !!opts.activeThrust)
+  } else {
+    switch (d.kind) {
+      case 'tank': drawTank(ctx, w, h, c, d.fuel ? (p.fuel ?? d.fuel) / d.fuel : 0); break
+      case 'engine': drawEngine(ctx, d, w, h, c, p.on !== false); break
+      case 'command': if (d.id === 'probe' || d.id === 'probe-ai') drawProbe(ctx, d, w, h, c); else drawCapsule(ctx, w, h, c); break
+      case 'nose': drawNose(ctx, w, h, c); break
+      case 'decoupler': drawDecoupler(ctx, w, h, c); break
+      case 'radialDecoupler': drawRadial(ctx, w, h, c); break
+      case 'chute': drawChute(ctx, w, h, c, !!p.deployed, opts.time ?? 0); break
+      case 'leg': drawLeg(ctx, d, w, h, c, p.deployProgress ?? (p.deployed ? 1 : 0)); break
+      case 'rcs': drawRcs(ctx, w, h, c, !!opts.rcsPulse, opts.time ?? 0, !!opts.flip); break
+      case 'solar': drawSolar(ctx, w, h, c, !!p.deployed); break
+      case 'rtg': drawRtg(ctx, w, h, c); break
+      case 'battery': drawBattery(ctx, w, h, c); break
+      case 'cargo': drawCargo(ctx, w, h, c); break
+      case 'station': drawStation(ctx, d.id, w, h, c); break
+      case 'armor': drawArmor(ctx, w, h, c); break
+      case 'shield': drawShieldGen(ctx, w, h, c, opts.time ?? 0); break
+      case 'droneBay': drawDroneBay(ctx, d, p, w, h, c, opts.time ?? 0); break
+      case 'weapon': drawWeapon(ctx, d, p, w, h, c, !!opts.flip, opts.aimDelta ?? 0, opts.time ?? 0); break
+    }
   }
   if (p.hp !== undefined && p.hp <= 0) {
     // Devre dışı parça: kararmış iskelet + çatlaklar (gövdede durur ama çalışmaz).
@@ -917,6 +1117,41 @@ export function drawPart(ctx: Ctx, p: PartInst, c: number, opts: PartDrawOpts = 
       ctx.fillStyle = `rgba(248,113,113,${(0.14 + dmgFrac * 0.34).toFixed(2)})`
       ctx.fillRect(0.04 * c, 0.04 * c, w - 0.08 * c, h - 0.08 * c)
     }
+  }
+  ctx.restore()
+}
+
+function drawFanAirflow(ctx: Ctx, w: number, c: number, power: number, t: number, seed: number) {
+  ctx.save()
+  const downLen = (1.6 + 2.2 * power) * w
+  // Sağ ve sol rotorlardan aşağıya üflenen gerçek hava akışı girdapları (roket alevi yok)
+  for (const offsetX of [-w * 0.92, -w * 0.28, w * 0.28, w * 0.92]) {
+    const g = ctx.createLinearGradient(offsetX, 0, offsetX, downLen)
+    g.addColorStop(0, `rgba(215,244,255,${(0.45 * power).toFixed(2)})`)
+    g.addColorStop(0.6, `rgba(148,215,245,${(0.22 * power).toFixed(2)})`)
+    g.addColorStop(1, 'rgba(148,215,245,0)')
+    ctx.strokeStyle = g
+    ctx.lineWidth = Math.max(1.2, c * 0.16)
+    ctx.beginPath()
+    for (let k = 0; k <= 5; k += 1) {
+      const f = k / 5
+      const sy = f * downLen
+      const sx = offsetX + Math.sin(t * 28 + f * 6 + seed + offsetX) * c * 0.14 * f
+      if (k === 0) ctx.moveTo(sx, sy)
+      else ctx.lineTo(sx, sy)
+    }
+    ctx.stroke()
+  }
+  // Aşağı doğru kayan hava basıncı halkaları
+  for (let i = 0; i < 3; i += 1) {
+    const phase = (t * 3.8 + i / 3 + seed * 0.1) % 1
+    const y = phase * downLen * 0.95
+    const rw = w * (0.8 + phase * 0.55)
+    ctx.strokeStyle = `rgba(210,245,255,${((1 - phase) * 0.42 * power).toFixed(2)})`
+    ctx.lineWidth = Math.max(1, c * 0.08)
+    ctx.beginPath()
+    ctx.ellipse(0, y, rw, rw * 0.18, 0, 0, Math.PI * 2)
+    ctx.stroke()
   }
   ctx.restore()
 }
@@ -1007,8 +1242,13 @@ export function drawVesselParts(ctx: Ctx, parts: PartInst[], c: number, opts: Ve
       if (!p || power <= 0) continue
       const d = partDef(p.def)
       ctx.save()
-      ctx.translate((p.x + d.w / 2 - st.comX) * c, (p.y + d.h - st.comY) * c - c * 0.05)
-      drawFlame(ctx, d, d.w * c, c, power, opts.vacuum ?? 0, opts.time ?? 0, i)
+      if (d.electricFan) {
+        ctx.translate((p.x + d.w / 2 - st.comX) * c, (p.y + d.h * 0.45 - st.comY) * c)
+        drawFanAirflow(ctx, d.w * c, c, power, opts.time ?? 0, i)
+      } else {
+        ctx.translate((p.x + d.w / 2 - st.comX) * c, (p.y + d.h - st.comY) * c - c * 0.05)
+        drawFlame(ctx, d, d.w * c, c, power, opts.vacuum ?? 0, opts.time ?? 0, i)
+      }
       ctx.restore()
     }
   }
@@ -1019,7 +1259,13 @@ export function drawVesselParts(ctx: Ctx, parts: PartInst[], c: number, opts: Ve
     ctx.save()
     ctx.translate((p.x - st.comX) * c, (p.y - st.comY) * c)
     const flip = p.x + d.w / 2 < mid
-    drawPart(ctx, p, c, { flip, time: opts.time, rcsPulse: d.kind === 'rcs' && !!opts.rcsTx, aimDelta: opts.aimDelta })
+    drawPart(ctx, p, c, {
+      flip,
+      time: opts.time,
+      rcsPulse: d.kind === 'rcs' && !!opts.rcsTx,
+      activeThrust: !!(opts.firing && opts.firing.size > 0),
+      aimDelta: opts.aimDelta,
+    })
     ctx.restore()
   }
 }

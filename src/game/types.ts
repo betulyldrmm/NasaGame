@@ -19,8 +19,23 @@ export type PartKind =
   | 'weapon'
   | 'armor'
   | 'shield'
+  | 'droneBay'
 
-export type PartCategory = 'Komuta' | 'Yakıt' | 'Motorlar' | 'Kademe' | 'Güç' | 'İniş' | 'Kargo' | 'Silahlar' | 'Savunma'
+export type PartCategory = 'Komuta' | 'Yakıt' | 'Motorlar' | 'Kademe' | 'Güç' | 'İniş' | 'Kargo' | 'Silahlar' | 'Savunma' | 'Dron'
+
+export interface DroneSpec {
+  tier: 1 | 2 | 3
+  ammo: number
+  cooldown: number
+  ecUse: number
+  launchSpeed: number
+  cargoCap: number
+  thrust: number
+  fuelCap: number
+  hp: number
+  color: string
+  name: string
+}
 
 export type WeaponKind =
   | 'ballistic'
@@ -119,6 +134,8 @@ export interface PartDef {
   shieldCap?: number
   /** silah özellikleri */
   weapon?: WeaponSpec
+  /** dron fırlatıcı özellikleri */
+  droneSpec?: DroneSpec
   /** zırh: komşu parçalara gelen hasarın `absorb` oranını üstlenir; her isabetten `hardness` kadar hasarı siler */
   armor?: { absorb: number; hardness: number }
   /** tank: yakıt kapasitesi (t) */
@@ -128,8 +145,9 @@ export interface PartDef {
   /** motor: özgül itki (s) vakumda / deniz seviyesinde */
   ispVac?: number
   ispSL?: number
-  /** iyon motoru: elektrik tüketimi (birim/s) */
+  /** iyon/fan motoru: elektrik tüketimi (birim/s) ve pervane fan itkisi */
   ecUse?: number
+  electricFan?: boolean
   /** batarya / komuta: elektrik kapasitesi */
   ecCap?: number
   /** güneş paneli: 1 AU'da üretim (birim/s) */
@@ -170,10 +188,12 @@ export interface PartInst {
   fireAt?: number
   /** dev ışın aktif kalma süresi (sim.clock) */
   beamUntil?: number
+  /** Dron fırlatıcı: fırlatılmadan önce hangardaki drona yüklenen özel modül kargosu */
+  droneCargo?: Record<string, number>
 }
 
 export type SasMode = 'off' | 'prograde' | 'retrograde' | 'radial'
-export type AutopilotMode = 'off' | 'orbit' | 'transfer' | 'land'
+export type AutopilotMode = 'off' | 'orbit' | 'transfer' | 'land' | 'nextQuad' | 'follow'
 
 export interface Cargo {
   modules: Record<string, number>
@@ -206,8 +226,12 @@ export interface Vessel {
   dvUsed: number
   /** teknoloji ile açılan otomatik iniş asistanı */
   autoLand?: boolean
-  /** aktif otopilot modu ('orbit', 'transfer', 'land' vb.) */
+  /** aktif otopilot modu ('orbit', 'transfer', 'land', 'nextQuad', 'follow' vb.) */
   autopilot?: AutopilotMode
+  /** filo / takip otopilotu: takip edilen lider aracın ID'si */
+  followId?: number
+  /** dron otopilotu hedef gezegen çeyreği (0..3) */
+  targetQuad?: 0 | 1 | 2 | 3
   /** otopilotun oyuncuya gösterdiği tek satırlık durum */
   autopilotNote?: string
   /** hedefe yaklaşıldığında otomatik iniş yoksa verilen yakınlaşma uyarısı */
@@ -220,6 +244,16 @@ export interface Vessel {
   debris?: { ttl: number }
   /** Yağma modu: oyuncunun uzay üssü (kontrol edilemez, taretleri kendiliğinden ateş eder) */
   outpost?: { level: number; rebuildAt?: number }
+  /** Gezegensel kargo/keşif dronu (silahsızdır, yalnızca doğduğu gezegen/arena içinde uçar) */
+  drone?: {
+    tier: 1 | 2 | 3
+    cargoCap: number
+    homeBodyId: BodyId
+    maxAlt: number
+    warn?: boolean
+    overLimitSec?: number
+    parentId?: number
+  }
   /** yörünge yakalama yanışı başladı: bitene kadar kesilmez (titreşimi önler) */
   captureLatch?: boolean
   /** çok oyunculu modda her aracın/oyuncunun kendi hedef gök cismi */
@@ -287,6 +321,8 @@ export interface Base {
   sectorLevel?: number
   /** çok oyunculu hazırlığı: üs sahibi oyuncu kimliği */
   ownerId?: string
+  /** gezegen çeyreği (0: Kuzey, 1: Doğu, 2: Güney, 3: Batı) */
+  quadrant?: 0 | 1 | 2 | 3
   /** koloni kalkan kubbesi canı */
   shield?: number
   /** kalkanın yeniden dolmaya başlayacağı saat (sim.clock) */
@@ -303,6 +339,7 @@ export interface ShipSlot {
   name: string
   design: PartInst[]
   cargo: Record<string, number>
+  droneCargo?: Record<string, number>
 }
 
 export interface PlayerMeta {
@@ -345,7 +382,7 @@ export interface LootState {
   /** çekirdeği yok edilen üslerin yeniden kurulacağı saat (sim.clock), oyuncu kimliğine göre */
   rebuild?: Record<string, number>
 }
-export type WarfareGoal = 'siege' | 'score15' | 'score30' | 'endless'
+export type WarfareGoal = 'siege' | 'score15' | 'score30' | 'endless' | 'raid'
 
 export interface MultiplayerConfig {
   /** Çok oyunculu oyun modu */
@@ -430,6 +467,8 @@ export interface MultiplayerPlayer {
   earthBase?: Base
   /** Uzay Savaşı modunda her oyuncunun kendi gezegen kolonileri */
   colonies?: Partial<Record<BodyId, Base>>
+  /** 4 çeyrek koloni haritası: bodyId -> [Q0, Q1, Q2, Q3] */
+  quadrantColonies?: Partial<Record<BodyId, (Base | undefined)[]>>
   /** Yağma modu: üsse teslim edilen toplam ganimet (t) ve üs seviyesi */
   looted?: number
   outpostLevel?: number
@@ -459,6 +498,8 @@ export interface MultiplayerState {
   config: MultiplayerConfig
   players: Record<string, MultiplayerPlayer>
   captures: Partial<Record<BodyId, PlanetCapture>>
+  /** 4 çeyrek fetih durumu: bodyId -> [Q0, Q1, Q2, Q3] */
+  quadrantCaptures?: Partial<Record<BodyId, (PlanetCapture | undefined)[]>>
   warpInfo: DynamicWarpInfo
   feed: MultiplayerFeedItem[]
   projectiles?: Projectile[]
@@ -482,10 +523,16 @@ export interface GameState {
   activeId: number | null
   nextId: number
   bases: Partial<Record<BodyId, Base>>
+  /** Gezegen çeyrek üsleri: bodyId -> [Q0, Q1, Q2, Q3] */
+  quadrantBases?: Partial<Record<BodyId, (Base | undefined)[]>>
+  /** Montajda seçili fırlatma noktası */
+  launchSite?: { bodyId: BodyId; quadrant: 0 | 1 | 2 | 3 }
   missionsDone: string[]
   techDone: string[]
   design: PartInst[]
   designCargo: Record<string, number>
+  /** Montajda drona özel yüklenen modül kargosu */
+  designDroneCargo?: Record<string, number>
   /** oyuncunun kayıtlı gemi tasarımları (boş slot = null) */
   shipSlots?: (ShipSlot | null)[]
   targetBody?: BodyId | null
@@ -504,7 +551,7 @@ export interface GameState {
 
 /** Çok oyunculu hazırlığı: serileştirilebilir oyuncu komutları. */
 export type GameCommand =
-  | { type: 'launch'; design?: PartInst[]; designCargo?: Record<string, number> }
+  | { type: 'launch'; design?: PartInst[]; designCargo?: Record<string, number>; designDroneCargo?: Record<string, number>; bodyId?: BodyId; quadrant?: 0 | 1 | 2 | 3 }
   | { type: 'setActive'; vesselId: number }
   | { type: 'setThrottle'; vesselId: number; throttle: number }
   | { type: 'emergencyStop'; vesselId: number }
@@ -515,21 +562,27 @@ export type GameCommand =
   | { type: 'deleteVessel'; vesselId: number }
   | { type: 'recoverVessel'; vesselId: number }
   | { type: 'setTarget'; bodyId: BodyId }
-  | { type: 'setAutopilot'; vesselId: number; mode: AutopilotMode }
+  | { type: 'setAutopilot'; vesselId: number; mode: AutopilotMode; targetQuad?: 0 | 1 | 2 | 3; followId?: number }
+  | { type: 'fleetOrder'; leaderId: number; order: 'followAll' | 'disband' | 'orbit' | 'land' | 'transfer' | 'stop'; bodyId?: BodyId }
   | { type: 'setSas'; vesselId: number; sas: SasMode }
   | { type: 'toggleRcs'; vesselId: number }
   | { type: 'togglePartKind'; vesselId: number; kind: 'solar' | 'leg' | 'chute' }
-  | { type: 'deployModules'; vesselId: number; moduleId?: string }
-  | { type: 'pickupModule'; vesselId: number; moduleId: string }
-  | { type: 'loadOre'; vesselId: number }
-  | { type: 'refuelAtBase'; vesselId: number }
-  | { type: 'buyModule'; bodyId: BodyId; moduleId: string }
-  | { type: 'placeGridModule'; bodyId: BodyId; x: number; moduleId: string }
-  | { type: 'removeGridModule'; bodyId: BodyId; x: number }
+  | { type: 'deployModules'; vesselId: number; moduleId?: string; quadrant?: 0 | 1 | 2 | 3 }
+  | { type: 'pickupModule'; vesselId: number; moduleId: string; quadrant?: 0 | 1 | 2 | 3 }
+  | { type: 'loadOre'; vesselId: number; quadrant?: 0 | 1 | 2 | 3 }
+  | { type: 'refuelAtBase'; vesselId: number; quadrant?: 0 | 1 | 2 | 3 }
+  | { type: 'buyModule'; bodyId: BodyId; moduleId: string; quadrant?: 0 | 1 | 2 | 3 }
+  | { type: 'placeGridModule'; bodyId: BodyId; x: number; moduleId: string; quadrant?: 0 | 1 | 2 | 3 }
+  | { type: 'removeGridModule'; bodyId: BodyId; x: number; quadrant?: 0 | 1 | 2 | 3 }
   | { type: 'rendezvous'; vesselId: number }
   | { type: 'repairVessel'; vesselId: number }
   | { type: 'upgradeOutpost' }
   | { type: 'jettisonCargo'; vesselId: number }
+  | { type: 'launchDrone'; vesselId: number; partIndex: number; aimAngle?: number }
+  | { type: 'launchPadDrone'; bodyId: BodyId; quadrant: 0 | 1 | 2 | 3; tier: 1 | 2 | 3; modules?: Record<string, number> }
+  | { type: 'transferCargo'; fromVesselId: number; toVesselId: number; moduleId: string; count?: number }
+  | { type: 'transferDroneCargo'; vesselId: number; moduleId: string; delta: number; source?: 'ship' | 'colony'; partIndex?: number }
+  | { type: 'buyCargoModule'; vesselId: number; moduleId: string; delta: number }
 
 export type GameEvent =
   | { type: 'toast'; text: string; ownerId?: string }

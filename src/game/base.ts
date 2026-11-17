@@ -5,7 +5,28 @@
  */
 import type { Base } from './types'
 
-export const COLONY_SLOTS = 8
+export const COLONY_SLOTS = 12
+
+export type QuadrantId = 0 | 1 | 2 | 3
+export const QUADRANTS: QuadrantId[] = [0, 1, 2, 3]
+export const QUADRANT_NAMES = ['Kuzey (Q1)', 'Doğu (Q2)', 'Güney (Q3)', 'Batı (Q4)'] as const
+export const QUADRANT_SHORT = ['Q1 Kuzey', 'Q2 Doğu', 'Q3 Güney', 'Q4 Batı'] as const
+const QUAD_CENTERS = [Math.PI / 2, 0, -Math.PI / 2, Math.PI] as const
+
+export function quadrantCenterAngle(q: QuadrantId): number {
+  return QUAD_CENTERS[q]
+}
+
+/** Açı değerini en yakın gezegen çeyreğine (0: Kuzey, 1: Doğu, 2: Güney, 3: Batı) eşler. */
+export function quadrantOfAngle(theta: number): QuadrantId {
+  let t = (theta + Math.PI) % (2 * Math.PI)
+  if (t < 0) t += 2 * Math.PI
+  t -= Math.PI
+  if (t >= Math.PI / 4 && t < (3 * Math.PI) / 4) return 0
+  if (t >= -Math.PI / 4 && t < Math.PI / 4) return 1
+  if (t >= -(3 * Math.PI) / 4 && t < -Math.PI / 4) return 2
+  return 3
+}
 
 export interface ModuleDef {
   id: string
@@ -32,29 +53,31 @@ export interface ModuleDef {
   warfare?: boolean
 }
 
-/** Gelir ve üretim oranları oyun varsayımıdır; güç dengesi 1/r² dersini verecek şekilde seçildi. */
+/** Gelir ve üretim oranları gerçek zamanlı dakika başınadır; güç dengesi 1/r² dersini verecek şekilde seçildi. */
 export const MODULES: ModuleDef[] = [
-  { id: 'solar-farm', name: 'Güneş Paneli', icon: '🔆', sprite: 'solar', mass: 1, cost: 1200, power: 4, income: 0, ore: 0, tier: 1, hp: 130, desc: 'Koloniye elektrik sağlar. Güneş\'ten uzaklaştıkça üretimi düşer.' },
-  { id: 'habitat', name: 'Yaşam Küresi', icon: '🏠', sprite: 'habitat', mass: 2, cost: 3000, power: -1, income: 350, ore: 0, tier: 1, hp: 280, desc: 'Kolonicilerin evi. Araştırma sözleşmelerinden gelir getirir.' },
-  { id: 'battery', name: 'Batarya', icon: '🔋', sprite: 'battery', mass: 1, cost: 900, power: 1, income: 0, ore: 0, constantPower: true, tier: 1, hp: 160, desc: 'Enerji depolar: Güneş\'ten bağımsız küçük bir yedek güç verir.' },
-  { id: 'telemetry', name: 'Telemetri İstasyonu', icon: '📡', sprite: 'telemetry', mass: 1, cost: 1800, power: -1, income: 650, ore: 0, tier: 1, hp: 180, desc: 'Uydu takibiyle sürekli gelir üretir.' },
-  { id: 'drill', name: 'Maden Aracı', icon: '⛏️', sprite: 'rover', mass: 2, cost: 3500, power: -3, income: 0, ore: 0.5, tier: 2, hp: 240, desc: 'Yüzeyi kazıp maden çıkarır. Madeni Dünya\'ya götürüp sat.' },
-  { id: 'biodome', name: 'Uzay Tarlası', icon: '🌱', sprite: 'farm', mass: 2, cost: 4200, power: -2, income: 700, ore: 0, tier: 2, hp: 240, desc: 'Kapalı serada yiyecek yetiştirir; koloniye düzenli gelir sağlar.' },
-  { id: 'sampler', name: 'Örnek Toplayıcı', icon: '🧪', sprite: 'sampler', mass: 1, cost: 2600, power: -1, income: 450, ore: 0, tier: 2, hp: 200, desc: 'Kaya ve toprak örneği toplar; bilim verisi satar.' },
-  { id: 'lab', name: 'Bilim Lab', icon: '🔬', sprite: 'lab', mass: 2, cost: 4800, power: -3, income: 1300, ore: 0, tier: 2, hp: 280, desc: 'Deneyler yapar; en yüksek geliri getirir ama çok elektrik ister.' },
-  { id: 'rtg-reactor', name: 'Reaktör', icon: '☢️', sprite: 'reactor', mass: 2, cost: 6500, power: 15, income: 0, ore: 0, constantPower: true, tier: 3, hp: 400, desc: 'Güneş\'ten bağımsız bol elektrik. Mars ve ötesi için ideal.' },
-  { id: 'isru', name: 'Yakıt Tesisi', icon: '⛽', sprite: 'isru', mass: 2, cost: 5000, power: -2, income: 0, ore: 0, tier: 3, hp: 300, desc: 'Madenden roket yakıtı üretir (1 t maden → 4 t yakıt).' },
-  { id: 'colony-station', name: 'Uzay İstasyonu', icon: '🛰️', sprite: 'station', mass: 4, cost: 8000, power: -7, income: 1600, ore: 0, tier: 1, hp: 620, desc: 'Yüksek elektrik ister (-7 ⚡); çalışırken gezegeni kolonileştirir ve gelir getirir.' },
+  { id: 'solar-farm', name: 'Güneş Paneli', icon: '🔆', sprite: 'solar', mass: 1, cost: 1200, power: 4, income: 0, ore: 0, tier: 1, hp: 140, desc: 'Koloniye elektrik sağlar. Güneş\'ten uzaklaştıkça üretimi düşer.' },
+  { id: 'battery', name: 'Batarya', icon: '🔋', sprite: 'battery', mass: 1, cost: 900, power: 1, income: 0, ore: 0, constantPower: true, tier: 1, hp: 180, desc: 'Enerji depolar: Güneş\'ten bağımsız küçük bir yedek güç verir.' },
+  { id: 'telemetry', name: 'Telemetri İstasyonu', icon: '📡', sprite: 'telemetry', mass: 1, cost: 1600, power: -1, income: 1500, ore: 0, tier: 1, hp: 200, desc: 'Uydu takibiyle dakikada +1.500 ₡ düzenli gelir üretir.' },
+  { id: 'habitat', name: 'Yaşam Küresi', icon: '🏠', sprite: 'habitat', mass: 2, cost: 2600, power: -1, income: 2600, ore: 0, tier: 1, hp: 320, desc: 'Kolonicilerin evi. Araştırma sözleşmelerinden dakikada +2.600 ₡ gelir getirir.' },
+  { id: 'drill', name: 'Maden Aracı', icon: '⛏️', sprite: 'rover', mass: 2, cost: 3200, power: -2, income: 1400, ore: 1.2, tier: 2, hp: 280, desc: 'Yüzeyi kazıp dakikada 1.2 t maden çıkarır ve +1.400 ₡/dk gelir sağlar.' },
+  { id: 'sampler', name: 'Örnek Toplayıcı', icon: '🧪', sprite: 'sampler', mass: 1, cost: 3000, power: -1, income: 3600, ore: 0, tier: 2, hp: 240, desc: 'Kaya ve toprak örneği toplar; dakikada +3.600 ₡ yüksek verim sağlar.' },
+  { id: 'biodome', name: 'Uzay Tarlası', icon: '🌱', sprite: 'farm', mass: 2, cost: 4600, power: -2, income: 6200, ore: 0, tier: 2, hp: 300, desc: 'Kapalı serada yiyecek yetiştirir; dakikada +6.200 ₡ düzenli gelir sağlar.' },
+  { id: 'lab', name: 'Bilim Lab', icon: '🔬', sprite: 'lab', mass: 2, cost: 6000, power: -3, income: 10000, ore: 0, tier: 2, hp: 340, desc: 'İleri deneyler yapar; Dünya\'da dakikada +10.000 ₡ yüksek bilimsel gelir getirir.' },
+  { id: 'rtg-reactor', name: 'Reaktör', icon: '☢️', sprite: 'reactor', mass: 2, cost: 5800, power: 14, income: 0, ore: 0, constantPower: true, tier: 3, hp: 440, desc: 'Güneş\'ten bağımsız bol elektrik. Mars ve ötesi için ideal.' },
+  { id: 'isru', name: 'Yakıt Tesisi', icon: '⛽', sprite: 'isru', mass: 2, cost: 4500, power: -2, income: 1600, ore: 0, tier: 3, hp: 320, desc: 'Madenden roket yakıtı üretir (1 t maden → 4 t yakıt) ve +1.600 ₡/dk getirir.' },
+  { id: 'colony-station', name: 'Uzay İstasyonu', icon: '🛰️', sprite: 'station', mass: 4, cost: 7500, power: -5, income: 6000, ore: 0, tier: 1, hp: 850, desc: 'Bulunduğu çeyreği (-5 ⚡) kolonileştirir, doğrudan inşayı açar ve yüksek gelir üretir.' },
+  { id: 'launch-pad', name: 'Fırlatma Rampası', icon: '🗼', sprite: 'launch-pad', mass: 3.5, cost: 5200, power: -1, income: 1500, ore: 0, tier: 1, hp: 580, desc: 'Aktif Uzay İstasyonu ile aynı çeyrekteyken roketlerin doğrudan buradan fırlatılmasını sağlar.' },
   // Uzay Savaşı savunma yapıları
-  { id: 'aa-turret', name: 'Uçaksavar Lazer Taret', icon: '🔫', sprite: 'turret', mass: 2, cost: 4000, power: -2, income: 0, ore: 0, tier: 1, hp: 340, warfare: true, desc: '1.600 m menzilde düşman roketlerine otomatik lazer ateşi açar.' },
-  { id: 'sam-battery', name: 'SAM Füze Bataryası', icon: '🚀', sprite: 'sam', mass: 2, cost: 6200, power: -3, income: 0, ore: 0, tier: 1, hp: 380, warfare: true, desc: '2.800 m menzilde yaklaşan düşman roketlerine güdümlü savunma füzesi atar.' },
-  { id: 'colony-shield', name: 'Koloni Kalkan Kubbesi', icon: '🛡️', sprite: 'shield', mass: 3, cost: 7500, power: -5, income: 0, ore: 0, tier: 1, hp: 460, warfare: true, desc: 'Tüm koloniyi koruyan +900 HP yenilenen enerji kubbesi oluşturur.' },
-  { id: 'repair-bay', name: 'Onarım Hangarı', icon: '🔧', sprite: 'repair', mass: 2, cost: 3500, power: -2, income: 0, ore: 0, tier: 1, hp: 280, warfare: true, desc: 'Çalışırken hasarlı koloni binalarını saniyede +10 HP onarır.' },
+  { id: 'aa-turret', name: 'Uçaksavar Lazer Taret', icon: '🔫', sprite: 'turret', mass: 2, cost: 4200, power: -2, income: 0, ore: 0, tier: 1, hp: 420, warfare: true, desc: '1.600 m menzilde düşman roketlerine otomatik lazer ateşi açar.' },
+  { id: 'sam-battery', name: 'SAM Füze Bataryası', icon: '🚀', sprite: 'sam', mass: 2, cost: 6500, power: -2, income: 0, ore: 0, tier: 1, hp: 440, warfare: true, desc: '2.800 m menzilde yaklaşan düşman roketlerine güdümlü savunma füzesi atar.' },
+  { id: 'colony-shield', name: 'Koloni Kalkan Kubbesi', icon: '🛡️', sprite: 'shield', mass: 3, cost: 8000, power: -4, income: 0, ore: 0, tier: 1, hp: 520, warfare: true, desc: 'Tüm çeyreği koruyan +900 HP yenilenen enerji kubbesi oluşturur.' },
+  { id: 'repair-bay', name: 'Onarım Hangarı', icon: '🔧', sprite: 'repair', mass: 2, cost: 4200, power: -2, income: 0, ore: 0, tier: 1, hp: 340, warfare: true, desc: 'Çalışırken hasarlı koloni binalarını saniyede +10 HP onarır.' },
 ]
 
 export const COLONY_STATION_ID = 'colony-station'
+export const LAUNCH_PAD_ID = 'launch-pad'
 export const WARFARE_EARTH_MODULES = ['solar-farm', 'battery', 'telemetry', 'lab', 'aa-turret', 'sam-battery', 'colony-shield', 'repair-bay']
-export const WARFARE_STARTER_EARTH_SITES: (string | null)[] = ['solar-farm', 'solar-farm', 'telemetry', 'battery', 'aa-turret', null, null, null]
+export const WARFARE_STARTER_EARTH_SITES: (string | null)[] = ['solar-farm', 'solar-farm', 'telemetry', 'battery', 'aa-turret', null, null, null, null, null, null, null]
 
 /** Yalnızca kargo olarak taşınan, koloniye kurulmayan yük: ISS ikmal paketi. */
 export const ISS_SUPPLY: ModuleDef = { id: 'iss-supplies', name: 'ISS İkmal Kargosu', icon: '📦', sprite: 'battery', mass: 1, cost: 800, power: 0, income: 0, ore: 0, tier: 1, hp: 100, desc: 'ISS\'e kenetlenip teslim et: paket başına 4.500 ₡ kazandırır.' }
@@ -65,10 +88,10 @@ export const MODULE_BY_ID: Record<string, ModuleDef> = Object.fromEntries([...MO
 /** Eski kayıtlardaki kaldırılmış yapı kimlikleri. */
 const LEGACY_IDS: Record<string, string> = { datacenter: 'lab', 'quantum-relay': 'lab' }
 
-/** Dünya'da yalnızca yer tesisleri kurulur; yaşam küresi, tarla, maden aracı vb. uzay kolonileri içindir. */
+/** Dünya ana üssünde yalnızca yer tesisleri kurulur; uzay kolonisi yapıları (ve diğer Dünya çeyrekleri) istasyonla kurulabilir. */
 export const EARTH_MODULES = ['solar-farm', 'battery', 'telemetry', 'lab']
 
-export const STARTER_EARTH_SITES: (string | null)[] = ['solar-farm', 'telemetry', 'telemetry', null, null, null, null, null]
+export const STARTER_EARTH_SITES: (string | null)[] = ['solar-farm', 'telemetry', 'telemetry', null, null, null, null, null, null, null, null, null]
 
 export const COLONY_SHIELD_PER_GEN = 900
 
@@ -93,7 +116,8 @@ export function syncModules(base: Base) {
 export function ensureSiteHp(base: Base): (number | null)[] {
   const sites = ensureSites(base)
   if (!Array.isArray(base.siteHp) || base.siteHp.length !== COLONY_SLOTS) {
-    base.siteHp = sites.map((id) => (id ? (MODULE_BY_ID[id]?.hp ?? 200) : null))
+    const oldHp = Array.isArray(base.siteHp) ? base.siteHp : []
+    base.siteHp = sites.map((id, i) => (id ? (oldHp[i] ?? MODULE_BY_ID[id]?.hp ?? 200) : null))
   } else {
     for (let i = 0; i < COLONY_SLOTS; i += 1) {
       const id = sites[i]
@@ -139,6 +163,12 @@ export function colonyShieldCap(base: Base | undefined, solarFactor: number): nu
 /** Eski (sayaç / 4×4 grid) kayıtları yuva düzenine çevirir. */
 export function ensureSites(base: Base): (string | null)[] {
   if (Array.isArray(base.sites) && base.sites.length === COLONY_SLOTS) return base.sites
+  if (Array.isArray(base.sites) && base.sites.length > 0 && base.sites.length < COLONY_SLOTS) {
+    while (base.sites.length < COLONY_SLOTS) base.sites.push(null)
+    base.stock ??= {}
+    syncModules(base)
+    return base.sites
+  }
   const sites: (string | null)[] = Array.from({ length: COLONY_SLOTS }, () => null)
   let i = 0
   const order = MODULES.map((m) => m.id)
@@ -188,8 +218,8 @@ export interface BaseReport {
   powerDemand: number
   /** çalışan tüketicilerin oranı (0..1) */
   efficiency: number
-  incomePerHour: number
-  orePerHour: number
+  incomePerMin: number
+  orePerMin: number
   sites: SiteReport[]
   /** elektriksiz kalan yapı sayısı */
   unpowered: number
@@ -228,31 +258,41 @@ export function baseReport(base: Base, solarFactor: number, incomeMult = 1): Bas
   })
   return {
     powerSupply: supply, powerDemand: demand, efficiency: consumers ? running / consumers : 1,
-    incomePerHour: income, orePerHour: ore, sites: out, unpowered: consumers - running,
+    incomePerMin: income, orePerMin: ore, sites: out, unpowered: consumers - running,
   }
 }
 
-/** Üssü dt oyun saniyesi ilerletir; kazanılan parayı döndürür. */
+/** Üssü dt gerçek saniyesi ilerletir (dakika bazlı); kazanılan parayı döndürür. */
 export function tickBase(base: Base, solarFactor: number, dtS: number, incomeMult = 1, canMine = true): number {
   const rep = baseReport(base, solarFactor, incomeMult)
-  const hours = dtS / 3600
-  if (canMine) base.ore += rep.orePerHour * hours
-  const earned = rep.incomePerHour * hours
+  const minutes = dtS / 60
+  if (canMine) base.ore += rep.orePerMin * minutes
+  const earned = rep.incomePerMin * minutes
   base.earned += earned
   return earned
 }
 
 export type StationStatus = 'none' | 'unpowered' | 'active'
 
-/** Gezegen yüzeyinde elektriği yeten aktif bir Uzay İstasyonu varsa gezegen kolonileşmiştir. */
-export function isBodyColonized(base: Base | undefined, solarFactor: number): boolean {
+/** Gezegen çeyreğinde elektriği yeten aktif bir Uzay İstasyonu varsa o çeyrek kolonileşmiştir. */
+export function isQuadrantColonized(base: Base | undefined, solarFactor: number): boolean {
   if (!base) return false
   if (!(base.modules[COLONY_STATION_ID] ?? 0)) return false
   const rep = baseReport(base, solarFactor)
   return rep.sites.some((s) => s.id === COLONY_STATION_ID && s.powered)
 }
 
+export const isBodyColonized = isQuadrantColonized
+
+/** Aktif Fırlatma Rampası + aktif Uzay İstasyonu varsa o çeyrekten roket fırlatılabilir. */
+export function hasActiveLaunchPad(base: Base | undefined, solarFactor: number): boolean {
+  if (!base || !isQuadrantColonized(base, solarFactor)) return false
+  if (!(base.modules[LAUNCH_PAD_ID] ?? 0)) return false
+  const rep = baseReport(base, solarFactor)
+  return rep.sites.some((s) => s.id === LAUNCH_PAD_ID && s.powered)
+}
+
 export function colonyStationStatus(base: Base | undefined, solarFactor: number): StationStatus {
   if (!base || !(base.modules[COLONY_STATION_ID] ?? 0)) return 'none'
-  return isBodyColonized(base, solarFactor) ? 'active' : 'unpowered'
+  return isQuadrantColonized(base, solarFactor) ? 'active' : 'unpowered'
 }

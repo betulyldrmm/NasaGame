@@ -12,21 +12,40 @@ import {
   emptyBase,
   ensureSiteHp,
   ensureSites,
+  hasActiveLaunchPad,
+  isQuadrantColonized,
   ISS_SUPPLY_REWARD,
   MODULE_BY_ID,
+  QUADRANT_SHORT,
+  QUADRANTS,
+  quadrantCenterAngle,
+  quadrantOfAngle,
   STARTER_EARTH_SITES,
   syncModules,
   tickBase,
   WARFARE_EARTH_MODULES,
+  type QuadrantId,
 } from '../game/base'
-import { DEFAULT_DESIGN, GRID_H, GRID_W, INITIAL_MONEY, ISS_ALTITUDE_M, ISS_DESIGN, PART_BY_ID, partDef, partMaxHp } from '../game/data'
+import { DEFAULT_DESIGN, GRID_H, GRID_W, INITIAL_MONEY, ISS_ALTITUDE_M, ISS_DESIGN, PAD_DRONE_SPECS, PART_BY_ID, partDef, partMaxHp } from '../game/data'
 import { MISSION_BY_ID, MISSIONS } from '../game/missions'
 import { baseIncomeMultiplier, hasAutoLandTech, INITIAL_TECH, isModuleUnlocked, isPartUnlocked, orePriceMultiplier, requiredTechForModule, requiredTechForPart } from '../game/tech'
 import type { AutopilotMode, Base, GameCommand, GameEvent, GameState, PartInst, Vessel } from '../game/types'
-import { activeEngines, arcade, cargoMass, components, estimateDeltaV, freshParts, fuelGroups, isCombatPart, isConnected, nextStage, setIspBoost, splitParts, vesselStats } from '../game/vessel'
+import { activeEngines, arcade, cargoMass, components, estimateDeltaV, freshParts, fuelGroups, isCombatPart, isConnected, modulesMass, nextStage, partAlive, setIspBoost, splitParts, trimCargoToCap, vesselStats } from '../game/vessel'
 import { BODIES, childrenOf, solarFlux, type BodyId } from '../nasa/bodies'
-import { damageNearbyColoniesOnCrash, isLootMode, isWarfareMode, stepCombatSystems, stepProjectiles, stepVesselWeapons } from './combat'
-import { findLootShip, jettisonCargo, lootSpawn, nearOwnOutpost, outpostControls, stepLoot, tradeInValue, upgradeOutpost } from './loot'
+import {
+  damageNearbyColoniesOnCrash,
+  droneMaxAlt,
+  getActorQuadrantBase,
+  isLootMode,
+  isWarfareMode,
+  launchDroneFromPart,
+  setActorQuadrantBase,
+  spawnPlanetaryDrone,
+  stepCombatSystems,
+  stepProjectiles,
+  stepVesselWeapons,
+} from './combat'
+import { ARENA_RADIUS, findLootShip, jettisonCargo, lootSpawn, nearOwnOutpost, outpostControls, stepLoot, tradeInValue, upgradeOutpost } from './loot'
 import { bodyAbsState, bodyRelState, elementsFromState, hohmann, len, wrapPi } from './orbit'
 import {
   orbitCoastWait,
@@ -34,6 +53,8 @@ import {
   chargeBatteries,
   type Controls,
   effectiveAutopilot,
+  followNeedsPhysics,
+  type FollowLeaderRef,
   needsPhysics,
   PAD_ANGLE,
   rotateVessel,
@@ -65,7 +86,7 @@ export { PHYSICS_WARP_MAX_IDX, WARPS }
 const PHYSICS_DT = 0.02
 
 export interface Fx {
-  kind: 'boom' | 'whale' | 'tower' | 'beam' | 'hit' | 'shield' | 'muzzle'
+  kind: 'boom' | 'whale' | 'tower' | 'beam' | 'hit' | 'shield' | 'muzzle' | 'shockwave' | 'debrisBurst' | 'smokePlume'
   bodyId: BodyId
   x: number
   y: number
@@ -103,6 +124,7 @@ export interface Sim {
 
 export function newGame(ownerId = 'local'): GameState {
   const earth = emptyBase(PAD_ANGLE, ownerId)
+  earth.quadrant = 0
   earth.sites = [...STARTER_EARTH_SITES]
   syncModules(earth)
   return {
@@ -116,6 +138,7 @@ export function newGame(ownerId = 'local'): GameState {
     activeId: null,
     nextId: 1,
     bases: { earth },
+    quadrantBases: { earth: [earth, undefined, undefined, undefined] },
     missionsDone: [],
     techDone: [INITIAL_TECH],
     design: DEFAULT_DESIGN.map((p) => ({ ...p })),
@@ -123,6 +146,32 @@ export function newGame(ownerId = 'local'): GameState {
     targetBody: 'moon',
     lastSavedAt: Date.now(),
   }
+}
+
+/** Tek oyunculuda tüm çeyrek üslerini tekilleştirerek listeler. */
+function iterSinglePlayerBases(gs: GameState): { bodyId: BodyId; quadrant: QuadrantId; base: Base }[] {
+  const out: { bodyId: BodyId; quadrant: QuadrantId; base: Base }[] = []
+  const seen = new Set<Base>()
+  if (gs.quadrantBases) {
+    for (const [bid, arr] of Object.entries(gs.quadrantBases)) {
+      if (!arr) continue
+      for (const q of QUADRANTS) {
+        const b = arr[q]
+        if (b && !seen.has(b)) {
+          seen.add(b)
+          out.push({ bodyId: bid as BodyId, quadrant: q, base: b })
+        }
+      }
+    }
+  }
+  for (const id of Object.keys(gs.bases) as BodyId[]) {
+    const base = gs.bases[id]
+    if (base && !seen.has(base)) {
+      seen.add(base)
+      out.push({ bodyId: id, quadrant: base.quadrant ?? 0, base })
+    }
+  }
+  return out
 }
 
 /** Zaman hızlandırmada pasif gelir istismarını önler: en fazla 5× hızında gelir birikir. */
@@ -134,25 +183,21 @@ export function effectiveIncomeDt(realDt: number, warp: number): number {
 
 export function tickBasesOnly(gs: GameState, incomeDtS: number, clockDtS = incomeDtS): number {
   let total = 0
-  for (const id of Object.keys(gs.bases) as BodyId[]) {
-    const base = gs.bases[id]
-    if (!base) continue
+  for (const { bodyId: id, quadrant, base } of iterSinglePlayerBases(gs)) {
     const flux = solarFlux(len(bodyAbsState(id, gs.time).r))
     const mult = baseIncomeMultiplier(gs, id)
-    total += tickBase(base, flux, incomeDtS, mult, id !== 'earth')
+    total += tickBase(base, flux, incomeDtS, mult, !(id === 'earth' && quadrant === 0))
   }
   gs.money += total
   gs.time += clockDtS
   return total
 }
 
-export function totalPassiveIncomePerHour(gs: GameState): number {
+export function totalPassiveIncomePerMin(gs: GameState): number {
   let sum = 0
-  for (const id of Object.keys(gs.bases) as BodyId[]) {
-    const base = gs.bases[id]
-    if (!base) continue
+  for (const { bodyId: id, base } of iterSinglePlayerBases(gs)) {
     const flux = solarFlux(len(bodyAbsState(id, gs.time).r))
-    sum += baseReport(base, flux, baseIncomeMultiplier(gs, id)).incomePerHour
+    sum += baseReport(base, flux, baseIncomeMultiplier(gs, id)).incomePerMin
   }
   return sum
 }
@@ -184,7 +229,7 @@ const apHold = new WeakMap<Vessel, number>()
 const apLastMode = new WeakMap<Vessel, AutopilotMode>()
 function isAutopilotOn(v: Vessel): boolean {
   const ap = effectiveAutopilot(v)
-  return ap === 'orbit' || ap === 'transfer' || ap === 'land'
+  return ap === 'orbit' || ap === 'transfer' || ap === 'land' || ap === 'nextQuad' || ap === 'follow'
 }
 /** Yörünge/transfer otopilotu alçakta değilse oyuncu istediği hızı seçebilir; oto-iniş her zaman kontrollüdür. */
 export const AP_LOCK_ALT = 500
@@ -193,6 +238,12 @@ export const apLockAlt = (bodyId: BodyId) => (bodyId === 'earth' ? AP_LOCK_ALT :
 function apFree(gs: GameState, v: Vessel | null): boolean {
   if (!v || gs.mp || v.id !== gs.activeId || v.landed) return false
   const ap = effectiveAutopilot(v)
+  if (ap === 'follow') {
+    const leader = v.followId ? gs.vessels.find((o) => o.id === v.followId) : undefined
+    if (leader && leader.bodyId !== v.bodyId) return situation(v).alt >= apLockAlt(v.bodyId)
+    if (leader && !followNeedsPhysics(v, leader, null)) return situation(v).alt >= apLockAlt(v.bodyId)
+    return false
+  }
   if (ap !== 'orbit' && ap !== 'transfer' && ap !== 'land') return false
   return situation(v).alt >= apLockAlt(v.bodyId)
 }
@@ -338,9 +389,9 @@ export function arcadeBurn(v: Vessel, dv: number): boolean {
 }
 
 /** Arcade yolculuğu başlatır: yakıt düşülür, araç birkaç saniyede hedefin atmosfer sınırına geçer. */
-function tryStartCruise(sim: Sim, v: Vessel, events: GameEvent[]): boolean {
+function tryStartCruise(sim: Sim, v: Vessel, events: GameEvent[], overrideTargetId?: BodyId): boolean {
   const gs = sim.gs
-  const targetId = vesselTargetBody(gs, v)
+  const targetId = overrideTargetId ?? vesselTargetBody(gs, v)
   if (targetId === v.bodyId || v.landed || v.debris) return false
   const body = BODIES[v.bodyId]
   const s = situation(v)
@@ -355,6 +406,7 @@ function tryStartCruise(sim: Sim, v: Vessel, events: GameEvent[]): boolean {
   if (!arcadeBurn(v, dv)) {
     const have = estimateDeltaV(v.parts, cargoMass(v.cargo), 9.8).reduce((a, st) => a + st.dv, 0)
     v.autopilot = 'off'
+    v.followId = undefined
     v.autopilotNote = undefined
     events.push({ type: 'toast', ownerId: v.ownerId, text: `Hızlı yolculuk → ${target.name}: ≈ ${Math.round(dv)} m/s gerekli, gemide ${Math.round(have)} m/s var.` })
     return true
@@ -379,7 +431,7 @@ function tryStartCruise(sim: Sim, v: Vessel, events: GameEvent[]): boolean {
     dur: Math.max(7.5, Math.min(13.5, 6.5 + 2.3 * Math.log10(Math.max(1, dist / 1e6)))),
   }
   v.throttle = 0
-  v.autopilot = 'off'
+  if (v.autopilot !== 'follow') v.autopilot = 'off'
   v.autopilotNote = `Hızlı yolculuk → ${target.name}…`
   v.vel = { x: 0, y: 0 }
   sim.firing.delete(v.id)
@@ -394,14 +446,28 @@ export function stepCruise(gs: GameState, clock: number, v: Vessel): 'cruising' 
   const u = Math.max(0, Math.min(1, (clock - c.start) / c.dur))
   if (u >= 1) {
     v.bodyId = c.to
-    v.pos = { ...c.toRel }
-    v.vel = { ...c.toVel }
-    v.angle = Math.atan2(c.toVel.y, c.toVel.x)
+    const leader = v.followId ? gs.vessels.find((o) => o.id === v.followId && o.bodyId === c.to && !o.cruise && !o.landed) : undefined
+    if (leader) {
+      const h = len(leader.vel) > 5 ? Math.atan2(leader.vel.y, leader.vel.x) : leader.angle
+      v.pos = { x: leader.pos.x - Math.cos(h) * 75, y: leader.pos.y - Math.sin(h) * 75 }
+      v.vel = { ...leader.vel }
+      v.angle = leader.angle
+    } else {
+      v.pos = { ...c.toRel }
+      v.vel = { ...c.toVel }
+      v.angle = Math.atan2(c.toVel.y, c.toVel.x)
+    }
     v.angVel = 0
     v.throttle = 0
     v.assist = null
     v.cruise = undefined
-    v.autopilotNote = undefined
+    if (v.followId) {
+      v.autopilot = 'follow'
+      v.autopilotNote = `🤝 Filo takibi devrede (${BODIES[c.to].name})`
+    } else {
+      v.autopilot = 'off'
+      v.autopilotNote = undefined
+    }
     if (!v.visited.includes(c.to)) v.visited.push(c.to)
     return 'arrived'
   }
@@ -516,9 +582,10 @@ function updateTransferAutopilot(
   v: Vessel,
   events: GameEvent[],
   wantedWarpOut?: Map<number, number>,
+  overrideTargetId?: BodyId,
 ): number | null {
   const gs = sim.gs
-  const targetId = vesselTargetBody(gs, v)
+  const targetId = overrideTargetId ?? vesselTargetBody(gs, v)
   const target = BODIES[targetId]
   const body = BODIES[v.bodyId]
   // Çok oyunculuda zaman yöneticisine öneri; tek oyunculuda zamanı oyuncu seçer, otopilot yalnızca
@@ -782,6 +849,7 @@ function triggerProximityArrival(sim: Sim, v: Vessel, bodyId: BodyId, events: Ga
 
 /** Yamalı konikler: araç hangi cismin etki alanındaysa yalnızca onun çekimini hisseder. */
 function checkSoi(sim: Sim, v: Vessel, t: number, events: GameEvent[]): boolean {
+  if (v.drone) return false
   const gs = sim.gs
   const body = BODIES[v.bodyId]
   const r = len(v.pos)
@@ -813,6 +881,17 @@ function checkSoi(sim: Sim, v: Vessel, t: number, events: GameEvent[]): boolean 
       v.bodyId = child.id
       if (!v.visited.includes(child.id)) v.visited.push(child.id)
       events.push({ type: 'soi', from: body.id, to: child.id })
+      if (effectiveAutopilot(v) === 'follow' && v.followId) {
+        const leader = gs.vessels.find((o) => o.id === v.followId)
+        const lDest = leader?.cruise ? leader.cruise.to : leader?.bodyId
+        if (leader && child.id === lDest) {
+          v.throttle = 0
+          v.autopilotNote = `🤝 ${leader.name} sistemine varıldı — formasyon yakalanıyor…`
+          if (!gs.mp && v.id === gs.activeId && sim.warpIdx > 4) sim.warpIdx = 4
+          events.push({ type: 'toast', ownerId: v.ownerId, text: `✓ ${child.name} sistemine ulaşıldı — filo lideri takibi sürüyor.` })
+          return true
+        }
+      }
       if (effectiveAutopilot(v) === 'transfer' && child.id === vTarget) {
         triggerProximityArrival(sim, v, child.id, events)
       } else if (child.id === vTarget && !hasAutoLandTech(gs)) {
@@ -831,6 +910,18 @@ function checkSoi(sim: Sim, v: Vessel, t: number, events: GameEvent[]): boolean 
   return false
 }
 
+function detachFollowersOf(gs: GameState, removedId: number) {
+  for (const o of gs.vessels) {
+    if (o.followId !== removedId) continue
+    o.followId = undefined
+    if (o.autopilot === 'follow') {
+      o.autopilot = 'off'
+      o.throttle = 0
+      o.autopilotNote = undefined
+    }
+  }
+}
+
 function destroy(sim: Sim, v: Vessel, reason: string, events: GameEvent[]) {
   const gs = sim.gs
   const wasActive = gs.activeId === v.id
@@ -838,6 +929,7 @@ function destroy(sim: Sim, v: Vessel, reason: string, events: GameEvent[]) {
     sim.colonyDirty = true
   }
   gs.vessels = gs.vessels.filter((o) => o.id !== v.id)
+  detachFollowersOf(gs, v.id)
   sim.firing.delete(v.id)
   if (wasActive) gs.activeId = null
   if (gs.mp && v.ownerId) {
@@ -926,6 +1018,7 @@ function shatter(sim: Sim, v: Vessel, speed: number, reason: string, events: Gam
   if (!survivors.length) {
     const wasActive = gs.activeId === v.id
     gs.vessels = gs.vessels.filter((o) => o.id !== v.id)
+    detachFollowersOf(gs, v.id)
     sim.firing.delete(v.id)
     if (wasActive) gs.activeId = null
     if (gs.mp && v.ownerId) {
@@ -1144,11 +1237,63 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
     }
   }
 
-  // Transfer otopilotu ve yakıt bitmiş kademe kontrolü (fizik/ray seçimi öncesi)
+  // Transfer / takip otopilotu ve yakıt bitmiş kademe kontrolü (fizik/ray seçimi öncesi)
+  const followLeaderDest = new Map<number, Vessel>()
+  const followSlotIdx = new Map<number, number>()
+  {
+    const groups = new Map<number, number[]>()
+    for (const v of gs.vessels) {
+      if (effectiveAutopilot(v) === 'follow' && v.followId) {
+        const list = groups.get(v.followId) ?? []
+        list.push(v.id)
+        groups.set(v.followId, list)
+      }
+    }
+    for (const [, list] of groups) {
+      list.sort((a, b) => a - b)
+      list.forEach((vid, idx) => followSlotIdx.set(vid, idx))
+    }
+  }
   for (const v of [...gs.vessels]) {
     const ap = effectiveAutopilot(v)
     const isOwnedActive = isMp ? isAnyActivePlayerVessel(gs, v) : v === active
     if (v.cruise) continue
+    if (ap === 'follow') {
+      const leader = v.followId ? gs.vessels.find((o) => o.id === v.followId && !o.debris && !o.station && !o.outpost) : undefined
+      if (!leader) {
+        v.autopilot = 'off'
+        v.followId = undefined
+        v.throttle = 0
+        v.autopilotNote = undefined
+        continue
+      }
+      followLeaderDest.set(v.id, leader)
+      const destBody = leader.cruise ? leader.cruise.to : leader.bodyId
+      if (v.bodyId !== destBody) {
+        if (v.drone) {
+          v.autopilot = 'off'
+          v.followId = undefined
+          v.throttle = 0
+          v.autopilotNote = undefined
+          events.push({ type: 'toast', ownerId: v.ownerId, text: '⚠ Dron lideri gezegen dışına çıktı — takip durduruldu.' })
+          continue
+        }
+        if (isMp) {
+          if (tryStartCruise(sim, v, events, destBody)) continue
+        }
+        const fWaitNote = isMp && v.autopilotNote?.includes('uzaya çıkış') ? v.autopilotNote : undefined
+        const targetAngle = updateTransferAutopilot(sim, v, events, autopilotWanted, destBody)
+        if (!transferTargets) transferTargets = new Map()
+        transferTargets.set(v.id, targetAngle)
+        if (fWaitNote) v.autopilotNote = fWaitNote
+      } else if (v.landed) {
+        const dist = Math.hypot(leader.pos.x - v.pos.x, leader.pos.y - v.pos.y)
+        if (!leader.landed || dist >= 420) v.throttle = 1
+        else v.throttle = 0
+      }
+      autoStageIfSpent(sim, v, events)
+      continue
+    }
     // Çok oyunculu arcade: uzaya çıkınca "hedefe git" hızlı yolculuğa dönüşür.
     if (isMp && ap === 'transfer') {
       if (tryStartCruise(sim, v, events)) continue
@@ -1165,6 +1310,16 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
     }
     if ((ap === 'orbit' || ap === 'transfer') && v.landed) {
       v.throttle = 1
+    }
+    if (ap === 'nextQuad' && isOwnedActive && v.drone) {
+      const targetQ = v.targetQuad ?? (((quadrantOfAngle(Math.atan2(v.pos.y, v.pos.x)) + 1) % 4) as QuadrantId)
+      const dTh = Math.abs(wrapPi(quadrantCenterAngle(targetQ) - Math.atan2(v.pos.y, v.pos.x))) * BODIES[v.bodyId].radius
+      const sit = situation(v)
+      if (dTh > 4000 && sit.alt > 220 && sit.altSea < (v.drone.maxAlt || 15_000) * 0.65) {
+        if (autopilotWanted) autopilotWanted.set(v.id, 3)
+      } else if (autopilotWanted) {
+        autopilotWanted.set(v.id, 0)
+      }
     }
     // Yörünge otopilotu: süzülürken raylarda zamanı, bir sonraki yanışa kalan süreye göre hızlandırır.
     if (ap === 'orbit' && isOwnedActive && !v.landed) {
@@ -1249,7 +1404,21 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
           text: cap.maxIdx === 0 ? "Oto-İniş yaklaşımı: hız 1×'e düşürüldü." : `Oto-İniş: hız en fazla ${WARPS[cap.maxIdx]}× ile sınırlandı.`,
         })
       }
-    } else if (ap === 'orbit' || ap === 'transfer') {
+    } else if (ap === 'nextQuad' && active.drone) {
+      const targetQ = active.targetQuad ?? (((quadrantOfAngle(Math.atan2(active.pos.y, active.pos.x)) + 1) % 4) as QuadrantId)
+      const dTh = Math.abs(wrapPi(quadrantCenterAngle(targetQ) - Math.atan2(active.pos.y, active.pos.x))) * BODIES[active.bodyId].radius
+      const sit = situation(active)
+      if (!sim.apWarpPinned) {
+        if (dTh > 4500 && sit.alt > 180) sim.warpIdx = Math.min(PHYSICS_WARP_MAX_IDX, Math.max(sim.warpIdx, 3))
+        else if (dTh < 2200 || sit.alt < 180) sim.warpIdx = 0
+      } else if (sim.warpIdx > PHYSICS_WARP_MAX_IDX) {
+        sim.warpIdx = PHYSICS_WARP_MAX_IDX
+      }
+    } else if (
+      ap === 'orbit' ||
+      ap === 'transfer' ||
+      (ap === 'follow' && active.followId && followLeaderDest.get(active.id)?.bodyId !== active.bodyId)
+    ) {
       // Uzun süzülmelerde (transfer penceresi, Ay'a yolculuk) otopilot hızı kendiliğinden yükseltir;
       // oyuncu daha yüksek seçebilir, düşürürse seçimi korunur.
       const until = apHold.get(active)
@@ -1297,6 +1466,15 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
     events.push({ type: 'toast', text: 'Zaman hızlandırma 25×\'e düştü (itki / atmosfer / yüzey).' })
   }
   if (!isMp && !(active && isAutopilotOn(active))) sim.warpLockPrev = undefined
+  if (!isMp && sim.warpIdx > PHYSICS_WARP_MAX_IDX) {
+    const anyFollowPhys = gs.vessels.some((f) => {
+      if (effectiveAutopilot(f) !== 'follow' || f.cruise) return false
+      const l = f.followId ? followLeaderDest.get(f.id) : undefined
+      const sameB = l && !l.cruise && l.bodyId === f.bodyId
+      return sameB ? followNeedsPhysics(f, l, f === active ? singleCtrl : null) : needsPhysics(f, f === active ? singleCtrl : null)
+    })
+    if (anyFollowPhys) sim.warpIdx = PHYSICS_WARP_MAX_IDX
+  }
   // Yörüngeye oturduktan sonraki 5 sn: hız 1×'te tutulur (yüksek hızda takılı kalıp zaman kaçmasın).
   if (!isMp && sim.warpHoldUntil !== undefined) {
     if ((sim.clock ?? 0) < sim.warpHoldUntil) {
@@ -1320,6 +1498,21 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
   }
 
   // Aktif araç önce adımlanır: yüksek hızda kareyi erken bitirirse (simDt kısalır) diğerleri buna uyar.
+  const preStepLeaders = new Map<number, Omit<FollowLeaderRef, 'slotIndex'> & { bodyId: BodyId; cruise: boolean }>()
+  for (const leader of followLeaderDest.values()) {
+    if (preStepLeaders.has(leader.id)) continue
+    preStepLeaders.set(leader.id, {
+      name: leader.name,
+      bodyId: leader.bodyId,
+      cruise: Boolean(leader.cruise),
+      pos: { ...leader.pos },
+      vel: { ...leader.vel },
+      angle: leader.angle,
+      landed: leader.landed,
+      throttle: leader.throttle,
+      accel: maxAccelEstimate(leader),
+    })
+  }
   const chargedVessels = new Set<number>()
   const order = activeFree && active ? [active, ...gs.vessels.filter((o) => o !== active)] : [...gs.vessels]
   for (const v of order) {
@@ -1341,6 +1534,11 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
     }
     const apBefore = effectiveAutopilot(v)
     const extTarget = transferTargets?.get(v.id) ?? null
+    const fLeader = apBefore === 'follow' && v.followId ? preStepLeaders.get(v.followId) : undefined
+    const followRef: FollowLeaderRef | null =
+      fLeader && !fLeader.cruise && fLeader.bodyId === v.bodyId && extTarget === null
+        ? { ...fLeader, slotIndex: followSlotIdx.get(v.id) ?? 0 }
+        : null
     if (v.debris) {
       v.debris.ttl -= real
       if (v.debris.ttl <= 0) {
@@ -1348,7 +1546,10 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
         continue
       }
     }
-    const needP = needsPhysics(v, c)
+    const needP =
+      apBefore === 'follow' && !v.landed && extTarget === null
+        ? followNeedsPhysics(v, followLeaderDest.get(v.id), c)
+        : needsPhysics(v, c)
     if (!needP && v.landed) {
       sim.firing.delete(v.id)
       continue
@@ -1361,14 +1562,18 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
       const h = effSimDt / n
       const manualScale = 1 / Math.max(1, effWarp)
       // Yüksek hızda transfer otopilotunun kararları kare başına değil, oyun zamanında sık sık yenilenir.
-      const refreshEvery = freeV && apBefore === 'transfer' && n > 1 ? Math.max(1, Math.round(0.1 / h)) : 0
+      const refreshEvery = freeV && (apBefore === 'transfer' || (apBefore === 'follow' && extTarget !== null)) && n > 1 ? Math.max(1, Math.round(0.1 / h)) : 0
       let apTarget = extTarget
       let stCache = vesselStats(v.parts, v.cargo)
       for (let i = 0; i < n; i += 1) {
         if (refreshEvery && i > 0 && i % refreshEvery === 0) {
-          if (effectiveAutopilot(v) !== 'transfer') break
+          const curAp = effectiveAutopilot(v)
+          if (curAp !== 'transfer' && !(curAp === 'follow' && v.followId)) break
           gs.time = t0 + i * h
-          apTarget = updateTransferAutopilot(sim, v, events)
+          const lDest = curAp === 'follow' && v.followId ? followLeaderDest.get(v.id) : undefined
+          const overId = lDest ? (lDest.cruise ? lDest.cruise.to : lDest.bodyId) : undefined
+          if (overId && overId === v.bodyId) break
+          apTarget = updateTransferAutopilot(sim, v, events, undefined, overId)
           autoStageIfSpent(sim, v, events)
           stCache = vesselStats(v.parts, v.cargo)
           if (!needsPhysics(v, c)) {
@@ -1378,7 +1583,7 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
           }
         }
         chargeBatteries(v, stCache, t0 + i * h, h)
-        const res = stepPhysics(v, h, c, manualScale, apTarget)
+        const res = stepPhysics(v, h, c, manualScale, apTarget, followRef, i * h)
         sim.firing.set(v.id, res.firing)
         if (res.crash) {
           if (v.debris) explodeDebris(sim, v, events)
@@ -1391,8 +1596,11 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
           break
         }
         if (res.touchdown) {
-          if (!isMp && v.bodyId !== 'earth' && BODIES[v.bodyId].landable && !gs.bases[v.bodyId]) {
-            gs.bases[v.bodyId] = emptyBase(Math.atan2(v.pos.y, v.pos.x), v.ownerId)
+          const landAngle = Math.atan2(v.pos.y, v.pos.x)
+          const lQuad = quadrantOfAngle(landAngle)
+          const lid = v.ownerId ?? gs.ownerId ?? 'local'
+          if (!isMp && !(v.bodyId === 'earth' && lQuad === 0) && BODIES[v.bodyId].landable && !getActorBase(gs, v.bodyId, lid, lQuad)) {
+            setActorBase(gs, v.bodyId, lid, emptyBase(landAngle, v.ownerId), lQuad)
           }
           if (isActive) {
             events.push({ type: 'toast', ownerId: v.ownerId, text: `${BODIES[v.bodyId].name} yüzeyine iniş başarılı.` })
@@ -1462,6 +1670,57 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
     if (!chargedVessels.has(v.id)) chargeBatteries(v, vesselStats(v.parts, v.cargo), gs.time, simDt)
   }
 
+  // Dron gezegensel sınır denetimi: uzaya çıkarsa uyarır, dinlenmezse parçalanır
+  for (const v of [...gs.vessels]) {
+    if (!v.drone || v.debris) continue
+    const d = v.drone
+    // İç güneş/çekirdek enerjisiyle bataryayı yavaşça tazeler
+    const dst = vesselStats(v.parts, v.cargo)
+    v.ec = Math.min(dst.ecCap, v.ec + (2.5 + d.tier * 1.5) * real)
+    if (loot && gs.mp?.loot) {
+      const center = gs.mp.loot.center
+      const dist = Math.hypot(v.pos.x - center.x, v.pos.y - center.y)
+      const capR = gs.mp.loot.radius || ARENA_RADIUS
+      if (dist >= capR * 0.78) {
+        if (!d.warn) {
+          events.push({ type: 'toast', ownerId: v.ownerId, text: '⚠ DRON UYARISI: Arena sınırına yaklaşıyorsun! Uzaklaşırsan dron parçalanacak!' })
+        }
+        d.warn = true
+        if (dist >= capR * 0.96) {
+          d.overLimitSec = (d.overLimitSec ?? 0) + real
+          if (d.overLimitSec >= 2.2 || dist >= capR * 1.08) {
+            destroy(sim, v, 'uzay sınırını aştığı için bağlantı kaybıyla parçalandı', events)
+          }
+        } else {
+          d.overLimitSec = 0
+        }
+      } else {
+        d.warn = false
+        d.overLimitSec = 0
+      }
+      continue
+    }
+    const maxAlt = d.maxAlt || droneMaxAlt(v.bodyId, d.tier)
+    const s = situation(v, dst)
+    if (v.bodyId !== d.homeBodyId || s.altSea >= maxAlt * 0.75) {
+      if (!d.warn) {
+        events.push({ type: 'toast', ownerId: v.ownerId, text: '⚠ DRON UYARISI: Uzay sınırına yaklaşıyorsun! Hemen alçal yoksa dron parçalanacak!' })
+      }
+      d.warn = true
+      if (v.bodyId !== d.homeBodyId || s.altSea >= maxAlt) {
+        d.overLimitSec = (d.overLimitSec ?? 0) + real
+        if (d.overLimitSec >= 2.2 || v.bodyId !== d.homeBodyId || s.altSea >= maxAlt * 1.12) {
+          destroy(sim, v, 'uzay sınırını aştığı için basınç ve sinyal kaybıyla parçalandı', events)
+        }
+      } else {
+        d.overLimitSec = 0
+      }
+    } else if (s.altSea < maxAlt * 0.7) {
+      d.warn = false
+      d.overLimitSec = 0
+    }
+  }
+
   for (const v of [...gs.vessels]) {
     const isAct = isMp ? isAnyActivePlayerVessel(gs, v) : v === active
     const vc = v.outpost
@@ -1486,10 +1745,9 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
     stepPlanetCaptures(gs, real, events)
     stepMultiplayerIncome(gs, incomeDt)
   } else {
-    for (const id of Object.keys(gs.bases) as BodyId[]) {
-      const base = gs.bases[id]!
+    for (const { bodyId: id, quadrant, base } of iterSinglePlayerBases(gs)) {
       const mult = baseIncomeMultiplier(gs, id)
-      gs.money += tickBase(base, solarFlux(len(bodyAbsState(id, gs.time).r)), incomeDt, mult, id !== 'earth')
+      gs.money += tickBase(base, solarFlux(len(bodyAbsState(id, gs.time).r)), incomeDt, mult, !(id === 'earth' && quadrant === 0))
     }
 
     const cur = activeVessel(gs)
@@ -1504,13 +1762,19 @@ export function stepWorld(sim: Sim, dtReal: number, ctrl: Controls | Map<string,
 
 // ───────────────────────── oyuncu eylemleri ─────────────────────────
 
-export function designCost(design: PartInst[], cargo: Record<string, number>): number {
+export function designCost(design: PartInst[], cargo: Record<string, number>, droneCargo: Record<string, number> = {}): number {
   let c = design.reduce((s, p) => s + partDef(p.def).cost, 0)
   for (const [id, n] of Object.entries(cargo)) c += (MODULE_BY_ID[id]?.cost ?? 0) * n
+  for (const [id, n] of Object.entries(droneCargo)) c += (MODULE_BY_ID[id]?.cost ?? 0) * n
   return c
 }
 
-export function validateDesign(design: PartInst[], cargo: Record<string, number>, gs?: GameState): string | null {
+export function validateDesign(
+  design: PartInst[],
+  cargo: Record<string, number>,
+  gs?: GameState,
+  droneCargo: Record<string, number> = {},
+): string | null {
   if (!design.length) return 'Önce grid\'e parça yerleştir.'
   const occupied: Array<{ x: number; y: number; w: number; h: number }> = []
   for (const p of design) {
@@ -1526,6 +1790,20 @@ export function validateDesign(design: PartInst[], cargo: Record<string, number>
     }
     occupied.push({ x: p.x, y: p.y, w: d.w, h: d.h })
   }
+  const checkModList = (list: Record<string, number>) => {
+    for (const [id, n] of Object.entries(list)) {
+      if (n <= 0) continue
+      if (!MODULE_BY_ID[id]) return `Bilinmeyen modül: ${id}`
+      if (gs && !isWarfareMode(gs) && MODULE_BY_ID[id]?.warfare) {
+        return `"${MODULE_BY_ID[id]?.name ?? id}" yalnızca Uzay Savaşı modunda kullanılır.`
+      }
+      if (gs && !isModuleUnlocked(gs, id)) {
+        const tech = requiredTechForModule(id)
+        return `"${MODULE_BY_ID[id]?.name ?? id}" için teknoloji gerekli: ${tech?.name ?? 'Araştırma'}.`
+      }
+    }
+    return null
+  }
   if (gs) {
     for (const p of design) {
       if (gs.mp && !isWarfareMode(gs) && isCombatPart(p.def)) {
@@ -1536,55 +1814,86 @@ export function validateDesign(design: PartInst[], cargo: Record<string, number>
         return `"${partDef(p.def).name}" için teknoloji gerekli: ${tech?.name ?? 'Araştırma'}.`
       }
     }
-    for (const [id, n] of Object.entries(cargo)) {
-      if (n > 0 && !isWarfareMode(gs) && MODULE_BY_ID[id]?.warfare) {
-        return `"${MODULE_BY_ID[id]?.name ?? id}" yalnızca Uzay Savaşı modunda kullanılır.`
-      }
-      if (n > 0 && !isModuleUnlocked(gs, id)) {
-        const tech = requiredTechForModule(id)
-        return `"${MODULE_BY_ID[id]?.name ?? id}" için teknoloji gerekli: ${tech?.name ?? 'Araştırma'}.`
-      }
-    }
   }
+  const errC = checkModList(cargo) ?? checkModList(droneCargo)
+  if (errC) return errC
   const st = vesselStats(design)
   if (!st.hasCommand) return 'Bir komuta modülü (kapsül veya sonda çekirdeği) gerekli.'
   if (!isConnected(design)) return 'Tüm parçalar birbirine bağlı olmalı.'
   if (!design.some((p) => partDef(p.def).kind === 'engine')) return 'En az bir motor gerekli.'
+  if (design.filter((p) => partDef(p.def).kind === 'droneBay').length > 1) {
+    return 'Bir rokette yalnızca 1 Dron Fırlatıcı olabilir (her fırlatıcı 1 dron taşır).'
+  }
   const cm = cargoMass({ modules: cargo, ore: 0, oreFrom: null })
   if (cm > st.cargoCap + 1e-9) return `Kargo ${cm} t, kapasite ${st.cargoCap} t. Kargo gövdesi ekle.`
+  const dm = modulesMass(droneCargo)
+  if (dm > 1e-9 && dm > st.droneCargoCap + 1e-9) {
+    return st.droneCargoCap <= 0
+      ? 'Dron kargosu için roketinde bir Dron Fırlatıcı olmalıdır.'
+      : `Dron kargosu ${dm.toFixed(1)} t, dron kapasitesi ${st.droneCargoCap} t.`
+  }
   return null
 }
 
-function getActorBase(gs: GameState, bodyId: BodyId, actorId: string): Base | undefined {
-  if (gs.mp) {
-    const p = gs.mp.players[actorId]
-    if (bodyId === 'earth') return p?.earthBase
-    if (isWarfareMode(gs)) return p?.colonies?.[bodyId]
-  }
-  return gs.bases[bodyId]
+function getActorBase(gs: GameState, bodyId: BodyId, actorId: string, quadrant: QuadrantId = 0): Base | undefined {
+  return getActorQuadrantBase(gs, bodyId, actorId, quadrant)
 }
 
-function setActorBase(gs: GameState, bodyId: BodyId, actorId: string, base: Base) {
-  if (gs.mp) {
-    const p = gs.mp.players[actorId]
-    if (bodyId === 'earth') {
-      if (p) p.earthBase = base
-      return
-    }
-    if (isWarfareMode(gs) && p) {
-      ;(p.colonies ??= {})[bodyId] = base
-      return
-    }
-  }
-  gs.bases[bodyId] = base
+function setActorBase(gs: GameState, bodyId: BodyId, actorId: string, base: Base, quadrant: QuadrantId = 0) {
+  setActorQuadrantBase(gs, bodyId, actorId, base, quadrant)
 }
 
-/** Tasarımı satın alıp Dünya'daki rampaya koyar. Hata varsa mesaj döndürür. */
+export interface LaunchSiteOption {
+  bodyId: BodyId
+  quadrant: QuadrantId
+  label: string
+}
+
+/** Verilen gök cismi çeyreğinden roket fırlatılabilir mi? (Dünya Q0 her zaman açık; diğer çeyreklerde İstasyon + Fırlatma Rampası gerekir.) */
+export function canLaunchFromQuadrant(
+  gs: GameState,
+  bodyId: BodyId,
+  quadrant: QuadrantId,
+  actorId = gs.ownerId ?? 'local',
+): boolean {
+  if (isLootMode(gs)) return bodyId === 'earth' && quadrant === 0
+  if (bodyId === 'earth' && quadrant === 0) return true
+  if (!BODIES[bodyId]?.landable) return false
+  if (gs.mp && !isWarfareMode(gs)) {
+    const cap = gs.mp.quadrantCaptures?.[bodyId]?.[quadrant] ?? (quadrant === 0 ? gs.mp.captures[bodyId] : undefined)
+    if (cap?.ownerId && cap.ownerId !== actorId) return false
+  }
+  const base = getActorBase(gs, bodyId, actorId, quadrant)
+  if (!base || base.destroyed) return false
+  const flux = solarFlux(len(bodyAbsState(bodyId, gs.time).r))
+  return hasActiveLaunchPad(base, flux)
+}
+
+/** Oyuncunun şu an fırlatma yapabileceği tüm rampaları döndürür. */
+export function availableLaunchSites(gs: GameState, actorId = gs.ownerId ?? 'local'): LaunchSiteOption[] {
+  const list: LaunchSiteOption[] = [{ bodyId: 'earth', quadrant: 0, label: `${BODIES.earth.name} · ${QUADRANT_SHORT[0]} (Ana Üs)` }]
+  if (isLootMode(gs)) return list
+  for (const bodyId of Object.keys(BODIES) as BodyId[]) {
+    if (!BODIES[bodyId].landable) continue
+    for (const q of QUADRANTS) {
+      if (bodyId === 'earth' && q === 0) continue
+      if (canLaunchFromQuadrant(gs, bodyId, q, actorId)) {
+        list.push({ bodyId, quadrant: q, label: `${BODIES[bodyId].name} · ${QUADRANT_SHORT[q]}` })
+      }
+    }
+  }
+  return list
+}
+
+/** Tasarımı satın alıp seçili rampaya (varsayılan Dünya Q0) koyar. Hata varsa mesaj döndürür. */
 export function launchDesign(
   sim: Sim,
   ownerId = sim.gs.ownerId ?? 'local',
   customDesign?: PartInst[],
   customCargo?: Record<string, number>,
+  launchBody: BodyId = sim.gs.launchSite?.bodyId ?? 'earth',
+  launchQuad: QuadrantId = sim.gs.launchSite?.quadrant ?? 0,
+  customDroneCargo?: Record<string, number>,
 ): string | null {
   const gs = sim.gs
   if (isWarfareMode(gs) && gs.mp?.players[ownerId]?.eliminated) {
@@ -1592,20 +1901,37 @@ export function launchDesign(
   }
   const design = customDesign ?? gs.design
   const designCargo = customCargo ?? gs.designCargo
-  const err = validateDesign(design, designCargo, gs)
+  const designDroneCargo = customDroneCargo ?? gs.designDroneCargo ?? {}
+  const err = validateDesign(design, designCargo, gs, designDroneCargo)
   if (err) return err
-  const cost = designCost(design, designCargo)
+  const cost = designCost(design, designCargo, designDroneCargo)
   if (cost > getPlayerMoney(gs, ownerId)) return `Bütçe yetersiz: ${cost.toLocaleString('tr-TR')} ₡ gerekli.`
   if (isLootMode(gs)) return launchLootShip(sim, ownerId, design, designCargo, cost)
-  const padTheta = playerPadAngle(gs, ownerId)
+  if (!canLaunchFromQuadrant(gs, launchBody, launchQuad, ownerId)) {
+    return `${BODIES[launchBody].name} ${QUADRANT_SHORT[launchQuad]} çeyreğinden fırlatma için aktif Uzay İstasyonu ve Fırlatma Rampası gerekir.`
+  }
+  const qBase = getActorBase(gs, launchBody, ownerId, launchQuad)
+  const padTheta =
+    launchBody === 'earth' && launchQuad === 0
+      ? playerPadAngle(gs, ownerId)
+      : qBase?.siteAngle ?? quadrantCenterAngle(launchQuad)
   const clearance = gs.mp ? 25 : 60
+  const body = BODIES[launchBody]
   const onPad = gs.vessels.find(
-    (v) => v.bodyId === 'earth' && v.landed && Math.abs(wrapPi(Math.atan2(v.pos.y, v.pos.x) - padTheta)) * BODIES.earth.radius < clearance,
+    (v) => v.bodyId === launchBody && v.landed && Math.abs(wrapPi(Math.atan2(v.pos.y, v.pos.x) - padTheta)) * body.radius < clearance,
   )
   if (onPad) return 'Rampa dolu: önce rampadaki aracı kurtar veya sil.'
   const parts = freshParts(design)
+  const cleanDroneMods: Record<string, number> = {}
+  for (const [mid, n] of Object.entries(designDroneCargo)) {
+    if (n > 0 && MODULE_BY_ID[mid]) cleanDroneMods[mid] = n
+  }
+  if (Object.keys(cleanDroneMods).length > 0) {
+    const bay = parts.find((p) => partDef(p.def).kind === 'droneBay')
+    if (bay) bay.droneCargo = cleanDroneMods
+  }
   const st = vesselStats(parts)
-  const r = BODIES.earth.radius + terrainHeight('earth', padTheta) + (st.maxY - st.comY)
+  const r = body.radius + terrainHeight(launchBody, padTheta) + (st.maxY - st.comY)
   const id = gs.nextId
   gs.nextId += 1
   const ownerName = gs.mp?.players[ownerId]?.username
@@ -1614,7 +1940,7 @@ export function launchDesign(
     name: ownerName ? `${ownerName} #${id}` : `Selene ${id}`,
     ownerId,
     parts,
-    bodyId: 'earth',
+    bodyId: launchBody,
     pos: { x: Math.cos(padTheta) * r, y: Math.sin(padTheta) * r },
     vel: { x: 0, y: 0 },
     angle: padTheta,
@@ -1628,7 +1954,7 @@ export function launchDesign(
     autopilot: 'off',
     targetBody: gs.mp ? (gs.mp.players[ownerId]?.targetBody ?? 'moon') : undefined,
     approachWarn: null,
-    visited: ['earth'],
+    visited: launchBody === 'earth' ? ['earth'] : ['earth', launchBody],
     assist: null,
     dvUsed: 0,
     ...(st.shieldCap > 0 ? { shield: st.shieldCap } : {}),
@@ -1731,7 +2057,7 @@ export function decouple(sim: Sim, v: Vessel, indices: number[]): GameEvent[] {
       v.landed = false
       v.noCollideUntil = gs.time + 3.0
       const cap = st.cargoCap
-      if (cargoMass(v.cargo) > cap + 1e-9) v.cargo = { modules: {}, ore: 0, oreFrom: null }
+      if (cargoMass(v.cargo) > cap + 1e-9) trimCargoToCap(v.cargo, cap)
       v.ec = Math.min(v.ec, st.ecCap)
       if (v.shield !== undefined) v.shield = Math.min(v.shield, st.shieldCap)
     } else {
@@ -1769,6 +2095,7 @@ export function recoverVessel(sim: Sim, v: Vessel): GameEvent[] {
   if (!gs.mp && v.visited.includes('moon') && st.hasCommand) completeMission(gs, 'earth-return', events)
   addPlayerMoney(gs, refund + oreIncome, v.ownerId)
   gs.vessels = gs.vessels.filter((o) => o.id !== v.id)
+  detachFollowersOf(gs, v.id)
   sim.firing.delete(v.id)
   if (gs.activeId === v.id) gs.activeId = null
   if (gs.mp && v.ownerId && gs.mp.players[v.ownerId]?.activeVesselId === v.id) {
@@ -1780,29 +2107,35 @@ export function recoverVessel(sim: Sim, v: Vessel): GameEvent[] {
 
 export { getActorBase }
 
-/** İnen aracın kargosundaki yapıları koloniye kurar; boş yuva yoksa koloni deposuna koyar. */
-export function deployModules(sim: Sim, v: Vessel, onlyId?: string): string | null {
-  if (!v.landed || v.bodyId === 'earth' || !BODIES[v.bodyId].landable) {
-    return 'Yapıları indirmek için Dünya dışı bir gezegen veya uydu yüzeyine inmelisin.'
+/** İnen aracın kargosundaki yapıları inilen çeyrek koloniye kurar; boş yuva yoksa o çeyreğin deposuna koyar. */
+export function deployModules(sim: Sim, v: Vessel, onlyId?: string, explicitQuad?: QuadrantId): string | null {
+  if (!v.landed || !BODIES[v.bodyId].landable) {
+    return 'Yapıları indirmek için inilebilir bir gök cismi yüzeyine inmelisin.'
+  }
+  const q = explicitQuad ?? quadrantOfAngle(Math.atan2(v.pos.y, v.pos.x))
+  if (v.bodyId === 'earth' && q === 0) {
+    return 'Dünya ana üssüne yapılar doğrudan kurulur; başka bir çeyreğe inip kargoyu boşalt.'
   }
   const warfare = isWarfareMode(sim.gs)
   const actorId = v.ownerId ?? sim.gs.ownerId ?? 'local'
   if (warfare && sim.gs.mp?.players[actorId]?.eliminated) {
     return 'Tüm kolonilerin yok edildi — artık inşa yapılamaz.'
   }
-  if (sim.gs.mp && !warfare) {
-    const cap = sim.gs.mp.captures[v.bodyId]
-    if (cap?.ownerId && cap.ownerId !== v.ownerId) return 'Bu gezegen başka bir oyuncunun kolonisi.'
+  if (sim.gs.mp && !warfare && v.bodyId !== 'earth') {
+    const qCap = sim.gs.mp.quadrantCaptures?.[v.bodyId]?.[q] ?? (q === 0 ? sim.gs.mp.captures[v.bodyId] : undefined)
+    if (qCap?.ownerId && qCap.ownerId !== v.ownerId) return 'Bu çeyrek başka bir oyuncunun kolonisi.'
   }
   const total = Object.entries(v.cargo.modules).reduce((s, [id, n]) => s + (id === 'iss-supplies' || (onlyId && id !== onlyId) ? 0 : n), 0)
   if (!total) return 'Kargoda indirilecek yapı yok.'
-  let base = getActorBase(sim.gs, v.bodyId, actorId)
+  let base = getActorBase(sim.gs, v.bodyId, actorId, q)
   if (base?.destroyed) return 'İmha edilmiş üsse yeni yapı kurulamaz.'
   if (!base) {
     base = emptyBase(Math.atan2(v.pos.y, v.pos.x), actorId)
-    setActorBase(sim.gs, v.bodyId, actorId, base)
+    setActorBase(sim.gs, v.bodyId, actorId, base, q)
   }
-  if (v.ownerId && !sim.gs.mp?.captures[v.bodyId]?.ownerId) base.ownerId = v.ownerId
+  if (v.ownerId && (!sim.gs.mp || v.bodyId === 'earth' || warfare || !(sim.gs.mp.quadrantCaptures?.[v.bodyId]?.[q]?.ownerId))) {
+    base.ownerId = v.ownerId
+  }
   ensureSites(base)
   if (warfare) ensureSiteHp(base)
   const stock = (base.stock ??= {})
@@ -1810,7 +2143,6 @@ export function deployModules(sim: Sim, v: Vessel, onlyId?: string): string | nu
   const ordered = Object.entries(v.cargo.modules).filter(([id]) => !onlyId || id === onlyId).sort(([a], [b]) => (MODULE_BY_ID[b]?.power ?? 0) - (MODULE_BY_ID[a]?.power ?? 0))
   for (const [id, n] of ordered) {
     if (!MODULE_BY_ID[id] || id === 'iss-supplies') continue
-    // Kargoyla taşınan yapılar önceden üretildiği için boş yuva varsa doğrudan kurulur.
     for (let i = 0; i < n; i += 1) {
       const free = base.sites!.indexOf(null)
       if (free >= 0) {
@@ -1833,16 +2165,17 @@ export function deployModules(sim: Sim, v: Vessel, onlyId?: string): string | nu
   return null
 }
 
-/** Koloni deposundaki (kurulmamış) bir yapıyı yeniden gemiye yükler: başka bir koloniye taşımak için. */
-export function pickupModule(sim: Sim, v: Vessel, moduleId: string): string | null {
+/** Koloni deposundaki (kurulmamış) bir yapıyı yeniden gemiye yükler: başka bir çeyreğe/koloniye taşımak için. */
+export function pickupModule(sim: Sim, v: Vessel, moduleId: string, explicitQuad?: QuadrantId): string | null {
   const m = MODULE_BY_ID[moduleId]
   if (!m) return 'Bilinmeyen yapı.'
+  const q = explicitQuad ?? quadrantOfAngle(Math.atan2(v.pos.y, v.pos.x))
   const actorId = v.ownerId ?? sim.gs.ownerId ?? 'local'
   if (sim.gs.mp && !isWarfareMode(sim.gs) && v.bodyId !== 'earth') {
-    const cap = sim.gs.mp.captures[v.bodyId]
-    if (cap?.ownerId && cap.ownerId !== actorId) return 'Bu gezegen başka bir oyuncunun kolonisi.'
+    const cap = sim.gs.mp.quadrantCaptures?.[v.bodyId]?.[q] ?? (q === 0 ? sim.gs.mp.captures[v.bodyId] : undefined)
+    if (cap?.ownerId && cap.ownerId !== actorId) return 'Bu çeyrek başka bir oyuncunun kolonisi.'
   }
-  const base = getActorBase(sim.gs, v.bodyId, actorId)
+  const base = getActorBase(sim.gs, v.bodyId, actorId, q)
   if (!v.landed || !base) return 'Yük almak için koloninin olduğu yüzeye inmelisin.'
   if (base.destroyed) return 'İmha edilmiş üsten yapı alınamaz.'
   if (!(base.stock?.[moduleId] ?? 0)) return 'Depoda bu yapı yok.'
@@ -1853,77 +2186,95 @@ export function pickupModule(sim: Sim, v: Vessel, moduleId: string): string | nu
   return null
 }
 
-/** Dünya'da aynı yapıdan çoğaldıkça fiyat artar. */
+/** Dünya ana üssünde aynı yapıdan çoğaldıkça fiyat kademeli artar. */
 export function earthModuleCost(gs: GameState, moduleId: string, actorId = gs.ownerId ?? 'local'): number {
   const m = MODULE_BY_ID[moduleId]
   if (!m) return 0
-  const owned = getActorBase(gs, 'earth', actorId)?.modules[moduleId] ?? 0
-  return Math.round(m.cost * (1 + 0.55 * owned))
+  const owned = getActorBase(gs, 'earth', actorId, 0)?.modules[moduleId] ?? 0
+  return Math.round(m.cost * (1 + 0.35 * owned))
 }
 
-export function modulePrice(gs: GameState, bodyId: BodyId, moduleId: string, actorId = gs.ownerId ?? 'local'): number {
-  if ((getActorBase(gs, bodyId, actorId)?.stock?.[moduleId] ?? 0) > 0) return 0
-  return bodyId === 'earth' ? earthModuleCost(gs, moduleId, actorId) : (MODULE_BY_ID[moduleId]?.cost ?? 0)
+export function modulePrice(gs: GameState, bodyId: BodyId, moduleId: string, actorId = gs.ownerId ?? 'local', quadrant: QuadrantId = 0): number {
+  if ((getActorBase(gs, bodyId, actorId, quadrant)?.stock?.[moduleId] ?? 0) > 0) return 0
+  return bodyId === 'earth' && quadrant === 0 ? earthModuleCost(gs, moduleId, actorId) : (MODULE_BY_ID[moduleId]?.cost ?? 0)
 }
 
-function canEditPlanetBase(gs: GameState, bodyId: BodyId, actorId = gs.ownerId ?? 'local'): string | null {
+function defaultActorQuad(gs: GameState, bodyId: BodyId, actorId: string): QuadrantId {
+  const landed = gs.vessels.find((v) => v.landed && v.bodyId === bodyId && (!gs.mp || v.ownerId === actorId))
+  return landed ? quadrantOfAngle(Math.atan2(landed.pos.y, landed.pos.x)) : 0
+}
+
+function canEditPlanetBase(gs: GameState, bodyId: BodyId, actorId = gs.ownerId ?? 'local', q: QuadrantId = 0): string | null {
   if (!BODIES[bodyId]?.landable) return 'Bu gök cisminde koloni kurulamaz.'
   if (isWarfareMode(gs) && gs.mp?.players[actorId]?.eliminated) {
     return 'Tüm kolonilerin yok edildi — artık inşa yapılamaz.'
   }
-  const existing = getActorBase(gs, bodyId, actorId)
+  const existing = getActorBase(gs, bodyId, actorId, q)
   if (existing?.destroyed) return 'İmha edilmiş üsse yeni yapı kurulamaz.'
-  if (bodyId === 'earth') {
+  if (bodyId === 'earth' && q === 0) {
     return null
   }
   if (gs.mp) {
-    if (isWarfareMode(gs)) {
+    if (isWarfareMode(gs) || bodyId === 'earth') {
       if (existing) return null
-      const landed = gs.vessels.find((v) => v.landed && v.bodyId === bodyId && v.ownerId === actorId)
-      if (!landed) return 'Önce bu yüzeye bir araç indirmelisin.'
+      const landed = gs.vessels.find((v) => v.landed && v.bodyId === bodyId && v.ownerId === actorId && quadrantOfAngle(Math.atan2(v.pos.y, v.pos.x)) === q)
+      if (!landed) return `Önce ${QUADRANT_SHORT[q]} çeyreğine bir araç veya dron indirmelisin.`
       return null
     }
-    const cap = gs.mp.captures[bodyId]
+    const cap = gs.mp.quadrantCaptures?.[bodyId]?.[q] ?? (q === 0 ? gs.mp.captures[bodyId] : undefined)
     if (cap?.ownerId === actorId) return null
-    if (cap?.ownerId && cap.ownerId !== actorId) return 'Bu gezegen başka bir oyuncunun kolonisi.'
-    const landed = gs.vessels.find((v) => v.landed && v.bodyId === bodyId && v.ownerId === actorId)
-    if (!landed) return 'Önce bu gezegene inip yüzey kontrolünü almalısın.'
+    if (cap?.ownerId && cap.ownerId !== actorId) return 'Bu çeyrek başka bir oyuncunun kolonisi.'
+    const landed = gs.vessels.find((v) => v.landed && v.bodyId === bodyId && v.ownerId === actorId && quadrantOfAngle(Math.atan2(v.pos.y, v.pos.x)) === q)
+    if (!landed) return `Önce ${QUADRANT_SHORT[q]} çeyreğine inmelisin.`
     return null
   }
   if (existing) return null
-  const landed = gs.vessels.find((v) => v.landed && v.bodyId === bodyId)
-  if (!landed) return 'Önce bu yüzeye bir araç indirmelisin.'
+  const landed = gs.vessels.find((v) => v.landed && v.bodyId === bodyId && quadrantOfAngle(Math.atan2(v.pos.y, v.pos.x)) === q)
+  if (!landed) return `Önce ${QUADRANT_SHORT[q]} çeyreğine bir araç veya dron indirmelisin.`
   return null
 }
 
-/** Seçilen yuvaya yapı kurar. Depoda varsa ücretsiz, yoksa aktif Uzay İstasyonu gerekir. */
-export function placePlanetModule(sim: Sim, bodyId: BodyId, slot: number, moduleId: string, ownerId = sim.gs.ownerId ?? 'local'): string | null {
+/** Seçilen yuvaya yapı kurar. Kargoda/depoda varsa ücretsiz, yoksa aktif Uzay İstasyonu ile krediyle inşa edilir! */
+export function placePlanetModule(
+  sim: Sim,
+  bodyId: BodyId,
+  slot: number,
+  moduleId: string,
+  ownerId = sim.gs.ownerId ?? 'local',
+  explicitQuad?: QuadrantId,
+): string | null {
   const gs = sim.gs
+  const q = explicitQuad ?? defaultActorQuad(gs, bodyId, ownerId)
   const m = MODULE_BY_ID[moduleId]
   if (!m) return 'Bilinmeyen yapı.'
   const warfare = isWarfareMode(gs)
+  const isHomeEarth = bodyId === 'earth' && q === 0
   const earthAllowed = warfare ? WARFARE_EARTH_MODULES : EARTH_MODULES
-  if (bodyId === 'earth' && !earthAllowed.includes(moduleId)) return 'Bu yapı yalnızca uzay kolonilerinde (Ay, Mars…) kurulur.'
+  if (isHomeEarth && !earthAllowed.includes(moduleId)) return 'Bu yapı uzay kolonilerinde ve diğer çeyreklerde kurulur.'
   if (m.warfare && !warfare) return 'Savunma yapıları yalnızca Uzay Savaşı modunda kurulur.'
-  const gate = canEditPlanetBase(gs, bodyId, ownerId)
+  const gate = canEditPlanetBase(gs, bodyId, ownerId, q)
   if (gate) return gate
-  const landed = gs.vessels.find((v) => v.landed && v.bodyId === bodyId && (!gs.mp || v.ownerId === ownerId))
-  const siteAngle = bodyId === 'earth' ? playerPadAngle(gs, ownerId) : Math.atan2(landed?.pos.y ?? 0, landed?.pos.x ?? 1)
-  let base = getActorBase(gs, bodyId, ownerId)
+  const landed = gs.vessels.find((v) => v.landed && v.bodyId === bodyId && (!gs.mp || v.ownerId === ownerId) && quadrantOfAngle(Math.atan2(v.pos.y, v.pos.x)) === q)
+  const siteAngle = isHomeEarth ? playerPadAngle(gs, ownerId) : landed ? Math.atan2(landed.pos.y, landed.pos.x) : quadrantCenterAngle(q)
+  let base = getActorBase(gs, bodyId, ownerId, q)
   if (!base) {
     base = emptyBase(siteAngle, ownerId)
-    setActorBase(gs, bodyId, ownerId, base)
-  } else if (gs.mp && bodyId !== 'earth' && !gs.mp.captures[bodyId]?.ownerId) {
+    setActorBase(gs, bodyId, ownerId, base, q)
+  } else if (gs.mp && bodyId !== 'earth' && !(gs.mp.quadrantCaptures?.[bodyId]?.[q]?.ownerId)) {
     base.ownerId = ownerId
   }
   const sites = ensureSites(base)
   if (slot < 0 || slot >= sites.length || sites[slot]) return 'Boş bir yuva seç.'
   const inStock = (base.stock?.[moduleId] ?? 0) > 0
-  // Uzay kolonilerinde yalnızca Dünya'dan kargo bölmesinde getirilen yapılar kurulur.
-  if (bodyId !== 'earth' && !inStock) return "Bu yapı kargoda yok: Dünya'da roketin kargo bölmesine ekleyip buraya getir."
-  const price = bodyId === 'earth' ? modulePrice(gs, bodyId, moduleId, ownerId) : 0
+  const flux = solarFlux(len(bodyAbsState(bodyId, gs.time).r))
+  const hasActiveStation = isQuadrantColonized(base, flux)
+  // Ana Dünya üssü dışında: depoda yoksa yalnızca aktif Uzay İstasyonu kurulu çeyrekte doğrudan parayla inşa edilir!
+  if (!isHomeEarth && !inStock && !hasActiveStation) {
+    return 'Bu yapı depoda yok: kargo/dron ile getir ya da çeyrekte aktif Uzay İstasyonu kur.'
+  }
+  const price = inStock ? 0 : modulePrice(gs, bodyId, moduleId, ownerId, q)
   if (getPlayerMoney(gs, ownerId) < price) return `${price.toLocaleString('tr-TR')} ₡ gerekli.`
-  if (bodyId !== 'earth' && base.stock?.[moduleId]) base.stock[moduleId]! -= 1
+  if (inStock && base.stock?.[moduleId]) base.stock[moduleId]! -= 1
   addPlayerMoney(gs, -price, ownerId)
   sites[slot] = moduleId
   if (warfare) {
@@ -1936,26 +2287,32 @@ export function placePlanetModule(sim: Sim, bodyId: BodyId, slot: number, module
 }
 
 /** Yuvadaki yapıyı söker (%60 iade). */
-export function removePlanetModule(sim: Sim, bodyId: BodyId, slot: number, ownerId = sim.gs.ownerId ?? 'local'): { error?: string; refund?: number } {
+export function removePlanetModule(
+  sim: Sim,
+  bodyId: BodyId,
+  slot: number,
+  ownerId = sim.gs.ownerId ?? 'local',
+  explicitQuad?: QuadrantId,
+): { error?: string; refund?: number } {
   const gs = sim.gs
+  const q = explicitQuad ?? defaultActorQuad(gs, bodyId, ownerId)
   const warfare = isWarfareMode(gs)
   if (gs.mp && bodyId !== 'earth' && !warfare) {
-    const cap = gs.mp.captures[bodyId]
-    if (cap?.ownerId && cap.ownerId !== ownerId) return { error: 'Bu gezegen başka bir oyuncunun kolonisi.' }
+    const cap = gs.mp.quadrantCaptures?.[bodyId]?.[q] ?? (q === 0 ? gs.mp.captures[bodyId] : undefined)
+    if (cap?.ownerId && cap.ownerId !== ownerId) return { error: 'Bu çeyrek başka bir oyuncunun kolonisi.' }
     if (!cap?.ownerId) {
       if (cap?.phase === 'contested') return { error: 'Yüzeyde başka bir oyuncu da var.' }
-      const landed = gs.vessels.find((v) => v.landed && v.bodyId === bodyId && v.ownerId === ownerId)
-      if (!landed) return { error: 'Sökmek için yüzeye inmelisin.' }
+      const landed = gs.vessels.find((v) => v.landed && v.bodyId === bodyId && v.ownerId === ownerId && quadrantOfAngle(Math.atan2(v.pos.y, v.pos.x)) === q)
+      if (!landed) return { error: 'Sökmek için bu çeyreğe inmelisin.' }
     }
   }
-  const base = getActorBase(gs, bodyId, ownerId)
-  if (!base) return { error: 'Bu gezegende koloni yok.' }
+  const base = getActorBase(gs, bodyId, ownerId, q)
+  if (!base) return { error: 'Bu çeyrekte koloni yok.' }
   const sites = ensureSites(base)
   const id = sites[slot]
   if (!id) return { error: 'Sökülecek yapı yok.' }
-  // Dünya'da %60 para iadesi; uzay kolonisinde yapı depoya geri döner (başka yuvaya kurulabilir).
   let refund = 0
-  if (bodyId === 'earth') {
+  if (bodyId === 'earth' && q === 0) {
     refund = Math.round((MODULE_BY_ID[id]?.cost ?? 0) * 0.6)
     addPlayerMoney(gs, refund, ownerId)
   } else {
@@ -1970,33 +2327,38 @@ export function removePlanetModule(sim: Sim, bodyId: BodyId, slot: number, owner
     if (base.shield > sCap) base.shield = sCap
   }
   sim.colonyDirty = true
-  if (gs.mp && !warfare && bodyId !== 'earth' && id === COLONY_STATION_ID && gs.mp.captures[bodyId]?.ownerId === ownerId) {
-    const cap = gs.mp.captures[bodyId]!
-    cap.ownerId = null
-    cap.phase = 'idle'
-    cap.progress = 0
-    cap.capturerId = null
+  if (gs.mp && !warfare && bodyId !== 'earth' && id === COLONY_STATION_ID) {
+    const qCap = gs.mp.quadrantCaptures?.[bodyId]?.[q] ?? (q === 0 ? gs.mp.captures[bodyId] : undefined)
+    if (qCap?.ownerId === ownerId) {
+      qCap.ownerId = null
+      qCap.phase = 'idle'
+      qCap.progress = 0
+      qCap.capturerId = null
+    }
   }
   return { refund }
 }
 
 /** İlk boş yuvaya yapı kurar. */
-export function buyBaseModule(sim: Sim, bodyId: BodyId, moduleId: string, ownerId = sim.gs.ownerId ?? 'local'): string | null {
-  const base = getActorBase(sim.gs, bodyId, ownerId)
+export function buyBaseModule(sim: Sim, bodyId: BodyId, moduleId: string, ownerId = sim.gs.ownerId ?? 'local', explicitQuad?: QuadrantId): string | null {
+  const gs = sim.gs
+  const q = explicitQuad ?? defaultActorQuad(gs, bodyId, ownerId)
+  const base = getActorBase(gs, bodyId, ownerId, q)
   const slot = base ? ensureSites(base).indexOf(null) : 0
   if (slot < 0) return 'Kolonide boş yuva kalmadı.'
-  return placePlanetModule(sim, bodyId, slot, moduleId, ownerId)
+  return placePlanetModule(sim, bodyId, slot, moduleId, ownerId, q)
 }
 
-export const buyEarthModule = (sim: Sim, moduleId: string): string | null => buyBaseModule(sim, 'earth', moduleId)
+export const buyEarthModule = (sim: Sim, moduleId: string): string | null => buyBaseModule(sim, 'earth', moduleId, sim.gs.ownerId ?? 'local', 0)
 
-export function loadOre(sim: Sim, v: Vessel): string | null {
+export function loadOre(sim: Sim, v: Vessel, explicitQuad?: QuadrantId): string | null {
   const actorId = v.ownerId ?? sim.gs.ownerId ?? 'local'
-  const base = getActorBase(sim.gs, v.bodyId, actorId)
-  if (!v.landed || !base) return 'Maden yüklemek için üssün olduğu yüzeye inmelisin.'
+  const q = explicitQuad ?? quadrantOfAngle(Math.atan2(v.pos.y, v.pos.x))
+  const base = getActorBase(sim.gs, v.bodyId, actorId, q)
+  if (!v.landed || !base) return 'Maden yüklemek için üssün olduğu çeyreğe inmelisin.'
   if (sim.gs.mp && !isWarfareMode(sim.gs) && v.bodyId !== 'earth') {
-    const capOwner = sim.gs.mp.captures[v.bodyId]?.ownerId
-    if (capOwner && capOwner !== v.ownerId) return 'Bu koloni başka bir oyuncuya ait.'
+    const capOwner = (sim.gs.mp.quadrantCaptures?.[v.bodyId]?.[q] ?? (q === 0 ? sim.gs.mp.captures[v.bodyId] : undefined))?.ownerId
+    if (capOwner && capOwner !== v.ownerId) return 'Bu çeyrek başka bir oyuncuya ait.'
   }
   const free = vesselStats(v.parts).cargoCap - cargoMass(v.cargo)
   const amount = Math.min(free, base.ore)
@@ -2008,13 +2370,14 @@ export function loadOre(sim: Sim, v: Vessel): string | null {
 }
 
 /** ISRU: 1 t maden → 4 t yakıt. */
-export function refuelAtBase(sim: Sim, v: Vessel): string | null {
+export function refuelAtBase(sim: Sim, v: Vessel, explicitQuad?: QuadrantId): string | null {
   const actorId = v.ownerId ?? sim.gs.ownerId ?? 'local'
-  const base = getActorBase(sim.gs, v.bodyId, actorId)
-  if (!v.landed || !base) return 'Yakıt ikmali için üssün olduğu yüzeye inmelisin.'
+  const q = explicitQuad ?? quadrantOfAngle(Math.atan2(v.pos.y, v.pos.x))
+  const base = getActorBase(sim.gs, v.bodyId, actorId, q)
+  if (!v.landed || !base) return 'Yakıt ikmali için üssün olduğu çeyreğe inmelisin.'
   if (sim.gs.mp && !isWarfareMode(sim.gs) && v.bodyId !== 'earth') {
-    const capOwner = sim.gs.mp.captures[v.bodyId]?.ownerId
-    if (capOwner && capOwner !== v.ownerId) return 'Bu koloni başka bir oyuncuya ait.'
+    const capOwner = (sim.gs.mp.quadrantCaptures?.[v.bodyId]?.[q] ?? (q === 0 ? sim.gs.mp.captures[v.bodyId] : undefined))?.ownerId
+    if (capOwner && capOwner !== v.ownerId) return 'Bu çeyrek başka bir oyuncuya ait.'
   }
   if (!(base.modules.isru ?? 0)) return 'Üste ISRU Yakıt Tesisi yok.'
   const tanks = v.parts.filter((p) => partDef(p.def).kind === 'tank')
@@ -2073,6 +2436,7 @@ export function deleteVessel(sim: Sim, id: number, actorId = sim.gs.ownerId ?? '
   if (gs.mp && !canControlVessel(target, actorId)) return false
   const before = gs.vessels.length
   gs.vessels = gs.vessels.filter((v) => v.id !== id)
+  detachFollowersOf(gs, id)
   sim.firing.delete(id)
   if (gs.mp) {
     for (const p of Object.values(gs.mp.players)) {
@@ -2156,9 +2520,11 @@ export function dockVessels(sim: Sim, v: Vessel, other: Vessel): GameEvent[] {
   v.throttle = 0
   v.angVel = 0
   v.autopilot = 'off'
+  v.followId = undefined
   v.autoLand = false
   v.autopilotNote = undefined
   gs.vessels = gs.vessels.filter((o) => o.id !== other.id)
+  detachFollowersOf(gs, other.id)
   if (gs.mp) {
     for (const p of Object.values(gs.mp.players)) {
       if (p.activeVesselId === other.id) p.activeVesselId = v.id
@@ -2189,8 +2555,48 @@ export function canControlVessel(v: Vessel, actorId = 'local'): boolean {
   return v.ownerId === actorId
 }
 
-export function setVesselAutopilot(sim: Sim, v: Vessel, mode: AutopilotMode): string | null {
-  if (mode !== 'off' && isLootMode(sim.gs)) return 'Yağma modunda otopilot yok: gemiyi sen uçurursun.'
+export function createsFollowCycle(gs: GameState, followerId: number, candidateLeaderId: number): boolean {
+  let cur: number | undefined = candidateLeaderId
+  const seen = new Set<number>([followerId])
+  while (cur !== undefined) {
+    if (seen.has(cur)) return true
+    seen.add(cur)
+    const next = gs.vessels.find((o) => o.id === cur)
+    cur = next && next.autopilot === 'follow' ? next.followId : undefined
+  }
+  return false
+}
+
+export function findDefaultFollowTarget(gs: GameState, v: Vessel, actorId = gs.ownerId ?? 'local'): Vessel | undefined {
+  const candidates = gs.vessels.filter(
+    (o) =>
+      o.id !== v.id &&
+      !o.debris &&
+      !o.station &&
+      !o.outpost &&
+      (!gs.mp || !o.ownerId || o.ownerId === actorId) &&
+      (!v.drone || o.bodyId === v.bodyId) &&
+      !createsFollowCycle(gs, v.id, o.id),
+  )
+  const sameBody = candidates.filter((o) => o.bodyId === v.bodyId)
+  if (sameBody.length > 0) {
+    sameBody.sort((a, b) => Math.hypot(a.pos.x - v.pos.x, a.pos.y - v.pos.y) - Math.hypot(b.pos.x - v.pos.x, b.pos.y - v.pos.y))
+    return sameBody[0]
+  }
+  return candidates[0]
+}
+
+export function setVesselAutopilot(
+  sim: Sim,
+  v: Vessel,
+  mode: AutopilotMode,
+  explicitQuad?: QuadrantId,
+  explicitFollowId?: number,
+): string | null {
+  if (mode !== 'off' && mode !== 'follow' && isLootMode(sim.gs)) return 'Yağma modunda otopilot yok: gemiyi sen uçurursun.'
+  if (v.drone && mode === 'transfer') return 'Dron gezegenler arası yolculuk yapamaz: yalnızca bulunduğu gezegende çalışır.'
+  if (mode === 'nextQuad' && !v.drone) return 'Sonraki çeyrek otopilotu yalnızca gezegen dronları içindir.'
+  if (mode === 'nextQuad' && !BODIES[v.bodyId].landable) return 'Bu gök cisminde çeyrek uçuşu yapılamaz.'
   if (v.cruise) return 'Hızlı yolculuk sırasında otopilot değiştirilemez.'
   if (mode === 'land' && !hasAutoLandTech(sim.gs)) {
     return 'Otomatik İniş için Teknoloji Ağacından "Gelişmiş İniş" araştırmasını açmalısın.'
@@ -2209,6 +2615,40 @@ export function setVesselAutopilot(sim: Sim, v: Vessel, mode: AutopilotMode): st
         : `Zaten ${BODIES[targetId].name} etki alanındasın. "🛰️ Yörünge" veya manuel kontrol kullan.`
     }
   }
+  if (mode === 'follow') {
+    const actorId = v.ownerId ?? sim.gs.ownerId ?? 'local'
+    const lid = explicitFollowId ?? v.followId ?? findDefaultFollowTarget(sim.gs, v, actorId)?.id
+    const leader = lid !== undefined ? sim.gs.vessels.find((o) => o.id === lid) : undefined
+    if (!leader || leader.debris || leader.station || leader.outpost) {
+      return 'Takip edilecek uygun başka bir roket bulunamadı.'
+    }
+    if (leader.id === v.id || createsFollowCycle(sim.gs, v.id, leader.id)) {
+      return 'Döngüsel filo takibi kurulamaz (araç kendi zincirini takip edemez).'
+    }
+    if (sim.gs.mp && leader.ownerId && !canControlVessel(leader, actorId)) {
+      return 'Yalnızca kendi filona ait roketleri takip edebilirsin.'
+    }
+    if (v.drone && (leader.cruise ? leader.cruise.to : leader.bodyId) !== v.bodyId) {
+      return 'Dron yalnızca aynı gezegendeki bir aracı takip edebilir.'
+    }
+    v.followId = leader.id
+    v.targetQuad = undefined
+    v.autopilot = 'follow'
+    v.autoLand = false
+    v.landAt = undefined
+    v.approachWarn = null
+    v.autopilotNote = `🤝 ${leader.name} takibi başlatılıyor…`
+    return null
+  }
+  v.followId = undefined
+  if (mode === 'nextQuad') {
+    const curQ = quadrantOfAngle(Math.atan2(v.pos.y, v.pos.x))
+    const nextQ = explicitQuad ?? ((((v.autopilot === 'nextQuad' && v.targetQuad !== undefined ? v.targetQuad : curQ) + 1) % 4) as QuadrantId)
+    v.targetQuad = nextQ
+    v.throttle = 1
+  } else {
+    v.targetQuad = undefined
+  }
   v.autopilot = mode
   v.autoLand = mode === 'land'
   v.landAt = undefined
@@ -2223,12 +2663,26 @@ export function setVesselAutopilot(sim: Sim, v: Vessel, mode: AutopilotMode): st
   }
   if (mode === 'off') {
     v.throttle = 0
+    v.targetQuad = undefined
     v.autopilotNote = undefined
     if (sim.gs.mp && v.ownerId && sim.gs.mp.players[v.ownerId]) {
       sim.gs.mp.players[v.ownerId]!.lastManualAt = sim.clock ?? 0
     }
   }
   return null
+}
+
+export const CARGO_TRANSFER_RANGE = 2000
+
+/** Araçlar arası ya da koloni/rampa ile araç arası kargo aktarımı mümkün mü? */
+export function canTransferCargoBetween(a: Vessel, b: Vessel): boolean {
+  if (a.id === b.id || a.bodyId !== b.bodyId || a.debris || b.debris || a.station || b.station || a.outpost || b.outpost) {
+    return false
+  }
+  if (a.landed && b.landed && quadrantOfAngle(Math.atan2(a.pos.y, a.pos.x)) === quadrantOfAngle(Math.atan2(b.pos.y, b.pos.x))) {
+    return true
+  }
+  return Math.hypot(a.pos.x - b.pos.x, a.pos.y - b.pos.y) <= CARGO_TRANSFER_RANGE
 }
 
 /**
@@ -2245,8 +2699,72 @@ export function dispatchCommand(
 
   switch (cmd.type) {
     case 'launch': {
-      const err = launchDesign(sim, actorId, cmd.design, cmd.designCargo)
+      const err = launchDesign(sim, actorId, cmd.design, cmd.designCargo, cmd.bodyId, cmd.quadrant, cmd.designDroneCargo)
       return err ? { events, error: err } : { events }
+    }
+    case 'launchPadDrone': {
+      if (isLootMode(gs)) return { events, error: 'Yağma modunda gezegen rampasından dron fırlatılamaz.' }
+      if (isWarfareMode(gs) && gs.mp?.players[actorId]?.eliminated) {
+        return { events, error: 'Tüm kolonilerin yok edildi — artık fırlatma yapılamaz.' }
+      }
+      const spec = PAD_DRONE_SPECS[cmd.tier]
+      if (!spec) return { events, error: 'Geçersiz dron seviyesi.' }
+      if (!canLaunchFromQuadrant(gs, cmd.bodyId, cmd.quadrant, actorId)) {
+        return { events, error: `${BODIES[cmd.bodyId].name} ${QUADRANT_SHORT[cmd.quadrant]} çeyreğinden fırlatma için aktif Uzay İstasyonu ve Fırlatma Rampası gerekir.` }
+      }
+      const reqMods = cmd.modules ?? {}
+      const modMass = modulesMass(reqMods)
+      if (modMass > spec.cargoCap + 1e-9) {
+        return { events, error: `Seçilen yük ${modMass.toFixed(1)} t, dron kapasitesi ${spec.cargoCap} t.` }
+      }
+      for (const [mid, n] of Object.entries(reqMods)) {
+        if (n <= 0) continue
+        const mod = MODULE_BY_ID[mid]
+        if (!mod) return { events, error: `Bilinmeyen yapı: ${mid}` }
+        if (mod.warfare && !isWarfareMode(gs)) return { events, error: `"${mod.name}" yalnızca Uzay Savaşı modunda kullanılır.` }
+        if (!isModuleUnlocked(gs, mid)) return { events, error: `"${mod.name}" henüz açılmadı.` }
+      }
+      const isHomeEarth = cmd.bodyId === 'earth' && cmd.quadrant === 0
+      const qBase = getActorBase(gs, cmd.bodyId, actorId, cmd.quadrant)
+      let totalCost = spec.cost
+      const stockUse: Record<string, number> = {}
+      for (const [mid, n] of Object.entries(reqMods)) {
+        if (n <= 0) continue
+        const fromStock = !isHomeEarth ? Math.min(n, qBase?.stock?.[mid] ?? 0) : 0
+        if (fromStock > 0) stockUse[mid] = fromStock
+        totalCost += (n - fromStock) * (MODULE_BY_ID[mid]?.cost ?? 0)
+      }
+      if (totalCost > getPlayerMoney(gs, actorId)) {
+        return { events, error: `Bütçe yetersiz: ${totalCost.toLocaleString('tr-TR')} ₡ gerekli.` }
+      }
+      addPlayerMoney(gs, -totalCost, actorId)
+      if (qBase?.stock) {
+        for (const [mid, used] of Object.entries(stockUse)) {
+          qBase.stock[mid] = Math.max(0, (qBase.stock[mid] ?? 0) - used)
+          if (qBase.stock[mid] === 0) delete qBase.stock[mid]
+          sim.colonyDirty = true
+        }
+      }
+      const padTheta = isHomeEarth ? playerPadAngle(gs, actorId) : qBase?.siteAngle ?? quadrantCenterAngle(cmd.quadrant)
+      const body = BODIES[cmd.bodyId]
+      const groundR = body.radius + terrainHeight(cmd.bodyId, padTheta)
+      const dir = { x: Math.cos(padTheta), y: Math.sin(padTheta) }
+      const spawnR = groundR + 5.5
+      spawnPlanetaryDrone({
+        gs,
+        ownerId: actorId,
+        bodyId: cmd.bodyId,
+        pos: { x: dir.x * spawnR, y: dir.y * spawnR },
+        vel: { x: dir.x * 18, y: dir.y * 18 },
+        angle: padTheta,
+        tier: spec.tier,
+        modules: reqMods,
+        clock: sim.clock ?? 0,
+        fxOut: (sim.fx ??= []),
+        events,
+        autoSelect: true,
+      })
+      return { events }
     }
     case 'setTarget': {
       if (!BODIES[cmd.bodyId] || cmd.bodyId === 'sun') {
@@ -2264,17 +2782,167 @@ export function dispatchCommand(
       return { events }
     }
     case 'buyModule': {
-      const err = buyBaseModule(sim, cmd.bodyId, cmd.moduleId, actorId)
+      const err = buyBaseModule(sim, cmd.bodyId, cmd.moduleId, actorId, cmd.quadrant)
       return err ? { events, error: err } : { events }
     }
     case 'placeGridModule': {
-      const err = placePlanetModule(sim, cmd.bodyId, cmd.x, cmd.moduleId, actorId)
+      const err = placePlanetModule(sim, cmd.bodyId, cmd.x, cmd.moduleId, actorId, cmd.quadrant)
       return err ? { events, error: err } : { events }
     }
     case 'removeGridModule': {
-      const res = removePlanetModule(sim, cmd.bodyId, cmd.x, actorId)
+      const res = removePlanetModule(sim, cmd.bodyId, cmd.x, actorId, cmd.quadrant)
       if (res.error) return { events, error: res.error }
       if (res.refund) events.push({ type: 'toast', ownerId: actorId, text: `Yapı söküldü: +${res.refund.toLocaleString('tr-TR')} ₡ iade.` })
+      return { events }
+    }
+    case 'transferCargo': {
+      const from = getVessel(cmd.fromVesselId)
+      const to = getVessel(cmd.toVesselId)
+      if (!from || !to) return { events, error: 'Kargo aktarımı için araç bulunamadı.' }
+      if (!canControlVessel(from, actorId) || !canControlVessel(to, actorId)) return { events, error: 'Başka bir oyuncunun aracı.' }
+      if (from.bodyId !== to.bodyId) return { events, error: 'İki araç aynı gök cisminde olmalı.' }
+      if (!canTransferCargoBetween(from, to)) {
+        const d = Math.hypot(from.pos.x - to.pos.x, from.pos.y - to.pos.y)
+        return { events, error: `Kargo aktarımı için araçlar ${CARGO_TRANSFER_RANGE} m içinde veya aynı çeyrekte inmiş olmalı (şu an ${Math.round(d)} m).` }
+      }
+      const mod = MODULE_BY_ID[cmd.moduleId]
+      const have = from.cargo.modules[cmd.moduleId] ?? 0
+      if (!mod || have <= 0) return { events, error: 'Kaynak araçta bu yapıdan yok.' }
+      const reqCount = Math.max(1, Math.min(have, cmd.count ?? 1))
+      const free = vesselStats(to.parts).cargoCap - cargoMass(to.cargo)
+      const fits = Math.min(reqCount, Math.floor((free + 1e-9) / Math.max(0.1, mod.mass)))
+      if (fits <= 0) return { events, error: `Hedef araçta yer yok (${mod.mass} t gerekli).` }
+      from.cargo.modules[cmd.moduleId] = have - fits
+      if (from.cargo.modules[cmd.moduleId]! <= 0) delete from.cargo.modules[cmd.moduleId]
+      to.cargo.modules[cmd.moduleId] = (to.cargo.modules[cmd.moduleId] ?? 0) + fits
+      events.push({ type: 'toast', ownerId: actorId, text: `🔁 ${fits}× ${mod.name} → ${to.name} aktarıldı.` })
+      return { events }
+    }
+    case 'transferDroneCargo': {
+      const v = getVessel(cmd.vesselId)
+      if (!v) return { events, error: 'Araç bulunamadı.' }
+      if (!canControlVessel(v, actorId)) return { events, error: 'Bu araç başka bir oyuncuya ait.' }
+      if (v.drone || v.debris || v.station || v.cruise) return { events, error: 'Bu araçta dron hangarı yok.' }
+      const bay = cmd.partIndex !== undefined
+        ? v.parts[cmd.partIndex]
+        : v.parts.find((p) => partAlive(p) && partDef(p.def).kind === 'droneBay' && (p.ammo ?? 1) > 0)
+      const spec = bay ? partDef(bay.def).droneSpec : undefined
+      if (!bay || !spec || !partAlive(bay) || (bay.ammo ?? spec.ammo) <= 0) {
+        return { events, error: 'Gemide yüklü ve hazır bir dron yok.' }
+      }
+      const mod = MODULE_BY_ID[cmd.moduleId]
+      if (!mod) return { events, error: 'Bilinmeyen yapı.' }
+      const delta = Math.trunc(cmd.delta)
+      if (delta === 0) return { events }
+      const bayCargo = (bay.droneCargo ??= {})
+      const source = cmd.source ?? 'ship'
+      if (source === 'colony') {
+        if (!v.landed || !BODIES[v.bodyId]?.landable) return { events, error: 'Üs/rampadan doğrudan dron yüklemek için gezegen yüzeyinde olmalısın.' }
+        const cq = quadrantOfAngle(Math.atan2(v.pos.y, v.pos.x))
+        const isHomeEarth = v.bodyId === 'earth' && cq === 0
+        const qBase = getActorBase(gs, v.bodyId, actorId, cq)
+        const flux = solarFlux(len(bodyAbsState(v.bodyId, gs.time).r))
+        const hasActive = isHomeEarth || (qBase && !qBase.destroyed && isQuadrantColonized(qBase, flux))
+        if (delta > 0) {
+          if (mod.warfare && !isWarfareMode(gs)) return { events, error: `"${mod.name}" yalnızca Uzay Savaşı modunda kullanılır.` }
+          if (!isModuleUnlocked(gs, cmd.moduleId)) return { events, error: `"${mod.name}" henüz açılmadı.` }
+          if (modulesMass(bayCargo) + mod.mass > spec.cargoCap + 1e-9) {
+            return { events, error: `Dron kargosu dolu (${spec.cargoCap} t).` }
+          }
+          if (!isHomeEarth && qBase && (qBase.stock?.[cmd.moduleId] ?? 0) > 0) {
+            qBase.stock![cmd.moduleId]! -= 1
+            if (qBase.stock![cmd.moduleId]! <= 0) delete qBase.stock![cmd.moduleId]
+            sim.colonyDirty = true
+          } else {
+            if (!hasActive) return { events, error: 'Depoda yok: doğrudan yüklemek için aktif Uzay İstasyonu veya Dünya Ana Üssü gerekir.' }
+            if (getPlayerMoney(gs, actorId) < mod.cost) return { events, error: `Bütçe yetersiz: ${mod.cost.toLocaleString('tr-TR')} ₡ gerekli.` }
+            addPlayerMoney(gs, -mod.cost, actorId)
+          }
+          bayCargo[cmd.moduleId] = (bayCargo[cmd.moduleId] ?? 0) + 1
+          return { events }
+        }
+        const have = bayCargo[cmd.moduleId] ?? 0
+        if (have <= 0) return { events, error: 'Dron kargosunda bu yapıdan yok.' }
+        bayCargo[cmd.moduleId] = have - 1
+        if (bayCargo[cmd.moduleId]! <= 0) delete bayCargo[cmd.moduleId]
+        if (isHomeEarth) addPlayerMoney(gs, mod.cost, actorId)
+        else {
+          let targetBase = qBase
+          if (!targetBase) {
+            targetBase = emptyBase(Math.atan2(v.pos.y, v.pos.x), actorId)
+            setActorBase(gs, v.bodyId, actorId, targetBase, cq)
+          }
+          targetBase.stock = { ...(targetBase.stock ?? {}), [cmd.moduleId]: (targetBase.stock?.[cmd.moduleId] ?? 0) + 1 }
+          sim.colonyDirty = true
+        }
+        return { events }
+      }
+
+      if (delta > 0) {
+        const haveShip = v.cargo.modules[cmd.moduleId] ?? 0
+        if (haveShip <= 0) return { events, error: 'Ana gemi kargosunda bu modülden yok.' }
+        if (modulesMass(bayCargo) + mod.mass > spec.cargoCap + 1e-9) {
+          return { events, error: `Dron kargosu dolu (azami ${spec.cargoCap} t).` }
+        }
+        v.cargo.modules[cmd.moduleId] = haveShip - 1
+        if (v.cargo.modules[cmd.moduleId]! <= 0) delete v.cargo.modules[cmd.moduleId]
+        bayCargo[cmd.moduleId] = (bayCargo[cmd.moduleId] ?? 0) + 1
+      } else {
+        const haveDrone = bayCargo[cmd.moduleId] ?? 0
+        if (haveDrone <= 0) return { events, error: 'Dron kargosunda bu modülden yok.' }
+        const shipFree = vesselStats(v.parts).cargoCap - cargoMass(v.cargo)
+        if (shipFree + 1e-9 < mod.mass) return { events, error: `Ana gemi kargosunda yer yok (${mod.mass} t gerekli).` }
+        bayCargo[cmd.moduleId] = haveDrone - 1
+        if (bayCargo[cmd.moduleId]! <= 0) delete bayCargo[cmd.moduleId]
+        v.cargo.modules[cmd.moduleId] = (v.cargo.modules[cmd.moduleId] ?? 0) + 1
+      }
+      return { events }
+    }
+    case 'buyCargoModule': {
+      const v = getVessel(cmd.vesselId)
+      if (!v) return { events, error: 'Araç bulunamadı.' }
+      if (!canControlVessel(v, actorId)) return { events, error: 'Bu araç başka bir oyuncuya ait.' }
+      if (!v.landed || !BODIES[v.bodyId]?.landable) return { events, error: 'Kargo yüklemek/boşaltmak için inmiş olmalısın.' }
+      const mod = MODULE_BY_ID[cmd.moduleId]
+      if (!mod) return { events, error: 'Bilinmeyen yapı.' }
+      const cq = quadrantOfAngle(Math.atan2(v.pos.y, v.pos.x))
+      const isHomeEarth = v.bodyId === 'earth' && cq === 0
+      const qBase = getActorBase(gs, v.bodyId, actorId, cq)
+      const flux = solarFlux(len(bodyAbsState(v.bodyId, gs.time).r))
+      const hasActive = isHomeEarth || (qBase && !qBase.destroyed && isQuadrantColonized(qBase, flux))
+      const delta = Math.trunc(cmd.delta)
+      if (delta > 0) {
+        if (mod.warfare && !isWarfareMode(gs)) return { events, error: `"${mod.name}" yalnızca Uzay Savaşı modunda kullanılır.` }
+        if (!isModuleUnlocked(gs, cmd.moduleId)) return { events, error: `"${mod.name}" henüz açılmadı.` }
+        const free = vesselStats(v.parts).cargoCap - cargoMass(v.cargo)
+        if (free + 1e-9 < mod.mass) return { events, error: `Araç kargosunda yer yok (${mod.mass} t gerekli).` }
+        if (!isHomeEarth && qBase && (qBase.stock?.[cmd.moduleId] ?? 0) > 0) {
+          qBase.stock![cmd.moduleId]! -= 1
+          if (qBase.stock![cmd.moduleId]! <= 0) delete qBase.stock![cmd.moduleId]
+          sim.colonyDirty = true
+        } else {
+          if (!hasActive) return { events, error: 'Depoda yok: doğrudan satın almak için aktif Uzay İstasyonu veya Dünya Ana Üssü gerekir.' }
+          if (getPlayerMoney(gs, actorId) < mod.cost) return { events, error: `Bütçe yetersiz: ${mod.cost.toLocaleString('tr-TR')} ₡ gerekli.` }
+          addPlayerMoney(gs, -mod.cost, actorId)
+        }
+        v.cargo.modules[cmd.moduleId] = (v.cargo.modules[cmd.moduleId] ?? 0) + 1
+      } else if (delta < 0) {
+        const have = v.cargo.modules[cmd.moduleId] ?? 0
+        if (have <= 0) return { events, error: 'Araç kargosunda bu yapıdan yok.' }
+        v.cargo.modules[cmd.moduleId] = have - 1
+        if (v.cargo.modules[cmd.moduleId]! <= 0) delete v.cargo.modules[cmd.moduleId]
+        if (isHomeEarth) {
+          addPlayerMoney(gs, mod.cost, actorId)
+        } else {
+          let targetBase = qBase
+          if (!targetBase) {
+            targetBase = emptyBase(Math.atan2(v.pos.y, v.pos.x), actorId)
+            setActorBase(gs, v.bodyId, actorId, targetBase, cq)
+          }
+          targetBase.stock = { ...(targetBase.stock ?? {}), [cmd.moduleId]: (targetBase.stock?.[cmd.moduleId] ?? 0) + 1 }
+          sim.colonyDirty = true
+        }
+      }
       return { events }
     }
     case 'setActive': {
@@ -2293,6 +2961,70 @@ export function dispatchCommand(
           if (cmd.anchor !== undefined) p.warpAnchor = cmd.anchor
         }
       }
+      return { events }
+    }
+    case 'fleetOrder': {
+      const leader = getVessel(cmd.leaderId)
+      if (!leader || leader.debris || leader.station || leader.outpost) {
+        return { events, error: 'Filo lideri bulunamadı.' }
+      }
+      if (!canControlVessel(leader, actorId)) return { events, error: 'Bu araç başka bir oyuncuya ait.' }
+      const ownShips = gs.vessels.filter(
+        (o) => !o.debris && !o.station && !o.outpost && (!gs.mp || o.ownerId === actorId),
+      )
+      if (cmd.order === 'followAll') {
+        const leaderDest = leader.cruise ? leader.cruise.to : leader.bodyId
+        // Eğer lider halihazırda başkasını takip ediyorsa, önce lideri serbest bırak ki döngü oluşmasın
+        if (leader.autopilot === 'follow') setVesselAutopilot(sim, leader, 'off')
+        let added = 0
+        for (const o of ownShips) {
+          if (o.id === leader.id) continue
+          if (o.drone && o.bodyId !== leaderDest) continue
+          const err = setVesselAutopilot(sim, o, 'follow', undefined, leader.id)
+          if (!err) added += 1
+        }
+        if (added === 0) return { events, error: 'Filoya katılabilecek başka uygun araç yok.' }
+        events.push({ type: 'toast', ownerId: actorId, text: `🚢 ${added} araç "${leader.name}" filosunu takibe aldı.` })
+        return { events }
+      }
+      if (cmd.order === 'disband') {
+        let cleared = 0
+        for (const o of ownShips) {
+          if (o.followId === leader.id) {
+            setVesselAutopilot(sim, o, 'off')
+            cleared += 1
+          }
+        }
+        events.push({ type: 'toast', ownerId: actorId, text: cleared > 0 ? `🔓 ${leader.name} filosu dağıtıldı (${cleared} araç serbest).` : 'Bu lidere bağlı takipçi yok.' })
+        return { events }
+      }
+      if (cmd.order === 'stop') {
+        setVesselAutopilot(sim, leader, 'off')
+        for (const o of ownShips) {
+          if (o.followId === leader.id) setVesselAutopilot(sim, o, 'off')
+        }
+        events.push({ type: 'toast', ownerId: actorId, text: `🛑 ${leader.name} ve filosu durduruldu.` })
+        return { events }
+      }
+      if (cmd.order === 'transfer') {
+        if (cmd.bodyId && BODIES[cmd.bodyId]) {
+          leader.targetBody = cmd.bodyId
+          if (gs.mp && gs.mp.players[actorId]) gs.mp.players[actorId]!.targetBody = cmd.bodyId
+          if (!gs.mp) gs.targetBody = cmd.bodyId
+        }
+        const err = setVesselAutopilot(sim, leader, 'transfer')
+        if (err) return { events, error: err }
+        events.push({ type: 'toast', ownerId: actorId, text: `🎯 ${leader.name} filosu ${BODIES[vesselTargetBody(gs, leader)].name} hedefine yönlendirildi.` })
+        return { events }
+      }
+      const mode: AutopilotMode = cmd.order === 'orbit' ? 'orbit' : 'land'
+      const err = setVesselAutopilot(sim, leader, mode)
+      if (err) return { events, error: err }
+      events.push({
+        type: 'toast',
+        ownerId: actorId,
+        text: mode === 'orbit' ? `🛰️ ${leader.name} filosu yörüngeye çıkıyor.` : `🛬 ${leader.name} filosu inişe geçiyor.`,
+      })
       return { events }
     }
     default: {
@@ -2318,7 +3050,7 @@ export function dispatchCommand(
           events.push(...recoverVessel(sim, v))
           return { events }
         case 'setAutopilot': {
-          const err = setVesselAutopilot(sim, v, cmd.mode)
+          const err = setVesselAutopilot(sim, v, cmd.mode, cmd.targetQuad, cmd.followId)
           return err ? { events, error: err } : { events }
         }
         case 'setSas':
@@ -2336,10 +3068,11 @@ export function dispatchCommand(
         }
         case 'repairVessel': {
           if (!v.landed) return { events, error: 'Onarım için yüzeye inmelisin.' }
-          const b = getActorBase(gs, v.bodyId, actorId)
-          if (!b || b.destroyed) return { events, error: `${BODIES[v.bodyId].name} üzerinde çalışan dost üs yok.` }
-          const hasBay = v.bodyId === 'earth' || (b.modules['repair-bay'] ?? 0) > 0 || (b.modules[COLONY_STATION_ID] ?? 0) > 0
-          if (!hasBay) return { events, error: 'Gezegende Onarım Hangarı veya Uzay İstasyonu gerekir.' }
+          const rq = quadrantOfAngle(Math.atan2(v.pos.y, v.pos.x))
+          const b = getActorBase(gs, v.bodyId, actorId, rq)
+          if (!b || b.destroyed) return { events, error: `${BODIES[v.bodyId].name} (${QUADRANT_SHORT[rq]}) çeyreğinde çalışan dost üs yok.` }
+          const hasBay = (v.bodyId === 'earth' && rq === 0) || (b.modules['repair-bay'] ?? 0) > 0 || (b.modules[COLONY_STATION_ID] ?? 0) > 0
+          if (!hasBay) return { events, error: 'Çeyrekte Onarım Hangarı veya Uzay İstasyonu gerekir.' }
           const damagedCount = v.parts.filter((p) => (p.hp ?? partMaxHp(p.def)) < partMaxHp(p.def)).length
           const vst = vesselStats(v.parts, v.cargo)
           const shieldNeedsRepair = vst.shieldCap > 0 && (v.shield ?? vst.shieldCap) < vst.shieldCap - 0.1
@@ -2366,36 +3099,45 @@ export function dispatchCommand(
           }
           return { events }
         }
+        case 'launchDrone': {
+          const p = v.parts[cmd.partIndex]
+          if (!p) return { events, error: 'Dron fırlatıcı bulunamadı.' }
+          const res = launchDroneFromPart(gs, v, p, cmd.aimAngle, sim.clock ?? 0, (sim.fx ??= []), events, true)
+          if (res.error) return { events, error: res.error }
+          return { events }
+        }
         case 'pickupModule': {
-          const err = pickupModule(sim, v, cmd.moduleId)
+          const err = pickupModule(sim, v, cmd.moduleId, cmd.quadrant)
           return err ? { events, error: err } : { events }
         }
         case 'deployModules': {
-          const err = deployModules(sim, v, cmd.moduleId)
+          const err = deployModules(sim, v, cmd.moduleId, cmd.quadrant)
           if (err) return { events, error: err }
+          const q = cmd.quadrant ?? quadrantOfAngle(Math.atan2(v.pos.y, v.pos.x))
           const flux = solarFlux(len(bodyAbsState(v.bodyId, gs.time).r))
-          const st = colonyStationStatus(getActorBase(gs, v.bodyId, actorId), flux)
+          const st = colonyStationStatus(getActorBase(gs, v.bodyId, actorId, q), flux)
           const text =
             st === 'active'
-              ? `${BODIES[v.bodyId].name} kolonileştirildi! Uzay İstasyonu çalışıyor.`
+              ? `${BODIES[v.bodyId].name} (${QUADRANT_SHORT[q]}) kolonileştirildi! Uzay İstasyonu çalışıyor.`
               : st === 'unpowered'
-                ? 'Kargolar indirildi! Uzay İstasyonu için 7 ⚡ elektrik sağla.'
+                ? 'Kargolar indirildi! Uzay İstasyonu için 5 ⚡ elektrik sağla.'
                 : 'Kargodaki yapılar koloniye indirildi.'
           events.push({ type: 'toast', ownerId: v.ownerId, text })
           return { events }
         }
         case 'loadOre': {
-          const err = loadOre(sim, v)
+          const err = loadOre(sim, v, cmd.quadrant)
           return err ? { events, error: err } : { events }
         }
         case 'refuelAtBase': {
-          const err = refuelAtBase(sim, v)
+          const err = refuelAtBase(sim, v, cmd.quadrant)
           return err ? { events, error: err } : { events }
         }
         case 'setThrottle': {
           const thr = Number.isFinite(cmd.throttle) ? Math.max(0, Math.min(1, cmd.throttle)) : 0
           if (Math.abs(v.throttle - thr) > 0.01 && effectiveAutopilot(v) !== 'off') {
             v.autopilot = 'off'
+            v.followId = undefined
             v.autoLand = false
             v.autopilotNote = undefined
           }
@@ -2405,6 +3147,7 @@ export function dispatchCommand(
         }
         case 'emergencyStop':
           v.autopilot = 'off'
+          v.followId = undefined
           v.autoLand = false
           v.autopilotNote = undefined
           v.throttle = 0

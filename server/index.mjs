@@ -308,7 +308,8 @@ const server = createServer(async (req, res) => {
       sendJson(res, err.status, { error: err.message })
       return
     }
-    res.writeHead(400).end('Bad request')
+    console.error('[server error]', err)
+    sendJson(res, 500, { error: 'Sunucu içi hata oluştu.' })
   }
 })
 

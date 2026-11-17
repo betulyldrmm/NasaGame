@@ -1,7 +1,7 @@
 import type { PartDef, PartInst } from './types'
 
 /** Parça kütleleri, itkiler ve fiyatlar oyun varsayımıdır; Isp oranları gerçek motor sınıflarını izler. */
-export const INITIAL_MONEY = 30_000
+export const INITIAL_MONEY = 34_000
 export const GRID_W = 20
 export const GRID_H = 40
 
@@ -128,7 +128,57 @@ export const PARTS: PartDef[] = [
     id: 'shield-gen', name: 'Enerji Kalkanı Jeneratörü', kind: 'shield', category: 'Savunma', w: 2, h: 1, mass: 0.45, cost: 2600, hp: 140, shieldCap: 200,
     desc: 'Roket çevresinde +200 HP yenilenen plazma kalkanı oluşturur (elektrik harcar).',
   },
+  // Dron Fırlatıcılar (Roket başına en fazla 1 adet; 1 elektrikli fan-air dron taşır)
+  {
+    id: 'drone-bay-s', name: 'Mini Keşif Dron Fırlatıcı', kind: 'droneBay', category: 'Dron', w: 1, h: 1, mass: 0.9, cost: 3200, hp: 140,
+    desc: '1 adet elektrikli fan-pervaneli Keşif Dronu Mk-I fırlatır (3.5 t kargo). Dron silahsızdır; uzay sınırına çıkarsa uyarı verip parçalanır.',
+    droneSpec: { tier: 1, ammo: 1, cooldown: 2.5, ecUse: 6, launchSpeed: 24, cargoCap: 3.5, thrust: 145, fuelCap: 0, hp: 160, color: '#38bdf8', name: 'Keşif Dronu Mk-I' },
+  },
+  {
+    id: 'drone-bay-m', name: 'Kargo Dron Fırlatıcı', kind: 'droneBay', category: 'Dron', w: 1, h: 2, mass: 1.8, cost: 6800, hp: 200,
+    desc: '1 adet elektrikli fan-pervaneli Nakliye Dronu Mk-II fırlatır (7.5 t kargo). Diğer çeyreklere Uzay İstasyonu ve panel taşıyıp kolonileştirir.',
+    droneSpec: { tier: 2, ammo: 1, cooldown: 3.0, ecUse: 10, launchSpeed: 28, cargoCap: 7.5, thrust: 265, fuelCap: 0, hp: 260, color: '#34d399', name: 'Nakliye Dronu Mk-II' },
+  },
+  {
+    id: 'drone-bay-l', name: 'Ağır Koloni Dron Hangarı', kind: 'droneBay', category: 'Dron', w: 2, h: 2, mass: 3.2, cost: 12000, hp: 280,
+    desc: '1 adet ağır fan-rotorlu Koloni Dronu Mk-III fırlatır (14 t kargo). Uzay İstasyonu + Rampa + Reaktör taşıyıp uzak çeyreğe otonom uçar.',
+    droneSpec: { tier: 3, ammo: 1, cooldown: 3.5, ecUse: 14, launchSpeed: 32, cargoCap: 14.0, thrust: 480, fuelCap: 0, hp: 380, color: '#f59e0b', name: 'Koloni Dronu Mk-III' },
+  },
 ]
+
+/** Fırlatma rampasından roket olmadan doğrudan kaldırılan otonom dronların maliyet ve özellikleri. */
+export const PAD_DRONE_SPECS: Record<1 | 2 | 3, { tier: 1 | 2 | 3; name: string; cost: number; cargoCap: number; thrust: number; hp: number; color: string }> = {
+  1: { tier: 1, name: 'Keşif Dronu Mk-I', cost: 2400, cargoCap: 3.5, thrust: 145, hp: 160, color: '#38bdf8' },
+  2: { tier: 2, name: 'Nakliye Dronu Mk-II', cost: 5200, cargoCap: 7.5, thrust: 265, hp: 260, color: '#34d399' },
+  3: { tier: 3, name: 'Koloni Dronu Mk-III', cost: 9500, cargoCap: 14.0, thrust: 480, hp: 380, color: '#f59e0b' },
+}
+
+/** Elektrikli fan-air gezegen dronları (roket iticisi/yakıtı kullanmaz; montaj paletinde görünmez). */
+export const DRONE_PARTS: PartDef[] = [
+  { id: 'drone-core-1', name: 'Dron Beyni Mk-I', kind: 'command', category: 'Dron', w: 2, h: 1, mass: 0.3, cost: 0, hp: 90, ecCap: 120, ecGen: 6, desc: 'Otonom quad-rotor uçuş bilgisayarı.' },
+  { id: 'drone-cargo-1', name: 'Dron Kargo Mk-I', kind: 'cargo', category: 'Dron', w: 2, h: 1, mass: 0.2, cost: 0, hp: 80, cargoCap: 3.5, desc: '3.5 t hafif dron yük askısı.' },
+  { id: 'drone-bat-1', name: 'Lityum Güç Paketi Mk-I', kind: 'battery', category: 'Dron', w: 2, h: 1, mass: 0.25, cost: 0, hp: 80, ecCap: 160, desc: 'Fan pervaneleri için yüksek yoğunluklu elektrik hücresi.' },
+  { id: 'drone-fan-1', name: 'Quad-Fan Pervane Mk-I', kind: 'engine', category: 'Dron', w: 2, h: 1, mass: 0.3, cost: 0, hp: 80, thrust: 145, ecUse: 2.2, electricFan: true, ispVac: 1, ispSL: 1, desc: '4× elektrikli hava fanı rotorları ve iniş kızağı (roket yakıtı yakmaz).' },
+
+  { id: 'drone-core-2', name: 'Dron Beyni Mk-II', kind: 'command', category: 'Dron', w: 2, h: 1, mass: 0.4, cost: 0, hp: 140, ecCap: 180, ecGen: 10, desc: 'Gelişmiş otonom dron çekirdeği.' },
+  { id: 'drone-cargo-2', name: 'Dron Kargo Mk-II', kind: 'cargo', category: 'Dron', w: 2, h: 1, mass: 0.35, cost: 0, hp: 120, cargoCap: 7.5, desc: '7.5 t orta dron yük askısı.' },
+  { id: 'drone-bat-2', name: 'Lityum Güç Paketi Mk-II', kind: 'battery', category: 'Dron', w: 2, h: 1, mass: 0.35, cost: 0, hp: 115, ecCap: 260, desc: 'Uzun menzilli fan pervanesi bataryası.' },
+  { id: 'drone-fan-2', name: 'Quad-Fan Pervane Mk-II', kind: 'engine', category: 'Dron', w: 2, h: 1, mass: 0.45, cost: 0, hp: 115, thrust: 265, ecUse: 3.0, electricFan: true, ispVac: 1, ispSL: 1, desc: 'Güçlü kanallı elektrik fan rotorları ve iniş kızağı.' },
+
+  { id: 'drone-core-3', name: 'Dron Beyni Mk-III', kind: 'command', category: 'Dron', w: 2, h: 1, mass: 0.5, cost: 0, hp: 200, ecCap: 280, ecGen: 15, desc: 'Ağır koloni dronu yapay zeka çekirdeği.' },
+  { id: 'drone-cargo-3', name: 'Dron Kargo Mk-III', kind: 'cargo', category: 'Dron', w: 2, h: 1, mass: 0.5, cost: 0, hp: 180, cargoCap: 14.0, desc: '14 t ağır koloni yük askısı.' },
+  { id: 'drone-bat-3', name: 'Lityum Güç Paketi Mk-III', kind: 'battery', category: 'Dron', w: 2, h: 1, mass: 0.45, cost: 0, hp: 165, ecCap: 420, desc: 'Ağır turbo-fan güç modülü.' },
+  { id: 'drone-fan-3', name: 'Quad-Fan Pervane Mk-III', kind: 'engine', category: 'Dron', w: 2, h: 1, mass: 0.6, cost: 0, hp: 165, thrust: 480, ecUse: 4.0, electricFan: true, ispVac: 1, ispSL: 1, desc: 'Ağır yük kaldırmalı dört kanallı hava fanı sistemi.' },
+]
+
+export function droneDesign(tier: 1 | 2 | 3): PartInst[] {
+  return [
+    { def: `drone-core-${tier}`, x: 6, y: 8 },
+    { def: `drone-cargo-${tier}`, x: 6, y: 9 },
+    { def: `drone-bat-${tier}`, x: 6, y: 10 },
+    { def: `drone-fan-${tier}`, x: 6, y: 11 },
+  ]
+}
 
 /** ISS parçaları: montaj paletinde görünmez, yalnızca istasyonu oluşturur. */
 export const STATION_PARTS: PartDef[] = [
@@ -148,7 +198,7 @@ export const OUTPOST_PARTS: PartDef[] = [
     weapon: { kind: 'ballistic', group: 1, dmg: 11, cooldown: 0.24, speed: 850, ttl: 1.5, spread: 0.035, gimbal: Math.PI, color: '#7dd3fc' },
   },
 ]
-/** Üs seviyesine göre tasarım: 1 çekirdek + 2 taret, 2 kalkan + 4 taret, 3 ağır zırh + 6 taret. */
+/** Üs seviyesine göre tasarım: Lv1 2 taret -> Lv5 10 taret + 8 kalkan + tam ağır zırh kalesi. */
 export function outpostDesign(level: number): PartInst[] {
   const d: PartInst[] = [
     { def: 'armor-heavy', x: 4, y: 0 },
@@ -169,10 +219,28 @@ export function outpostDesign(level: number): PartInst[] {
       { def: 'base-turret', x: 0, y: 6 }, { def: 'base-turret', x: 10, y: 6 }, { def: 'shield-gen', x: 4, y: 7 }, { def: 'shield-gen', x: 6, y: 7 },
     )
   }
+  if (level >= 4) {
+    d.push(
+      { def: 'armor-heavy', x: 2, y: 0 }, { def: 'armor-heavy', x: 8, y: 0 },
+      { def: 'shield-gen', x: 2, y: 6 }, { def: 'shield-gen', x: 8, y: 6 },
+      { def: 'base-turret', x: 4, y: 8 }, { def: 'base-turret', x: 6, y: 8 },
+    )
+  }
+  if (level >= 5) {
+    d.push(
+      { def: 'armor-heavy', x: 0, y: 0 }, { def: 'armor-heavy', x: 10, y: 0 },
+      { def: 'shield-gen', x: 2, y: 7 }, { def: 'shield-gen', x: 8, y: 7 },
+      { def: 'armor-plate', x: 2, y: 8 }, { def: 'armor-plate', x: 8, y: 8 },
+      { def: 'base-turret', x: 0, y: 8 }, { def: 'base-turret', x: 10, y: 8 },
+    )
+  }
   return d
 }
-export const OUTPOST_MAX_LEVEL = 3
-export const OUTPOST_UPGRADE_COST = [0, 15_000, 35_000]
+export const OUTPOST_MAX_LEVEL = 5
+export const OUTPOST_UPGRADE_COST = [0, 14_000, 28_000, 48_000, 75_000]
+export const OUTPOST_INCOME_PER_MIN = [0, 3_000, 6_000, 10_000, 16_000, 25_000]
+export const OUTPOST_REPAIR_RATE = [0, 14, 22, 32, 45, 62]
+export const OUTPOST_LOOT_BONUS = [1, 1, 1.12, 1.25, 1.4, 1.6]
 
 export const ISS_DESIGN: PartInst[] = [
   { def: 'iss-wing', x: 0, y: 0 },
@@ -182,7 +250,7 @@ export const ISS_DESIGN: PartInst[] = [
 ]
 export const ISS_ALTITUDE_M = 75_000
 
-export const PART_BY_ID: Record<string, PartDef> = Object.fromEntries([...PARTS, ...STATION_PARTS, ...OUTPOST_PARTS].map((p) => [p.id, p]))
+export const PART_BY_ID: Record<string, PartDef> = Object.fromEntries([...PARTS, ...STATION_PARTS, ...OUTPOST_PARTS, ...DRONE_PARTS].map((p) => [p.id, p]))
 
 export function partDef(id: string): PartDef {
   const d = PART_BY_ID[id]

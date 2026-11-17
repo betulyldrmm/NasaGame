@@ -2,9 +2,13 @@ import { describe, expect, it } from 'vitest'
 import { BODIES } from '../nasa/bodies'
 import {
   COLONY_SHIELD_PER_GEN,
+  COLONY_SLOTS,
   colonyHealthSummary,
   colonyShieldCap,
+  hasActiveLaunchPad,
+  isQuadrantColonized,
   MODULE_BY_ID,
+  quadrantCenterAngle,
 } from '../game/base'
 import { COMBAT_PRESETS, partDef, partMaxHp, PARTS } from '../game/data'
 import { estimateDeltaV, freshParts, isConnected, vesselStats } from '../game/vessel'
@@ -18,8 +22,11 @@ import {
   colonyCenterWorldPos,
   colonySlotWorldPos,
   countSurvivingColonies,
+  getActorQuadrantBase,
+  isLootMode,
+  isWarfareMode,
 } from './combat'
-import { dispatchCommand, stepWorld, validateDesign, type Sim } from './world'
+import { availableLaunchSites, canLaunchFromQuadrant, dispatchCommand, placePlanetModule, stepWorld, validateDesign, type Sim } from './world'
 
 function makeWarSim(goal: 'siege' | 'score15' | 'score30' | 'endless' = 'siege', money = 200_000): Sim {
   const gs = newMultiplayerGame(
@@ -308,7 +315,7 @@ describe('Colony defenses, shield domes, colony siege & snapshot delta optimizat
     const events: any[] = []
     applyColonyDamage(
       sim.gs,
-      { ownerId: 'p2', bodyId: 'earth', base: p2Base, isEarth: true },
+      { ownerId: 'p2', bodyId: 'earth', base: p2Base, isEarth: true, quadrant: 0 },
       slot5.x,
       slot5.y,
       300,
@@ -331,7 +338,7 @@ describe('Colony defenses, shield domes, colony siege & snapshot delta optimizat
       const posS = colonySlotWorldPos('earth', p2Base.siteAngle!, s, true, 4)
       applyColonyDamage(
         sim.gs,
-        { ownerId: 'p2', bodyId: 'earth', base: p2Base, isEarth: true },
+        { ownerId: 'p2', bodyId: 'earth', base: p2Base, isEarth: true, quadrant: 0 },
         posS.x,
         posS.y,
         5000,
@@ -457,5 +464,83 @@ describe('combat regressions', () => {
     for (let i = 0; i < 100; i += 1) stepWorld(sim, 1 / 144, new Map())
     const hpAfter = v.parts.reduce((a, p) => a + (p.hp ?? partMaxHp(p.def)), 0)
     expect(hpAfter).toBeLessThan(hpBefore)
+  })
+})
+
+describe('4-quadrant planets, Space Station building and Launch Pad launches', () => {
+  it('supports 12 colony slots, single-quadrant Space Station colonization, local Station builds, and Moon Launch Pad launches', () => {
+    expect(COLONY_SLOTS).toBe(12)
+    const sim = makeWarSim('siege', 250_000)
+    expect(isWarfareMode(sim.gs)).toBe(true)
+    expect(isLootMode(sim.gs)).toBe(false)
+
+    // Başlangıçta Ay Q1'de üs, rampa ve doğrudan inşa yetkisi yok
+    expect(canLaunchFromQuadrant(sim.gs, 'moon', 1, 'p1')).toBe(false)
+    expect(placePlanetModule(sim, 'moon', 0, 'launch-pad', 'p1', 1)).toBeTruthy()
+
+    // p1 adına Ay Çeyrek 1'e inmiş bir kargo gemisi yerleştir (Uzay İstasyonu + Reaktör)
+    const thetaQ1 = quadrantCenterAngle(1)
+    const rMoon = BODIES.moon.radius
+    const landerId = sim.gs.nextId
+    sim.gs.nextId += 1
+    sim.gs.vessels.push({
+      id: landerId,
+      name: 'Ay İnici',
+      ownerId: 'p1',
+      bodyId: 'moon',
+      pos: { x: Math.cos(thetaQ1) * rMoon, y: Math.sin(thetaQ1) * rMoon },
+      vel: { x: 0, y: 0 },
+      angle: thetaQ1,
+      angVel: 0,
+      throttle: 0,
+      landed: true,
+      ec: 40,
+      rcsOn: false,
+      sas: 'off',
+      autopilot: 'off',
+      visited: ['moon'],
+      assist: null,
+      dvUsed: 0,
+      parts: freshParts([{ def: 'capsule', x: 6, y: 1 }, { def: 'cargo-lg', x: 6, y: 3 }]),
+      cargo: { modules: { 'colony-station': 1, 'rtg-reactor': 1 }, ore: 0, oreFrom: null },
+    })
+    sim.gs.mp!.players.p1.activeVesselId = landerId
+
+    const deployRes = dispatchCommand(sim, { type: 'deployModules', vesselId: landerId, quadrant: 1 }, 'p1')
+    expect(deployRes.error).toBeUndefined()
+    // Kargo aracını rampadan 3.4 km kenara park et (yeni roket fırlatılabilsin)
+    const landerRef = sim.gs.vessels.find((v) => v.id === landerId)!
+    landerRef.pos = { x: Math.cos(thetaQ1 + 0.002) * rMoon, y: Math.sin(thetaQ1 + 0.002) * rMoon }
+
+    // Uzay İstasyonu yalnızca Çeyrek 1'i kolonileştirir; Çeyrek 0 hâlâ boştur
+    const q1Base = getActorQuadrantBase(sim.gs, 'moon', 'p1', 1)
+    const q0Base = getActorQuadrantBase(sim.gs, 'moon', 'p1', 0)
+    expect(q1Base?.modules['colony-station']).toBe(1)
+    expect(isQuadrantColonized(q1Base, 1)).toBe(true)
+    expect(q0Base).toBeUndefined()
+    expect(allColoniesOnBody(sim.gs, 'moon').length).toBe(1)
+    expect(countSurvivingColonies(sim.gs.mp!.players.p1)).toBe(2)
+
+    // Yalnızca Uzay İstasyonu ile henüz fırlatma rampası yok, ama çeyrekte doğrudan krediyle bina kurulumu açılır
+    expect(hasActiveLaunchPad(q1Base, 1)).toBe(false)
+    expect(canLaunchFromQuadrant(sim.gs, 'moon', 1, 'p1')).toBe(false)
+    expect(placePlanetModule(sim, 'moon', 2, 'launch-pad', 'p1', 1)).toBeNull()
+
+    // Aktif İstasyon + Fırlatma Rampası Ay Q1'den doğrudan roket fırlatmayı açar
+    expect(hasActiveLaunchPad(q1Base, 1)).toBe(true)
+    expect(canLaunchFromQuadrant(sim.gs, 'moon', 1, 'p1')).toBe(true)
+    expect(availableLaunchSites(sim.gs, 'p1').some((s) => s.bodyId === 'moon' && s.quadrant === 1)).toBe(true)
+
+    const launchRes = dispatchCommand(
+      sim,
+      { type: 'launch', design: COMBAT_PRESETS[0]!.design, bodyId: 'moon', quadrant: 1 },
+      'p1',
+    )
+    expect(launchRes.error).toBeUndefined()
+    const launched = sim.gs.vessels.find((v) => v.ownerId === 'p1' && v.id === sim.gs.mp!.players.p1.activeVesselId)
+    expect(launched).toBeDefined()
+    expect(launched!.bodyId).toBe('moon')
+    expect(launched!.landed).toBe(true)
+    expect(Math.abs(Math.atan2(launched!.pos.y, launched!.pos.x) - thetaQ1)).toBeLessThan(0.2)
   })
 })

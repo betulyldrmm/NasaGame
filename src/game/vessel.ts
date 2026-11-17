@@ -102,11 +102,45 @@ export function isConnected(parts: PartInst[]): boolean {
   return components(parts).every((g) => g === 0)
 }
 
+export function modulesMass(modules: Record<string, number> | null | undefined): number {
+  if (!modules) return 0
+  let m = 0
+  for (const [id, n] of Object.entries(modules)) m += (MODULE_BY_ID[id]?.mass ?? 0) * n
+  return m
+}
+
 export function cargoMass(cargo: Cargo | null | undefined): number {
   if (!cargo) return 0
-  let m = cargo.ore
-  for (const [id, n] of Object.entries(cargo.modules)) m += (MODULE_BY_ID[id]?.mass ?? 0) * n
-  return m
+  return cargo.ore + modulesMass(cargo.modules)
+}
+
+/** Kapasite küçüldüğünde (kademe ayrılması/hasar) taşan yükü kırpar; sığan modülleri korur. */
+export function trimCargoToCap(cargo: Cargo, cap: number): { droppedOre: number; droppedModules: Record<string, number> } {
+  const droppedModules: Record<string, number> = {}
+  let droppedOre = 0
+  if (cargoMass(cargo) <= cap + 1e-9) return { droppedOre, droppedModules }
+  const keepModules: Record<string, number> = {}
+  let used = 0
+  for (const [id, n] of Object.entries(cargo.modules)) {
+    const m = MODULE_BY_ID[id]?.mass ?? 0
+    for (let i = 0; i < n; i += 1) {
+      if (used + m <= cap + 1e-9) {
+        keepModules[id] = (keepModules[id] ?? 0) + 1
+        used += m
+      } else {
+        droppedModules[id] = (droppedModules[id] ?? 0) + 1
+      }
+    }
+  }
+  const keepOre = Math.max(0, Math.min(cargo.ore, cap - used))
+  droppedOre = Math.max(0, cargo.ore - keepOre)
+  cargo.modules = keepModules
+  cargo.ore = keepOre
+  if (cargo.ore <= 1e-9) {
+    cargo.ore = 0
+    cargo.oreFrom = null
+  }
+  return { droppedOre, droppedModules }
 }
 
 export interface VesselStats {
@@ -123,6 +157,7 @@ export interface VesselStats {
   cost: number
   ecCap: number
   cargoCap: number
+  droneCargoCap: number
   hasCommand: boolean
   rcs: number
   legs: number
@@ -137,6 +172,7 @@ export interface VesselStats {
   weaponCount: number
   weaponDps: number
   ammoTotal: number
+  droneCount: number
   hasCombatParts: boolean
 }
 
@@ -149,6 +185,7 @@ export function vesselStats(parts: PartInst[], cargo?: Cargo | null): VesselStat
   let cost = 0
   let ecCap = 0
   let cargoCap = 0
+  let droneCargoCap = 0
   let minX = Infinity
   let maxX = -Infinity
   let minY = Infinity
@@ -167,12 +204,14 @@ export function vesselStats(parts: PartInst[], cargo?: Cargo | null): VesselStat
   let weaponCount = 0
   let weaponDps = 0
   let ammoTotal = 0
+  let droneCount = 0
   let hasCombatParts = false
   for (const p of parts) {
     const d = partDef(p.def)
     const alive = partAlive(p)
     const f = d.kind === 'tank' && alive ? (p.fuel ?? d.fuel ?? 0) : 0
-    const m = d.mass + f
+    const dm = d.droneSpec && alive && (p.ammo ?? d.droneSpec.ammo) > 0 ? modulesMass(p.droneCargo) : 0
+    const m = d.mass + f + dm
     mass += m
     mx += m * (p.x + d.w / 2)
     my += m * (p.y + d.h / 2)
@@ -197,6 +236,10 @@ export function vesselStats(parts: PartInst[], cargo?: Cargo | null): VesselStat
       weaponDps += (d.weapon.dmg * (d.weapon.pellets ?? 1)) / Math.max(0.05, d.weapon.cooldown)
       if (d.weapon.ammo !== undefined) ammoTotal += p.ammo ?? d.weapon.ammo
     }
+    if (d.droneSpec) {
+      droneCount += 1
+      if ((p.ammo ?? d.droneSpec.ammo) > 0) droneCargoCap += d.droneSpec.cargoCap
+    }
     if (d.kind === 'command') hasCommand = true
     if (d.kind === 'rcs') rcs += 1
     if (d.kind === 'leg') {
@@ -215,11 +258,17 @@ export function vesselStats(parts: PartInst[], cargo?: Cargo | null): VesselStat
   const cm = cargoMass(cargo)
   const comX = mass > 0 ? mx / mass : 0
   const comY = mass > 0 ? my / mass : 0
-  const legTolerance = legsDeployed >= 2 ? legTolSum / legsDeployed : 9
+  let legTolerance = legsDeployed >= 2 ? legTolSum / legsDeployed : 9
+  for (const p of parts) {
+    if (p.def.startsWith('drone-fan-') || p.def.startsWith('drone-jet-')) {
+      const tier = Number(p.def.slice(-1)) || 1
+      legTolerance = Math.max(legTolerance, 18 + tier * 2)
+    }
+  }
   return {
-    mass: mass + cm, dryMass: mass - fuel + cm, fuel, fuelCap, comX, comY, minX, maxX, minY, maxY, cost, ecCap, cargoCap,
+    mass: mass + cm, dryMass: mass - fuel + cm, fuel, fuelCap, comX, comY, minX, maxX, minY, maxY, cost, ecCap, cargoCap, droneCargoCap,
     hasCommand, rcs, legs, legsDeployed, legTolerance, chutes, chutesDeployed, hasNose,
-    hp, maxHp, shieldCap, weaponCount, weaponDps, ammoTotal, hasCombatParts,
+    hp, maxHp, shieldCap, weaponCount, weaponDps, ammoTotal, droneCount, hasCombatParts,
   }
 }
 
@@ -263,9 +312,21 @@ export function runEngines(parts: PartInst[], throttle: number, pressure: number
   const groups = fuelGroups(parts)
   for (const i of activeEngines(parts)) {
     const d = partDef(parts[i]!.def)
+    const health = engineHealth(parts[i]!)
+    if (d.electricFan) {
+      const needEc = (d.ecUse ?? 1.5) * throttle * dt
+      const got = needEc > 0 ? Math.min(needEc, Math.max(0, ecAvailable - ecUsed)) : 0
+      const frac = needEc > 0 ? got / needEc : 1
+      if (frac <= 0.01) continue
+      ecUsed += got
+      const airBoost = pressure > 0.05 ? 1 + Math.min(0.4, pressure * 0.35) : 0.92
+      const power = throttle * health * frac
+      thrust += d.thrust! * power * airBoost
+      firing.set(i, power)
+      continue
+    }
     // Hasarlı motor daha az yakıt yakar ve daha az iter.
     const boost = ispBoost * (arcade.on ? ARCADE_FUEL_FACTOR : 1)
-    const health = engineHealth(parts[i]!)
     const flow = (d.thrust! / (d.ispVac! * boost * G0)) * throttle * health
     const tanks = parts.filter((p, j) => groups[j] === groups[i] && partDef(p.def).kind === 'tank' && partAlive(p) && (p.fuel ?? 0) > 0)
     const avail = tanks.reduce((s, t) => s + (t.fuel ?? 0), 0)
@@ -361,7 +422,7 @@ export function freshParts(design: PartInst[]): PartInst[] {
       fuel: d.fuel,
       on: d.kind === 'engine' ? true : undefined,
       deployed: false,
-      ...(d.weapon?.ammo !== undefined ? { ammo: d.weapon.ammo } : {}),
+      ...(d.weapon?.ammo !== undefined ? { ammo: d.weapon.ammo } : d.droneSpec ? { ammo: d.droneSpec.ammo } : {}),
     }
   })
 }

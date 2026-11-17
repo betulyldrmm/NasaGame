@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { MODULE_BY_ID } from '../game/base'
+import { isQuadrantColonized, MODULE_BY_ID, MODULES, QUADRANT_SHORT, quadrantCenterAngle, quadrantOfAngle, type QuadrantId } from '../game/base'
 import { MISSIONS } from '../game/missions'
 import { audio } from '../audio'
 import { lang, T } from '../i18n'
 import { bump, getActiveSim, runCommand, saveGame, sim, useAuthState } from '../game/store'
+import { isModuleUnlocked } from '../game/tech'
 import type {
   AutopilotMode,
   DynamicWarpInfo,
@@ -23,10 +24,12 @@ import { OUTPOST_MAX_LEVEL, OUTPOST_UPGRADE_COST, partDef, partMaxHp } from '../
 import { bodyAbsState, bodyRelState, elementsFromState, hohmann, len, wrapPi } from '../flight/orbit'
 import { type Controls, effectiveAutopilot, landingTolerance, pressureRatio, situation } from '../flight/physics'
 import { type Patch, predictTrajectory } from '../flight/predict'
-import { allColoniesOnBody, isLootMode, isWarfareMode } from '../flight/combat'
+import { allColoniesOnBody, getPlayerQuadrantColonies, isLootMode, isWarfareMode } from '../flight/combat'
 import { findOutpost, SERVICE_RANGE } from '../flight/loot'
 import {
   activeVessel,
+  availableLaunchSites,
+  canTransferCargoBetween,
   clickPart,
   deployModules,
   getActorBase,
@@ -43,7 +46,7 @@ import {
   stageNext,
   stepWorld,
   toggleKind,
-  totalPassiveIncomePerHour,
+  totalPassiveIncomePerMin,
   WARPS,
   isStationVessel,
   noteRcsPulse,
@@ -59,8 +62,10 @@ import {
   sendMpControls,
   useMultiplayer,
 } from '../flight/mpClient'
-import { CONQUERABLE_BODIES, playerPadAngle, playerPassiveIncomePerHour } from '../flight/multiplayerSim'
-import { BODIES, type BodyId, gameDate } from '../nasa/bodies'
+import { CONQUERABLE_BODIES, playerPadAngle, playerPassiveIncomePerMin } from '../flight/multiplayerSim'
+import { BODIES, type BodyId, gameDate, solarFlux } from '../nasa/bodies'
+import DroneWindow from './DroneWindow'
+import FleetWindow from './FleetWindow'
 import HowToPlay from './HowToPlay'
 import { aimInfoFromScreen, clampCamPan, createView, type FlightFrame, type MapFrame, pickPart, pickVesselFlight, renderFlight, renderMap, resetViewCache } from '../render/renderer'
 import PartIcon from './PartIcon'
@@ -82,6 +87,10 @@ interface Hud {
   vesselId: number | null
   name: string
   body: BodyId
+  quadrant: QuadrantId
+  isDrone: boolean
+  droneWarn: boolean
+  droneMaxAlt: number | null
   alt: number
   speed: number
   vr: number
@@ -99,17 +108,21 @@ interface Hud {
   autoLand: boolean
   autopilot: AutopilotMode
   autopilotNote: string
+  followId: number | null
+  followName: string | null
+  followerCount: number
+  fleetFollowersTotal: number
   approachWarn: BodyId | null
   hasAutoLand: boolean
   sas: SasMode
   warp: number
   warpIdx: number
   money: number
-  passivePerHr: number
+  passivePerMin: number
   date: string
   dv: number
   tol: number
-  vessels: { id: number; name: string; body: string; active: boolean }[]
+  vessels: { id: number; name: string; body: string; bodyId: BodyId; landed: boolean; isDrone: boolean; isStation: boolean; followId: number | null; followers: number; active: boolean }[]
   plan: string[]
   targetBody: BodyId
   cargo: string
@@ -139,6 +152,7 @@ interface Hud {
   mpWarpAnchor: boolean
   mpPlayers: MultiplayerPlayer[]
   mpCaptures: Partial<Record<BodyId, PlanetCapture>>
+  mpQuadCaptures: Partial<Record<BodyId, (PlanetCapture | undefined)[]>>
   mpFeed: MultiplayerFeedItem[]
   mpNearestRival: { username: string; color: string; dist: number } | null
   mpNearestEnemyColony: { username: string; color: string; dist: number } | null
@@ -158,7 +172,8 @@ interface Hud {
   weapons: {
     defId: string
     name: string
-    kind: WeaponKind
+    kind: WeaponKind | 'drone'
+    isDrone?: boolean
     count: number
     ready: number
     charge: number
@@ -171,6 +186,10 @@ interface Hud {
     color: string
     desc: string
   }[]
+  nearbyTransfer: boolean
+  droneBayReady: boolean
+  liveDroneCount: number
+  hasCargoBay: boolean
 }
 
 function transferPlan(v: Vessel, t: number, targetBody: BodyId): string[] {
@@ -340,6 +359,10 @@ function snapshot(): Hud {
     vesselId: null,
     name: '',
     body: 'earth',
+    quadrant: 0,
+    isDrone: false,
+    droneWarn: false,
+    droneMaxAlt: null,
     alt: 0,
     speed: 0,
     vr: 0,
@@ -357,19 +380,34 @@ function snapshot(): Hud {
     autoLand: false,
     autopilot: 'off',
     autopilotNote: '',
+    followId: null,
+    followName: null,
+    followerCount: 0,
+    fleetFollowersTotal: gs.vessels.filter((o) => !o.debris && effectiveAutopilot(o) === 'follow' && (!isMp || o.ownerId === myId)).length,
     approachWarn: null,
     hasAutoLand: true,
     sas: 'off',
     warp: WARPS[curSim.warpIdx]!,
     warpIdx: curSim.warpIdx,
     money: isMp && meMp ? meMp.money : gs.money,
-    passivePerHr: isMp ? playerPassiveIncomePerHour(gs, myId) : totalPassiveIncomePerHour(gs),
+    passivePerMin: isMp ? playerPassiveIncomePerMin(gs, myId) : totalPassiveIncomePerMin(gs),
     date: gameDate(gs.time).toLocaleDateString(lang === 'en' ? 'en-GB' : 'tr-TR', { day: 'numeric', month: 'short', year: 'numeric' }),
     dv: 0,
     tol: 7,
     vessels: gs.vessels
       .filter((o) => !o.debris && !o.outpost && (!isMp || (!o.station && o.ownerId === myId)))
-      .map((o) => ({ id: o.id, name: o.name, body: BODIES[o.bodyId].name + (o.landed ? ' (yüzeyde)' : ''), active: o.id === gs.activeId })),
+      .map((o) => ({
+        id: o.id,
+        name: o.name,
+        body: BODIES[o.bodyId].name + (o.landed ? ' (yüzeyde)' : ''),
+        bodyId: o.bodyId,
+        landed: o.landed,
+        isDrone: Boolean(o.drone),
+        isStation: Boolean(o.station || isStationVessel(o)),
+        followId: effectiveAutopilot(o) === 'follow' ? (o.followId ?? null) : null,
+        followers: gs.vessels.filter((f) => !f.debris && effectiveAutopilot(f) === 'follow' && f.followId === o.id).length,
+        active: o.id === gs.activeId,
+      })),
     plan: [],
     targetBody,
     cargo: '',
@@ -399,6 +437,7 @@ function snapshot(): Hud {
     mpWarpAnchor: meMp?.warpAnchor ?? false,
     mpPlayers,
     mpCaptures: gs.mp?.captures ?? {},
+    mpQuadCaptures: gs.mp?.quadrantCaptures ?? {},
     mpFeed: gs.mp?.feed ?? [],
     mpNearestRival,
     mpNearestEnemyColony,
@@ -415,6 +454,10 @@ function snapshot(): Hud {
     empStunned: false,
     burning: false,
     weapons: [],
+    nearbyTransfer: false,
+    droneBayReady: false,
+    liveDroneCount: gs.vessels.filter((o) => !o.debris && Boolean(o.drone) && (!isMp || o.ownerId === myId)).length,
+    hasCargoBay: false,
   }
   if (!v) return base
   const st = vesselStats(v.parts, v.cargo)
@@ -442,12 +485,24 @@ function snapshot(): Hud {
   })
   const mods = Object.entries(v.cargo.modules).map(([id, n]) => `${n}× ${MODULE_BY_ID[id]?.name ?? id}`)
   if (v.cargo.ore > 0.005) mods.push(`${v.cargo.ore.toFixed(2)} t maden`)
+  const vQuad = quadrantOfAngle(Math.atan2(v.pos.y, v.pos.x))
+  const nearbyTransfer = gs.vessels.some((o) => (!gs.mp || o.ownerId === myId) && canTransferCargoBetween(v, o))
   return {
     ...base,
     has: true,
     vesselId: v.id,
     name: v.name,
     body: v.bodyId,
+    quadrant: vQuad,
+    isDrone: Boolean(v.drone),
+    droneWarn: Boolean(v.drone?.warn),
+    droneMaxAlt: v.drone?.maxAlt ?? null,
+    nearbyTransfer,
+    droneBayReady: v.parts.some((p) => {
+      const d = partDef(p.def)
+      return d.kind === 'droneBay' && (p.hp === undefined || p.hp > 0) && (p.ammo ?? 1) > 0
+    }),
+    hasCargoBay: st.cargoCap > 0,
     alt: s.alt,
     speed: s.speed,
     vr: s.vr,
@@ -465,6 +520,9 @@ function snapshot(): Hud {
     autoLand: !!v.autoLand,
     autopilot: effectiveAutopilot(v),
     autopilotNote: v.autopilotNote ?? '',
+    followId: effectiveAutopilot(v) === 'follow' ? (v.followId ?? null) : null,
+    followName: effectiveAutopilot(v) === 'follow' && v.followId ? (gs.vessels.find((o) => o.id === v.followId)?.name ?? null) : null,
+    followerCount: gs.vessels.filter((o) => !o.debris && effectiveAutopilot(o) === 'follow' && o.followId === v.id).length,
     approachWarn: v.approachWarn ?? null,
     sas: v.sas,
     dv: estimateDeltaV(v.parts, cargoMass(v.cargo)).reduce((a, x) => a + x.dv, 0),
@@ -476,6 +534,11 @@ function snapshot(): Hud {
       const p = Math.min(1, Math.max(0, pressureRatio(body, s.altSea)))
       const thrust = activeEngines(v.parts).reduce((a, i) => {
         const d = partDef(v.parts[i]!.def)
+        if (d.electricFan) {
+          if (v.ec <= 0.1) return a
+          const airBoost = p > 0.05 ? 1 + Math.min(0.4, p * 0.35) : 0.92
+          return a + d.thrust! * airBoost
+        }
         return a + (d.thrust! * (d.ispVac! + (d.ispSL! - d.ispVac!) * p)) / d.ispVac!
       }, 0)
       return thrust / (st.mass * (body.mu / (s.r * s.r)))
@@ -514,7 +577,8 @@ function snapshot(): Hud {
         {
           defId: string
           name: string
-          kind: WeaponKind
+          kind: WeaponKind | 'drone'
+          isDrone?: boolean
           count: number
           ready: number
           charge: number
@@ -528,41 +592,47 @@ function snapshot(): Hud {
           desc: string
         }
       >()
+      const allowGuns = !isMp || isWarfare
       for (const p of v.parts) {
         const d = partDef(p.def)
-        const w = d.weapon
+        const w = allowGuns ? d.weapon : undefined
         if (!w) continue
         const beaming = Boolean(p.beamUntil && curClock < p.beamUntil)
         const cdRem = Math.max(0, p.cd ?? 0)
         const ch = Math.max(0, Math.min(1, p.charge ?? 0))
+        const maxAmmo = w.ammo
+        const cd = w.cooldown
+        const ecUse = w.ecUse ?? 0
+        const color = w.color
         let row = mapW.get(d.id)
         if (!row) {
           row = {
             defId: d.id,
             name: d.name,
             kind: w.kind,
+            isDrone: false,
             count: 0,
             ready: 0,
             charge: 0,
             beaming: false,
             cdRem: 999,
-            cooldown: w.cooldown,
-            ammo: w.ammo !== undefined ? 0 : null,
-            ammoCap: w.ammo !== undefined ? 0 : null,
-            ecUse: w.ecUse ?? 0,
-            color: w.color,
+            cooldown: cd,
+            ammo: maxAmmo !== undefined ? 0 : null,
+            ammoCap: maxAmmo !== undefined ? 0 : null,
+            ecUse,
+            color,
             desc: d.desc,
           }
           mapW.set(d.id, row)
         }
         row.count += 1
-        if (cdRem <= 0.02 || (w.minCooldown && w.spinRate)) row.ready += 1
+        if (cdRem <= 0.02 || (w?.minCooldown && w?.spinRate)) row.ready += 1
         if (ch > row.charge) row.charge = ch
         if (beaming) row.beaming = true
         row.cdRem = Math.min(row.cdRem, cdRem)
-        if (w.ammo !== undefined) {
-          row.ammo = (row.ammo ?? 0) + (p.ammo ?? w.ammo)
-          row.ammoCap = (row.ammoCap ?? 0) + w.ammo
+        if (maxAmmo !== undefined) {
+          row.ammo = (row.ammo ?? 0) + (p.ammo ?? maxAmmo)
+          row.ammoCap = (row.ammoCap ?? 0) + maxAmmo
         }
       }
       const weapons = [...mapW.values()].map((r) => ({ ...r, cdRem: r.cdRem >= 900 ? 0 : r.cdRem }))
@@ -660,6 +730,10 @@ export default function FlightScreen({ onBuilder }: Props) {
   const [wreck, setWreck] = useState(false)
   const [showGuide, setShowGuide] = useState(false)
   const [showCargo, setShowCargo] = useState(false)
+  const [showDrone, setShowDrone] = useState(false)
+  const [showFleet, setShowFleet] = useState(false)
+  const [followPick, setFollowPick] = useState<number>(0)
+  const [droneSite, setDroneSite] = useState<{ bodyId: BodyId; quadrant: QuadrantId } | null>(null)
   const [alarm, setAlarm] = useState(false)
   const spam = useRef<number[]>([])
   const typed = useRef('')
@@ -837,46 +911,60 @@ export default function FlightScreen({ onBuilder }: Props) {
   }, [])
 
   const toggleAutopilot = useCallback(
-    (mode: 'orbit' | 'transfer' | 'land') => {
+    (mode: 'orbit' | 'transfer' | 'land' | 'nextQuad' | 'follow', followTargetId?: number) => {
       const curSim = getActiveSim()
       const v = activeVessel(curSim.gs)
       if (!v) return
       const cur = effectiveAutopilot(v)
-      const next: AutopilotMode = cur === mode ? 'off' : mode
+      const switchLeader = mode === 'follow' && followTargetId !== undefined && followTargetId !== v.followId
+      const next: AutopilotMode = cur === mode && mode !== 'nextQuad' && !switchLeader ? 'off' : mode
       if (curSim.gs.mp) {
-        const res = runCommand({ type: 'setAutopilot', vesselId: v.id, mode: next })
+        const res = runCommand({ type: 'setAutopilot', vesselId: v.id, mode: next, ...(next === 'follow' ? { followId: followTargetId } : {}) })
         if (res.error) {
           toast(res.error, 'warn')
           return
         }
         v.autopilot = next
         v.autoLand = next === 'land'
-        if (next === 'off') v.throttle = 0
+        if (next === 'follow' && followTargetId !== undefined) v.followId = followTargetId
+        if (next === 'off') {
+          v.throttle = 0
+          v.followId = undefined
+        }
         const myTgt = (curSim.gs.mp.players[curSim.gs.ownerId ?? '']?.targetBody ?? curSim.gs.targetBody ?? 'moon') as BodyId
+        const lidName = followTargetId ? (curSim.gs.vessels.find((o) => o.id === followTargetId)?.name ?? '') : ''
         const labels: Record<AutopilotMode, string> = {
           off: 'Otopilot kapatıldı.',
           orbit: '🛰️ Yörüngeye Yerleş otopilotu başlatıldı.',
           transfer: `🎯 Hızlı yolculuk → ${BODIES[myTgt].name}: uzaya çıkınca başlar, yakıtı yol kadar düşülür.`,
           land: '🛬 Otomatik İniş Asistanı devrede.',
+          nextQuad: '🧭 Dron sonraki gezegen çeyreğine otonom yönlendirildi.',
+          follow: `📡 ${lidName ? `${lidName} ` : ''}filo takibi başlatıldı.`,
         }
         toast(labels[next])
         setHud(snapshot())
         return
       }
-      const err = setVesselAutopilot(sim, v, next)
+      const err = setVesselAutopilot(sim, v, next, undefined, next === 'follow' ? followTargetId : undefined)
       if (err) {
         toast(err, 'warn')
         return
       }
-      if (next === 'off') v.throttle = 0
+      if (next === 'off') {
+        v.throttle = 0
+        v.followId = undefined
+      }
       if (next === 'land') {
         sim.warpLockPrev = undefined
       }
+      const lName = v.followId ? (sim.gs.vessels.find((o) => o.id === v.followId)?.name ?? '') : ''
       const labels: Record<AutopilotMode, string> = {
         off: 'Otopilot kapatıldı.',
         orbit: '🛰️ Yörüngeye Yerleş otopilotu başlatıldı.',
         transfer: `🎯 ${BODIES[(sim.gs.targetBody ?? 'moon') as BodyId].name} oto-transferi başlatıldı.`,
         land: '🛬 Otomatik İniş Asistanı devrede.',
+        nextQuad: `🧭 Dron ${QUADRANT_SHORT[v.targetQuad ?? 0]} çeyreğine uçuyor.`,
+        follow: `📡 ${lName ? `${lName} ` : ''}filo takibi başlatıldı.`,
       }
       toast(labels[next])
       setHud(snapshot())
@@ -938,8 +1026,12 @@ export default function FlightScreen({ onBuilder }: Props) {
       else if (k >= '1' && k <= '9') {
         const curV = activeVessel(curSim.gs)
         if (curV) {
+          const allowGuns = !isMp || isWarfareMode(curSim.gs)
           const seen: string[] = []
-          for (const p of curV.parts) if (partDef(p.def).weapon && !seen.includes(p.def)) seen.push(p.def)
+          for (const p of curV.parts) {
+            const pd = partDef(p.def)
+            if (allowGuns && pd.weapon && !seen.includes(p.def)) seen.push(p.def)
+          }
           const idx = Number(k) - 1
           if (seen[idx]) chooseWeapon(seen[idx]!)
         }
@@ -961,6 +1053,7 @@ export default function FlightScreen({ onBuilder }: Props) {
           spaceThrottle.current = { vesselId: v.id, previousThrottle: v.throttle }
           v.autoLand = false
           v.autopilot = 'off'
+          v.followId = undefined
           v.throttle = 1
           if (isMp) runCommand({ type: 'setThrottle', vesselId: v.id, throttle: 1 })
         }
@@ -972,6 +1065,7 @@ export default function FlightScreen({ onBuilder }: Props) {
         v.throttle = 0
         v.autoLand = false
         v.autopilot = 'off'
+        v.followId = undefined
         v.autopilotNote = undefined
         if (isMp) runCommand({ type: 'emergencyStop', vesselId: v.id })
       } else if (k === 'r') {
@@ -1066,7 +1160,11 @@ export default function FlightScreen({ onBuilder }: Props) {
       view.aimScreen = !view.map && ptr ? ptr : undefined
       let activeWeaponKey = selectedWeaponRef.current ?? undefined
       if (v) {
-        const wParts = v.parts.filter((p) => !!partDef(p.def).weapon)
+        const allowGuns = !isMp || isWarfareMode(curSim.gs)
+        const wParts = v.parts.filter((p) => {
+          const pd = partDef(p.def)
+          return allowGuns && !!pd.weapon
+        })
         if (!activeWeaponKey || !wParts.some((p) => p.def === activeWeaponKey)) {
           activeWeaponKey = wParts[0]?.def
         }
@@ -1093,6 +1191,7 @@ export default function FlightScreen({ onBuilder }: Props) {
         if (k.has('w') || k.has('ArrowUp') || k.has('Shift')) {
           v.autoLand = false
           v.autopilot = 'off'
+          v.followId = undefined
           v.autopilotNote = undefined
           v.throttle = Math.min(1, v.throttle + dt * 0.8)
           thChanged = true
@@ -1100,6 +1199,7 @@ export default function FlightScreen({ onBuilder }: Props) {
         if (k.has('s') || k.has('ArrowDown') || k.has('Control')) {
           v.autoLand = false
           v.autopilot = 'off'
+          v.followId = undefined
           v.autopilotNote = undefined
           v.throttle = Math.max(0, v.throttle - dt * 0.8)
           thChanged = true
@@ -1167,8 +1267,12 @@ export default function FlightScreen({ onBuilder }: Props) {
     else view.zoom = Math.max(0.00012, Math.min(26, view.zoom * f))
   }
   const hasArmedVessel = () => {
-    const cur = activeVessel(getActiveSim().gs)
-    return cur ? vesselStats(cur.parts).weaponCount > 0 : false
+    const s = getActiveSim()
+    const cur = activeVessel(s.gs)
+    if (!cur || cur.drone) return false
+    const st = vesselStats(cur.parts)
+    const allowGuns = !s.gs.mp || isWarfareMode(s.gs)
+    return allowGuns && st.weaponCount > 0
   }
   const onDown = (e: React.MouseEvent) => {
     pointerRef.current = { x: e.clientX, y: e.clientY }
@@ -1270,15 +1374,22 @@ export default function FlightScreen({ onBuilder }: Props) {
     const s = getActiveSim()
     if (s.gs.mp) {
       const local = getLocalMpDesign()
-      const padTheta = playerPadAngle(s.gs, s.gs.ownerId)
+      const sites = availableLaunchSites(s.gs, s.gs.ownerId ?? 'local')
+      const ls = s.gs.launchSite
+      const site = (ls && sites.find((o) => o.bodyId === ls.bodyId && o.quadrant === ls.quadrant)) ?? sites[0]!
+      const qBase = getActorBase(s.gs, site.bodyId, s.gs.ownerId ?? 'local', site.quadrant)
+      const padTheta =
+        site.bodyId === 'earth' && site.quadrant === 0
+          ? playerPadAngle(s.gs, s.gs.ownerId)
+          : qBase?.siteAngle ?? quadrantCenterAngle(site.quadrant)
       const onPad = s.gs.vessels.find(
-        (o) => o.bodyId === 'earth' && o.landed && Math.abs(wrapPi(Math.atan2(o.pos.y, o.pos.x) - padTheta)) * BODIES.earth.radius < 25,
+        (o) => o.bodyId === site.bodyId && o.landed && Math.abs(wrapPi(Math.atan2(o.pos.y, o.pos.x) - padTheta)) * BODIES[site.bodyId].radius < 25,
       )
-      if (onPad) {
+      if (onPad && !s.gs.mp.config.mode?.includes('loot')) {
         toast('Rampa dolu: önce rampadaki aracı kurtar veya sil.', 'warn')
         return
       }
-      const res = runCommand({ type: 'launch', design: local.design, designCargo: local.cargo })
+      const res = runCommand({ type: 'launch', design: local.design, designCargo: local.cargo, designDroneCargo: local.droneCargo, bodyId: site.bodyId, quadrant: site.quadrant })
       if (res.error) {
         toast(res.error, 'warn')
         return
@@ -1310,6 +1421,7 @@ export default function FlightScreen({ onBuilder }: Props) {
     if (!v) return
     v.autoLand = false
     v.autopilot = 'off'
+    v.followId = undefined
     v.autopilotNote = undefined
     v.throttle = next
     if (s.gs.mp) {
@@ -1331,7 +1443,7 @@ export default function FlightScreen({ onBuilder }: Props) {
       <canvas
         ref={canvasRef}
         className="flight-canvas"
-        title={hud.weaponCount > 0 && leftClickFire ? 'Sol tık basılı: ateş · Sağ sürükle: kamera · Çift tık: ortala' : 'Sol sürükle: kamera · Sağ tık veya F: ateş · Çift tık: ortala'}
+        title={hud.weapons.length > 0 && leftClickFire ? 'Sol tık basılı: ateş · Sağ sürükle: kamera · Çift tık: ortala' : 'Sol sürükle: kamera · Sağ tık veya F: ateş · Çift tık: ortala'}
         onWheel={onWheel}
         onMouseDown={onDown}
         onMouseMove={onMove}
@@ -1354,7 +1466,34 @@ export default function FlightScreen({ onBuilder }: Props) {
             💬 Sohbet{mp.chat.length ? ` (${mp.chat.length})` : ''}
           </button>
         )}
-        <button className="hud-btn" onClick={() => setPanel(panel === 'base' ? null : 'base')}>🏗️ Koloni</button>
+        <button className={`hud-btn${panel === 'base' ? ' is-on' : ''}`} onClick={() => setPanel(panel === 'base' ? null : 'base')}>
+          {hud.loot ? `🏰 Üs (${hud.loot.level}/${OUTPOST_MAX_LEVEL})` : '🏗️ Koloni'}
+        </button>
+        {!hud.loot && (
+          <button
+            className={`hud-btn${showDrone ? ' is-on' : hud.droneBayReady || hud.liveDroneCount > 0 ? ' has-ready' : ''}`}
+            title="Dron yükle, rampadan veya roketten fırlat ve otonom çeyrek uçuşunu yönet"
+            onClick={() => {
+              setDroneSite(null)
+              setShowCargo(false)
+              setShowFleet(false)
+              setShowDrone((x) => !x)
+            }}
+          >
+            🛸 Dron{hud.liveDroneCount > 0 ? ` (${hud.liveDroneCount})` : hud.droneBayReady ? ' · Hazır' : ''}
+          </button>
+        )}
+        <button
+          className={`hud-btn${showFleet ? ' is-on' : hud.followerCount > 0 || hud.followId ? ' has-ready' : ''}`}
+          title="Filo penceresi: gemileri birbirini takip ettir ve filoyu tek yerden yönet"
+          onClick={() => {
+            setShowDrone(false)
+            setShowCargo(false)
+            setShowFleet((x) => !x)
+          }}
+        >
+          🚢 Filo{hud.followerCount > 0 ? ` (${hud.followerCount})` : hud.followName ? ` · Takip` : ''}
+        </button>
         {hud.has && (
           <button
             className={`hud-btn${panel === 'health' ? ' is-on' : ''}`}
@@ -1365,8 +1504,8 @@ export default function FlightScreen({ onBuilder }: Props) {
           </button>
         )}
         <button className="hud-btn" onClick={() => setPanel(panel === 'help' ? null : 'help')}>?</button>
-        <span className="hud-money" title="Saatlik toplam pasif gelir (zaman hızlandırmada gelir en fazla 5× artar)">
-          {fmt(hud.money)} ₡ <small className="income-sub">+{fmt(hud.passivePerHr)}/sa</small>
+        <span className="hud-money" title="Dakikalık toplam pasif gelir (zaman hızlandırmada gelir en fazla 5× artar)">
+          {fmt(hud.money)} ₡ <small className="income-sub">+{fmt(hud.passivePerMin)}/dk</small>
         </span>
         {!hud.isMp && (
           <button className="hud-btn" title="Geçici test kredisi" onClick={() => { sim.gs.money += 100_000; setHud(snapshot()); bump(); void saveGame(true) }}>+100.000 ₡</button>
@@ -1425,9 +1564,17 @@ export default function FlightScreen({ onBuilder }: Props) {
                   title="Üssüne taret, kalkan ve zırh ekler"
                   onClick={() => hudCmd({ type: 'upgradeOutpost' })}
                 >
-                  🏗️ Üs Sv.{hud.loot.level + 1} — {hud.loot.upgradeCost.toLocaleString('tr-TR')} ₡
+                  ⬆️ Üs Sv.{hud.loot.level + 1} — {hud.loot.upgradeCost.toLocaleString('tr-TR')} ₡
                 </button>
               )}
+              <button
+                type="button"
+                className="hud-btn"
+                title="Detaylı Uzay Üssü yükseltme penceresini aç"
+                onClick={() => setPanel(panel === 'base' ? null : 'base')}
+              >
+                🛠️ Üs Geliştir (Sv.{hud.loot.level}/{OUTPOST_MAX_LEVEL})
+              </button>
             </div>
           )}
           {!hud.loot && (
@@ -1437,6 +1584,8 @@ export default function FlightScreen({ onBuilder }: Props) {
               const owner = cap?.ownerId ? hud.mpPlayers.find((p) => p.id === cap.ownerId) : null
               const capturer = cap?.capturerId ? hud.mpPlayers.find((p) => p.id === cap.capturerId) : null
               const col = owner?.color ?? capturer?.color
+              const qCaps = hud.mpQuadCaptures[bid]
+              const qOwned = !hud.isWarfare && qCaps ? qCaps.filter((c) => c?.ownerId).length : 0
               return (
                 <button
                   key={bid}
@@ -1450,6 +1599,7 @@ export default function FlightScreen({ onBuilder }: Props) {
                 >
                   <i className="mp-dot" style={{ background: col ?? '#64748b' }} />
                   <span>{BODIES[bid].name}</span>
+                  {qOwned > 0 && <small className="q-count">{qOwned}/4</small>}
                   {cap?.phase === 'contested' ? (
                     <small style={{ color: '#fbbf24' }}>⇄</small>
                   ) : cap?.phase === 'neutralizing' ? (
@@ -1477,34 +1627,38 @@ export default function FlightScreen({ onBuilder }: Props) {
               )}
             </div>
           )}
-          {!hud.isWarfare && hud.mpCaptures[hud.body] && (hud.mpCaptures[hud.body]!.phase === 'claiming' || hud.mpCaptures[hud.body]!.phase === 'neutralizing' || hud.mpCaptures[hud.body]!.phase === 'contested') && (
-            <div className="mp-capture-banner">
-              {hud.mpCaptures[hud.body]!.phase === 'contested' ? (
-                <span>⇄ <b>{BODIES[hud.body].name}</b> yüzeyinde birden fazla oyuncu var — ilk çalışan Uzay İstasyonunu kuran koloniyi alır.</span>
-              ) : hud.mpCaptures[hud.body]!.phase === 'claiming' ? (
-                <span>
-                  📍 <b>{BODIES[hud.body].name}</b> yüzey kontrolü — kolonileştirmek için kargodan <b>Uzay İstasyonu + 7 ⚡</b> kur!
-                </span>
-              ) : (
-                <>
+          {!hud.isWarfare && (() => {
+            const qCap = hud.mpQuadCaptures[hud.body]?.[hud.quadrant] ?? hud.mpCaptures[hud.body]
+            if (!qCap || (qCap.phase !== 'claiming' && qCap.phase !== 'neutralizing' && qCap.phase !== 'contested')) return null
+            return (
+              <div className="mp-capture-banner">
+                {qCap.phase === 'contested' ? (
+                  <span>⇄ <b>{BODIES[hud.body].name} · {QUADRANT_SHORT[hud.quadrant]}</b> çeyreğinde birden fazla oyuncu var — ilk çalışan Uzay İstasyonunu kuran alır.</span>
+                ) : qCap.phase === 'claiming' ? (
                   <span>
-                    🛰️ <b>{BODIES[hud.body].name}</b> kolonisi el değiştiriyor…{' '}
-                    {Math.round(hud.mpCaptures[hud.body]!.progress * 100)}%
+                    📍 <b>{BODIES[hud.body].name} · {QUADRANT_SHORT[hud.quadrant]}</b> kontrolü — kolonileştirmek için kargodan <b>Uzay İstasyonu + 5 ⚡</b> kur!
                   </span>
-                  <div className="mp-cap-bar">
-                    <em
-                      style={{
-                        width: `${Math.round(hud.mpCaptures[hud.body]!.progress * 100)}%`,
-                        background:
-                          hud.mpPlayers.find((p) => p.id === (hud.mpCaptures[hud.body]!.capturerId ?? hud.mpCaptures[hud.body]!.ownerId))?.color ??
-                          '#38d9e8',
-                      }}
-                    />
-                  </div>
-                </>
-              )}
-            </div>
-          )}
+                ) : (
+                  <>
+                    <span>
+                      🛰️ <b>{BODIES[hud.body].name} · {QUADRANT_SHORT[hud.quadrant]}</b> el değiştiriyor…{' '}
+                      {Math.round(qCap.progress * 100)}%
+                    </span>
+                    <div className="mp-cap-bar">
+                      <em
+                        style={{
+                          width: `${Math.round(qCap.progress * 100)}%`,
+                          background:
+                            hud.mpPlayers.find((p) => p.id === (qCap.capturerId ?? qCap.ownerId))?.color ??
+                            '#38d9e8',
+                        }}
+                      />
+                    </div>
+                  </>
+                )}
+              </div>
+            )
+          })()}
           {hud.mpNearestRival && hud.mpNearestRival.dist < 25_000 && (
             <div className="mp-rival-alert" style={{ borderColor: hud.mpNearestRival.color }}>
               🛰️ Yakındaki oyuncu: <b style={{ color: hud.mpNearestRival.color }}>{hud.mpNearestRival.username}</b> · {km(hud.mpNearestRival.dist)}
@@ -1572,8 +1726,8 @@ export default function FlightScreen({ onBuilder }: Props) {
           <span>{hud.date}</span>
           {hud.has && (
             <>
-              <span className="big">{BODIES[hud.body].name}</span>
-              <span>Yükseklik</span><b className={alarm ? 'warn' : ''}>{alarm ? '— — —' : km(hud.alt)}</b>
+              <span className="big">{BODIES[hud.body].name} · {QUADRANT_SHORT[hud.quadrant]}</span>
+              <span>Yükseklik</span><b className={alarm || hud.droneWarn ? 'warn' : ''}>{alarm ? '— — —' : hud.isDrone && hud.droneMaxAlt ? `${km(hud.alt)} / ${km(hud.droneMaxAlt)}` : km(hud.alt)}</b>
               <span>Hız</span><b>{hud.speed.toFixed(1)} m/s</b>
               <span>Dikey</span><b className={hud.vr < -hud.tol && hud.alt < 2000 ? 'bad' : ''}>{hud.vr.toFixed(1)} m/s</b>
               {hud.apo !== null && <><span>Öte nokta</span><b>{km(hud.apo)}</b></>}
@@ -1618,9 +1772,8 @@ export default function FlightScreen({ onBuilder }: Props) {
               </span>
             </div>
             {hud.mpPlayers.map((p) => {
-              const colCount =
-                (p.earthBase && !p.earthBase.destroyed ? 1 : 0) +
-                Object.values(p.colonies ?? {}).filter((b) => b && !b.destroyed).length
+              const colCount = (['earth', 'moon', 'mercury', 'venus', 'mars', 'ceres', 'ganymede', 'titan'] as BodyId[])
+                .reduce((acc, bid) => acc + getPlayerQuadrantColonies(p, bid).filter((c) => !c.base.destroyed).length, 0)
               return (
                 <div key={p.id} className={`mp-score-row${p.id === hud.myId ? ' is-me' : ''}${p.eliminated ? ' is-elim' : ''}`}>
                   <i className="mp-dot" style={{ background: p.color }} />
@@ -1686,14 +1839,23 @@ export default function FlightScreen({ onBuilder }: Props) {
                 )}
               </>
             )}
-            <div className="gauge"><span>{hud.tea ? '🫖 Dem' : 'Kademe yakıtı'}</span><i><em style={{ width: pct(hud.stageFuel, hud.stageCap) }} /></i><small>{hud.stageFuel.toFixed(1)} t</small></div>
-            <div className="gauge"><span>{hud.tea ? '♨️ Sıcak Su' : 'Toplam yakıt'}</span><i><em style={{ width: pct(hud.fuel, hud.fuelCap) }} /></i><small>{hud.fuel.toFixed(1)} t</small></div>
-            <div className="gauge ec"><span>Elektrik</span><i><em style={{ width: pct(hud.ec, hud.ecCap) }} /></i><small>{hud.ec.toFixed(0)}</small></div>
+            {!hud.isDrone ? (
+              <>
+                <div className="gauge"><span>{hud.tea ? '🫖 Dem' : 'Kademe yakıtı'}</span><i><em style={{ width: pct(hud.stageFuel, hud.stageCap) }} /></i><small>{hud.stageFuel.toFixed(1)} t</small></div>
+                <div className="gauge"><span>{hud.tea ? '♨️ Sıcak Su' : 'Toplam yakıt'}</span><i><em style={{ width: pct(hud.fuel, hud.fuelCap) }} /></i><small>{hud.fuel.toFixed(1)} t</small></div>
+              </>
+            ) : (
+              <div className="gauge"><span>🌬️ Fan İtkisi</span><i><em style={{ width: `${Math.round(hud.throttle * 100)}%` }} /></i><small>{Math.round(hud.throttle * 100)}%</small></div>
+            )}
+            <div className="gauge ec"><span>{hud.isDrone ? '🔋 Fan Gücü' : 'Elektrik'}</span><i><em style={{ width: pct(hud.ec, hud.ecCap) }} /></i><small>{hud.ec.toFixed(0)}</small></div>
             {hud.cargo && <div className="cargo-line"><b>Kargo</b> {hud.cargo}</div>}
             <div className="vessel-list">
               {hud.vessels.map((o) => (
                 <div key={o.id} className="vessel-row">
-                  <button className={o.active ? 'is-on' : ''} onClick={() => switchTo(o.id)}>{o.name}<small>{o.body}</small></button>
+                  <button className={o.active ? 'is-on' : ''} onClick={() => switchTo(o.id)}>
+                    {o.followers > 0 ? '👑 ' : o.followId ? '📡 ' : ''}{o.name}
+                    <small>{o.body}{o.followers > 0 ? ` · ${o.followers} filo` : ''}</small>
+                  </button>
                   {o.name !== 'ISS' && <button className="vessel-del" title="Aracı sil" aria-label="Aracı sil" onClick={() => setConfirmDel({ id: o.id, name: o.name })}>🗑</button>}
                 </div>
               ))}
@@ -1707,8 +1869,13 @@ export default function FlightScreen({ onBuilder }: Props) {
                 {toasts.slice(-3).map((t) => <div key={t.id} className={`toast ${t.kind}`}>{t.text}</div>)}
               </div>
             )}
+            {hud.isDrone && hud.droneWarn && (
+              <div className="drone-limit-banner" role="alert">
+                ⚠ DRON UZAY SINIRI UYARISI — Hemen alçal, aşarsan dron parçalanır!
+              </div>
+            )}
             {hud.weapons.length > 0 && (
-              <div className="weapon-rack ftl-rack" role="group" aria-label="FTL Silah Paneli">
+              <div className="weapon-rack ftl-rack" role="group" aria-label="Silah ve Dron Paneli">
                 {hud.weapons.map((w, idx) => {
                   const sel = selectedWeapon === w.defId || (!selectedWeapon && idx === 0)
                   const empty = w.ammo !== null && w.ammo <= 0
@@ -1731,7 +1898,7 @@ export default function FlightScreen({ onBuilder }: Props) {
                       <span className="ftl-w-top">
                         <kbd>{idx + 1}</kbd>
                         <PartIcon id={w.defId} />
-                        <b className="ftl-w-name">{w.name}{w.count > 1 ? ` ×${w.count}` : ''}</b>
+                        <b className="ftl-w-name">{w.isDrone ? `🛸 ${w.name}` : w.name}{w.count > 1 ? ` ×${w.count}` : ''}</b>
                         <span className={`ftl-w-ammo${empty ? ' is-out' : ''}`}>
                           {w.ammo !== null ? `${w.ammo}/${w.ammoCap}` : `∞ · ${w.ecUse.toFixed(0)}⚡`}
                         </span>
@@ -1740,7 +1907,7 @@ export default function FlightScreen({ onBuilder }: Props) {
                         <i style={{ width: `${fillPct}%`, background: w.beaming ? '#ffffff' : w.color }} />
                         <em>
                           {empty
-                            ? 'CEPHANE BİTTİ'
+                            ? (w.isDrone ? 'DRON TÜKENDİ' : 'CEPHANE BİTTİ')
                             : w.beaming
                               ? '🔥 IŞIN AKTİF'
                               : w.charge > 0.02
@@ -1749,7 +1916,7 @@ export default function FlightScreen({ onBuilder }: Props) {
                                   : `⚡ ŞARJ %${fillPct}`
                                 : w.cdRem > 0.05
                                   ? `${w.cdRem.toFixed(1)} sn`
-                                  : 'HAZIR'}
+                                  : (w.isDrone ? 'FIRLATMAYA HAZIR' : 'HAZIR')}
                         </em>
                       </span>
                     </button>
@@ -1759,17 +1926,17 @@ export default function FlightScreen({ onBuilder }: Props) {
                   <button
                     type="button"
                     className="hud-btn weapon-fire-btn"
-                    title="Basılı tut: seçili silahı ateşle (F veya Sol Tık)"
+                    title="Basılı tut: seçili silahı veya dron fırlatıcıyı çalıştır (F veya Sol Tık)"
                     onMouseDown={() => (manualFire.current = true)}
                     onMouseUp={() => (manualFire.current = false)}
                     onMouseLeave={() => (manualFire.current = false)}
                   >
-                    🔥 ATEŞ (F)
+                    {hud.weapons.every((w) => w.isDrone) ? '🛸 DRON FIRLAT (F)' : '🔥 ATEŞ (F)'}
                   </button>
                   <button
                     type="button"
                     className={`mini-warp-btn${leftClickFire ? ' is-on' : ''}`}
-                    title="Açıkken Sol Tık basılı tutmak ateş eder (Sağ sürükle kamera); kapalıyken Sağ Tık ateş eder"
+                    title="Açıkken Sol Tık basılı tutmak ateş/dron fırlatır (Sağ sürükle kamera); kapalıyken Sağ Tık ateş eder"
                     onClick={() => {
                       const next = !leftClickFire
                       leftClickFireRef.current = next
@@ -1782,7 +1949,21 @@ export default function FlightScreen({ onBuilder }: Props) {
                 </div>
               </div>
             )}
+            {(() => {
+              const followCands = hud.vessels.filter(
+                (o) => !o.active && !o.isStation && (!hud.isDrone || o.bodyId === hud.body),
+              )
+              const chosenFollowId =
+                hud.followId && followCands.some((o) => o.id === hud.followId)
+                  ? hud.followId
+                  : followPick && followCands.some((o) => o.id === followPick)
+                    ? followPick
+                    : followCands[0]?.id ?? 0
+              if (hud.loot && followCands.length === 0) return null
+              return (
             <div className="target-bar">
+              {!hud.loot && (
+              <>
               <span>Hedef:</span>
               <select
                 value={hud.targetBody}
@@ -1801,22 +1982,35 @@ export default function FlightScreen({ onBuilder }: Props) {
                   <option key={id} value={id}>{BODIES[id].name}</option>
                 ))}
               </select>
-              <button
-                type="button"
-                className={`mini-warp-btn${hud.autopilot === 'transfer' ? ' is-on' : ''}`}
-                onClick={() => toggleAutopilot('transfer')}
-                title="Seçili hedefe otomatik transfer başlat (yaklaşınca uyarı verir)"
-              >
-                🎯 Hedefe Git
-              </button>
-              <button
-                type="button"
-                className={`mini-warp-btn${hud.autopilot === 'orbit' ? ' is-on' : ''}`}
-                onClick={() => toggleAutopilot('orbit')}
-                title="Bulunulan gezegen çevresinde güvenli yörüngeye yerleş veya yakala"
-              >
-                🛰️ Yörünge
-              </button>
+              {!hud.isDrone ? (
+                <button
+                  type="button"
+                  className={`mini-warp-btn${hud.autopilot === 'transfer' ? ' is-on' : ''}`}
+                  onClick={() => toggleAutopilot('transfer')}
+                  title="Seçili hedefe otomatik transfer başlat (yaklaşınca uyarı verir)"
+                >
+                  🎯 Hedefe Git
+                </button>
+              ) : hud.landable && (
+                <button
+                  type="button"
+                  className={`mini-warp-btn${hud.autopilot === 'nextQuad' ? ' is-on' : ''}`}
+                  onClick={() => toggleAutopilot('nextQuad')}
+                  title="Dronu gezegenin bir sonraki çeyreğine otonom uçur (uzay sınırını aşmaz)"
+                >
+                  🧭 Sonraki Çeyrek ({QUADRANT_SHORT[((hud.quadrant + 1) % 4) as QuadrantId]})
+                </button>
+              )}
+              {!hud.isDrone && (
+                <button
+                  type="button"
+                  className={`mini-warp-btn${hud.autopilot === 'orbit' ? ' is-on' : ''}`}
+                  onClick={() => toggleAutopilot('orbit')}
+                  title="Bulunulan gezegen çevresinde güvenli yörüngeye yerleş veya yakala"
+                >
+                  🛰️ Yörünge
+                </button>
+              )}
               {!hud.landed && hud.landable && (
                 <button
                   type="button"
@@ -1827,13 +2021,44 @@ export default function FlightScreen({ onBuilder }: Props) {
                   {hud.hasAutoLand ? '🛬 Oto-İniş' : '🛬 Oto-İniş 🔒'}
                 </button>
               )}
-              {isMap && (
+              </>
+              )}
+              {followCands.length > 0 && (
+                <>
+                  <select
+                    aria-label="Takip edilecek roket"
+                    value={chosenFollowId}
+                    onChange={(e) => {
+                      const nextId = Number(e.target.value)
+                      setFollowPick(nextId)
+                      if (hud.autopilot === 'follow') toggleAutopilot('follow', nextId)
+                    }}
+                  >
+                    {followCands.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} ({c.body})
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    className={`mini-warp-btn${hud.autopilot === 'follow' ? ' is-on' : ''}`}
+                    onClick={() => toggleAutopilot('follow', chosenFollowId)}
+                    title="Seçili roketi formasyonda takip et (filo)"
+                  >
+                    📡 Takip Et
+                  </button>
+                </>
+              )}
+              {isMap && !hud.loot && (
                 <>
                   <button type="button" className="mini-warp-btn" onClick={() => focusMapOn('ship')}>Gemi</button>
                   <button type="button" className="mini-warp-btn" onClick={() => focusMapOn(hud.targetBody)}>Hedef</button>
                 </>
               )}
             </div>
+              )
+            })()}
             {(hud.autopilot !== 'off' || hud.autopilotNote.startsWith('Hızlı yolculuk')) && hud.autopilotNote && (
               <div className="autopilot-note">{hud.autopilotNote}</div>
             )}
@@ -1852,7 +2077,7 @@ export default function FlightScreen({ onBuilder }: Props) {
                       hudCmd({ type: 'setAutopilot', vesselId: hud.vesselId, mode: 'off' })
                       hudCmd({ type: 'setSas', vesselId: hud.vesselId, sas: 'retrograde' })
                     } else {
-                      act((v) => { v.autopilot = 'off'; v.sas = 'retrograde'; v.approachWarn = null })
+                      act((v) => { v.autopilot = 'off'; v.followId = undefined; v.sas = 'retrograde'; v.approachWarn = null })
                     }
                   }}
                 >
@@ -1882,7 +2107,7 @@ export default function FlightScreen({ onBuilder }: Props) {
                       hudCmd({ type: 'setAutopilot', vesselId: hud.vesselId, mode: 'off' })
                       hudCmd({ type: 'setSas', vesselId: hud.vesselId, sas: m })
                     } else {
-                      act((v) => { v.autopilot = 'off'; v.autoLand = false; v.autopilotNote = undefined; v.sas = m })
+                      act((v) => { v.autopilot = 'off'; v.followId = undefined; v.autoLand = false; v.autopilotNote = undefined; v.sas = m })
                     }
                   }}
                 >
@@ -1946,9 +2171,33 @@ export default function FlightScreen({ onBuilder }: Props) {
                   Aracı kurtar
                 </button>
               )}
-              {hud.landed && hud.body !== 'earth' && <button className="hud-btn recover" onClick={() => setPanel('base')}>{`🏗️ ${baseBody.name} kolonisi`}</button>}
-              {hud.landed && hud.body !== 'earth' && (
-                <button className={`hud-btn recover${showCargo ? ' is-on' : ''}`} onClick={() => setShowCargo((x) => !x)}>🚚 Yükle / İndir</button>
+              {hud.landed && !(hud.body === 'earth' && hud.quadrant === 0) && (
+                <button className="hud-btn recover" onClick={() => setPanel('base')}>
+                  {`🏗️ ${baseBody.name} · ${QUADRANT_SHORT[hud.quadrant]}`}
+                </button>
+              )}
+              {((hud.landed && (hud.hasCargoBay || !(hud.body === 'earth' && hud.quadrant === 0))) || hud.nearbyTransfer) && (
+                <button
+                  className={`hud-btn recover${showCargo ? ' is-on' : ''}`}
+                  onClick={() => {
+                    setShowDrone(false)
+                    setShowCargo((x) => !x)
+                  }}
+                >
+                  🚚 Kargo
+                </button>
+              )}
+              {(hud.droneBayReady || hud.liveDroneCount > 0) && !hud.loot && (
+                <button
+                  className={`hud-btn${showDrone ? ' is-on' : ''}`}
+                  onClick={() => {
+                    setDroneSite(null)
+                    setShowCargo(false)
+                    setShowDrone((x) => !x)
+                  }}
+                >
+                  🛸 Dron
+                </button>
               )}
             </div>
           </div>
@@ -1960,7 +2209,7 @@ export default function FlightScreen({ onBuilder }: Props) {
                 if (hud.isMp && hud.vesselId) {
                   hudCmd({ type: 'setThrottle', vesselId: hud.vesselId, throttle: hud.throttle > 0 ? 0 : 1 })
                 } else {
-                  act((v) => { v.autoLand = false; v.autopilot = 'off'; v.autopilotNote = undefined; v.throttle = v.throttle > 0 ? 0 : 1 })
+                  act((v) => { v.autoLand = false; v.autopilot = 'off'; v.followId = undefined; v.autopilotNote = undefined; v.throttle = v.throttle > 0 ? 0 : 1 })
                 }
               }}
             >
@@ -2041,19 +2290,34 @@ export default function FlightScreen({ onBuilder }: Props) {
 
       {panel === 'base' && (
         <aside className="side-panel">
-          <header><h2>🏗️ Koloni</h2><button onClick={() => setPanel(null)}>×</button></header>
+          <header><h2>{hud.loot ? '🏰 Uzay Üssü Geliştirme' : '🏗️ Koloni'}</h2><button onClick={() => setPanel(null)}>×</button></header>
           <PlanetGridPanel
             initialBody={hud.body}
+            initialQuadrant={hud.quadrant}
             onNotify={(msg, kind) => toast(msg, kind)}
             onOpenTech={() => {
               setPanel(null)
               setShowTech(true)
             }}
+            onOpenDronePad={(bId, qId) => {
+              setPanel(null)
+              setShowCargo(false)
+              setDroneSite({ bodyId: bId, quadrant: qId })
+              setShowDrone(true)
+            }}
           />
 
-          {hud.has && hud.landed && hud.body !== 'earth' && (
+          {hud.has && hud.landed && !(hud.body === 'earth' && hud.quadrant === 0) && !hud.loot && (
             <div className="base-actions">
-              <button className="hud-btn" onClick={() => setShowCargo(true)}>🚚 Yükle / İndir penceresini aç</button>
+              <button
+                className="hud-btn"
+                onClick={() => {
+                  setShowDrone(false)
+                  setShowCargo(true)
+                }}
+              >
+                🚚 Kargo penceresini aç
+              </button>
             </div>
           )}
         </aside>
@@ -2183,16 +2447,7 @@ export default function FlightScreen({ onBuilder }: Props) {
               <button
                 type="button"
                 className="button button-primary"
-                onClick={() => {
-                  if (hud.isMp) hudCmd({ type: 'repairVessel', vesselId: hv.id })
-                  else {
-                    for (const pt of hv.parts) pt.hp = partMaxHp(pt.def)
-                    hv.burnUntil = undefined
-                    if (st.shieldCap > 0) hv.shield = st.shieldCap
-                    setHud(snapshot())
-                    toast('🔧 Gemi parçaları onarıldı!', 'mission')
-                  }
-                }}
+                onClick={() => hudCmd({ type: 'repairVessel', vesselId: hv.id })}
               >
                 🔧 Üste İniş Onarımı Uygula
               </button>
@@ -2203,10 +2458,18 @@ export default function FlightScreen({ onBuilder }: Props) {
 
       {showGuide && <HowToPlay onClose={() => setShowGuide(false)} />}
 
-      {showCargo && hud.has && hud.landed && hud.body !== 'earth' && (() => {
+      {showCargo && hud.has && (hud.nearbyTransfer || (hud.landed && (hud.hasCargoBay || !(hud.body === 'earth' && hud.quadrant === 0)))) && (() => {
         const cv = activeVessel(curSim.gs)
         if (!cv) return null
-        const cb = getActorBase(curSim.gs, cv.bodyId, curSim.gs.ownerId ?? 'local')
+        const myActor = curSim.gs.ownerId ?? 'local'
+        const cq = quadrantOfAngle(Math.atan2(cv.pos.y, cv.pos.x))
+        const isHomeEarth = cv.bodyId === 'earth' && cq === 0
+        const onOuterSurface = cv.landed && !isHomeEarth
+        const cb = cv.landed ? getActorBase(curSim.gs, cv.bodyId, myActor, cq) : undefined
+        const flux = solarFlux(len(bodyAbsState(cv.bodyId, curSim.gs.time).r))
+        const canBuyToCargo = Boolean(
+          cv.landed && (isHomeEarth || (cb && !cb.destroyed && isQuadrantColonized(cb, flux))),
+        )
         const cap = vesselStats(cv.parts).cargoCap
         const used = cargoMass(cv.cargo)
         const free = Math.max(0, cap - used)
@@ -2214,8 +2477,11 @@ export default function FlightScreen({ onBuilder }: Props) {
         const fuelNow = tanks.reduce((a, p) => a + (p.fuel ?? 0), 0)
         const fuelCap = tanks.reduce((a, p) => a + (partDef(p.def).fuel ?? 0), 0)
         const hasIsru = (cb?.modules.isru ?? 0) > 0
-        const stock = Object.entries(cb?.stock ?? {}).filter(([, n]) => n > 0)
+        const stock = onOuterSurface ? Object.entries(cb?.stock ?? {}).filter(([, n]) => n > 0) : []
         const inCargo = Object.entries(cv.cargo.modules).filter(([id, n]) => n > 0 && id !== 'iss-supplies')
+        const partners = curSim.gs.vessels.filter(
+          (o) => (!curSim.gs.mp || o.ownerId === myActor) && canTransferCargoBetween(cv, o),
+        )
         const run = (cmd: GameCommand, sp: (v: Vessel) => string | null | GameEvent[]) => {
           if (hud.isMp) hudCmd(cmd)
           else act(sp)
@@ -2224,78 +2490,147 @@ export default function FlightScreen({ onBuilder }: Props) {
         const modName = (id: string) => { const n = MODULE_BY_ID[id]?.name ?? id; return lang === 'en' ? T(n) : n }
         const bodyName = (id: BodyId) => (lang === 'en' ? T(BODIES[id].name) : BODIES[id].name)
         const img = (id: string) => `/assets/colony/${MODULE_BY_ID[id]?.sprite ?? 'battery'}.png`
+        const shopMods = MODULES.filter((m) => (!m.warfare || hud.isWarfare) && isModuleUnlocked(curSim.gs, m.id))
         return (
-          <section className="cargo-window" role="dialog" aria-label={W('Yükle / İndir', 'Load / Unload')} data-no-i18n>
+          <section className="cargo-window" role="dialog" aria-label={W('Kargo', 'Cargo')} data-no-i18n>
             <header>
-              <h2>🚚 {bodyName(cv.bodyId)} · {W('Yükle / İndir', 'Load / Unload')}</h2>
-              <button onClick={() => setShowCargo(false)} aria-label={W('Kapat', 'Close')}>×</button>
+              <h2>🚚 {bodyName(cv.bodyId)} ({QUADRANT_SHORT[cq]}) · {W('Kargo', 'Cargo')}</h2>
+              <div className="cargo-head-r">
+                {!hud.loot && (
+                  <button
+                    type="button"
+                    className="hud-btn"
+                    onClick={() => {
+                      setShowCargo(false)
+                      setDroneSite(null)
+                      setShowDrone(true)
+                    }}
+                  >
+                    🛸 {W('Dron Penceresi', 'Drone Window')}
+                  </button>
+                )}
+                <button onClick={() => setShowCargo(false)} aria-label={W('Kapat', 'Close')}>×</button>
+              </div>
             </header>
             <div className="cargo-capbar" title={W('Kargo gövdesi doluluğu', 'Cargo bay fill')}>
-              <span>{W('Kargo', 'Cargo')}</span>
+              <span>{cv.name} · {W('Kargo', 'Cargo')}</span>
               <i><em style={{ width: pct(used, cap) }} /></i>
               <small>{used.toFixed(1)} / {cap} t</small>
             </div>
             <div className="cargo-cols">
               <div className="cargo-col">
-                <h3>{W('⬆ Gemiye al', '⬆ Take on board')}</h3>
-                <div className="cargo-row">
-                  <span className="cargo-ico">⛏️</span>
-                  <div><b>{W('Maden', 'Ore')}</b><small>{W('Depoda', 'In storage')} {(cb?.ore ?? 0).toFixed(1)} t</small></div>
-                  <button
-                    className="hud-btn"
-                    disabled={!cb || (cb.ore ?? 0) < 0.01 || free < 0.01}
-                    onClick={() => run({ type: 'loadOre', vesselId: cv.id }, (v) => loadOre(sim, v))}
-                  >
-                    {W('Yükle', 'Load')}
-                  </button>
-                </div>
-                <div className="cargo-row">
-                  <span className="cargo-ico">⛽</span>
-                  <div>
-                    <b>{W('Yakıt', 'Fuel')}</b>
-                    <small>{hasIsru ? W(`Tanklar ${fuelNow.toFixed(1)} / ${fuelCap.toFixed(0)} t · 1 t maden → 4 t yakıt`, `Tanks ${fuelNow.toFixed(1)} / ${fuelCap.toFixed(0)} t · 1 t ore → 4 t fuel`) : W('Yakıt Tesisi kurulmamış', 'No Fuel Plant built')}</small>
+                <h3>{onOuterSurface ? W('⬆ Koloniden al', '⬆ Take from colony') : isHomeEarth && cv.landed ? W('🏭 Ana Üsten Yükle', '🏭 Load at Home Base') : W('🔁 Yakın araçlardan al', '🔁 Receive from nearby craft')}</h3>
+                {onOuterSurface && (
+                  <>
+                    <div className="cargo-row">
+                      <span className="cargo-ico">⛏️</span>
+                      <div><b>{W('Maden', 'Ore')}</b><small>{W('Depoda', 'In storage')} {(cb?.ore ?? 0).toFixed(1)} t</small></div>
+                      <button
+                        className="hud-btn"
+                        disabled={!cb || (cb.ore ?? 0) < 0.01 || free < 0.01}
+                        onClick={() => run({ type: 'loadOre', vesselId: cv.id, quadrant: cq }, (v) => loadOre(sim, v, cq))}
+                      >
+                        {W('Yükle', 'Load')}
+                      </button>
+                    </div>
+                    <div className="cargo-row">
+                      <span className="cargo-ico">⛽</span>
+                      <div>
+                        <b>{W('Yakıt', 'Fuel')}</b>
+                        <small>{hasIsru ? W(`Tanklar ${fuelNow.toFixed(1)} / ${fuelCap.toFixed(0)} t · 1 t maden → 4 t yakıt`, `Tanks ${fuelNow.toFixed(1)} / ${fuelCap.toFixed(0)} t · 1 t ore → 4 t fuel`) : W('Yakıt Tesisi kurulmamış', 'No Fuel Plant built')}</small>
+                      </div>
+                      <button
+                        className="hud-btn"
+                        disabled={!hasIsru || (cb?.ore ?? 0) < 0.01 || fuelNow >= fuelCap - 0.01}
+                        onClick={() => run({ type: 'refuelAtBase', vesselId: cv.id, quadrant: cq }, (v) => refuelAtBase(sim, v, cq))}
+                      >
+                        {W('Doldur', 'Refuel')}
+                      </button>
+                    </div>
+                    {stock.length > 0 && stock.map(([id, n]) => (
+                      <div key={id} className="cargo-row">
+                        <img className="cargo-ico" src={img(id)} alt="" />
+                        <div><b>{modName(id)} ×{n}</b><small>{W('Depoda', 'In storage')} · {MODULE_BY_ID[id]?.mass ?? 0} t</small></div>
+                        <button
+                          className="hud-btn"
+                          disabled={free + 1e-9 < (MODULE_BY_ID[id]?.mass ?? 0)}
+                          onClick={() => run({ type: 'pickupModule', vesselId: cv.id, moduleId: id, quadrant: cq }, (v) => pickupModule(sim, v, id, cq))}
+                        >
+                          {W('Al', 'Take')}
+                        </button>
+                      </div>
+                    ))}
+                  </>
+                )}
+                {canBuyToCargo && cap > 0 && shopMods.map((m) => (
+                  <div key={`shop-${m.id}`} className="cargo-row">
+                    <img className="cargo-ico" src={img(m.id)} alt="" />
+                    <div><b>{modName(m.id)}</b><small>{m.mass} t · {fmt(m.cost)} ₡</small></div>
+                    <button
+                      className="hud-btn"
+                      disabled={free + 1e-9 < m.mass || hud.money < m.cost}
+                      onClick={() => hudCmd({ type: 'buyCargoModule', vesselId: cv.id, moduleId: m.id, delta: 1 })}
+                    >
+                      ＋ {W('Al', 'Buy')}
+                    </button>
                   </div>
-                  <button
-                    className="hud-btn"
-                    disabled={!hasIsru || (cb?.ore ?? 0) < 0.01 || fuelNow >= fuelCap - 0.01}
-                    onClick={() => run({ type: 'refuelAtBase', vesselId: cv.id }, (v) => refuelAtBase(sim, v))}
-                  >
-                    {W('Doldur', 'Refuel')}
-                  </button>
-                </div>
-                {stock.length === 0 ? (
-                  <p className="cargo-empty">{W('Depoda kurulmamış yapı yok.', 'No unbuilt buildings in storage.')}</p>
-                ) : (
-                  stock.map(([id, n]) => (
-                    <div key={id} className="cargo-row">
+                ))}
+                {partners.map((other) => {
+                  const oMods = Object.entries(other.cargo.modules).filter(([id, n]) => n > 0 && id !== 'iss-supplies')
+                  if (!oMods.length) return null
+                  return oMods.map(([id, n]) => (
+                    <div key={`${other.id}-${id}`} className="cargo-row">
                       <img className="cargo-ico" src={img(id)} alt="" />
-                      <div><b>{modName(id)} ×{n}</b><small>{W('Depoda', 'In storage')} · {MODULE_BY_ID[id]?.mass ?? 0} t</small></div>
+                      <div><b>{modName(id)} ×{n}</b><small>{other.name} · {MODULE_BY_ID[id]?.mass ?? 0} t</small></div>
                       <button
                         className="hud-btn"
                         disabled={free + 1e-9 < (MODULE_BY_ID[id]?.mass ?? 0)}
-                        onClick={() => run({ type: 'pickupModule', vesselId: cv.id, moduleId: id }, (v) => pickupModule(sim, v, id))}
+                        onClick={() => hudCmd({ type: 'transferCargo', fromVesselId: other.id, toVesselId: cv.id, moduleId: id, count: 1 })}
                       >
-                        {W('Al', 'Take')}
+                        {W('Bu araca al', 'Pull here')}
                       </button>
                     </div>
                   ))
-                )}
+                })}
               </div>
               <div className="cargo-col">
-                <h3>{W('⬇ İndir', '⬇ Unload')}</h3>
+                <h3>{onOuterSurface ? W('⬇ Çeyreğe indir / Aktar', '⬇ Unload to quadrant / Transfer') : isHomeEarth && cv.landed ? W('📦 Araçtaki Modüller', '📦 Onboard Modules') : W('🔁 Yakın araca aktar', '🔁 Send to nearby craft')}</h3>
                 {inCargo.length === 0 ? (
-                  <p className="cargo-empty">{W('Kargoda indirilecek yapı yok.', 'No buildings in cargo to unload.')}</p>
+                  <p className="cargo-empty">{W('Kargoda modül yok.', 'No buildings in cargo.')}</p>
                 ) : (
                   inCargo.map(([id, n]) => (
                     <div key={id} className="cargo-row">
                       <img className="cargo-ico" src={img(id)} alt="" />
-                      <div><b>{modName(id)} ×{n}</b><small>{W('Boş yuvaya kurulur', 'Built into an empty slot')}</small></div>
-                      <button
-                        className="hud-btn"
-                        onClick={() => run({ type: 'deployModules', vesselId: cv.id, moduleId: id }, (v) => deployModules(sim, v, id))}
-                      >
-                        {W('İndir', 'Unload')}
-                      </button>
+                      <div><b>{modName(id)} ×{n}</b><small>{onOuterSurface ? W('Bu çeyreğe kurulur', 'Built in this quadrant') : W('Diğer araca ya da rampaya iade', 'Transfer or refund')}</small></div>
+                      {onOuterSurface && (
+                        <button
+                          className="hud-btn"
+                          onClick={() => run({ type: 'deployModules', vesselId: cv.id, moduleId: id, quadrant: cq }, (v) => deployModules(sim, v, id, cq))}
+                        >
+                          {W('İndir', 'Unload')}
+                        </button>
+                      )}
+                      {isHomeEarth && cv.landed && (
+                        <button
+                          className="hud-btn"
+                          onClick={() => hudCmd({ type: 'buyCargoModule', vesselId: cv.id, moduleId: id, delta: -1 })}
+                        >
+                          {W('İade', 'Refund')}
+                        </button>
+                      )}
+                      {partners.map((pt) => {
+                        const pFree = vesselStats(pt.parts).cargoCap - cargoMass(pt.cargo)
+                        return (
+                          <button
+                            key={pt.id}
+                            className="hud-btn"
+                            disabled={pFree + 1e-9 < (MODULE_BY_ID[id]?.mass ?? 0)}
+                            onClick={() => hudCmd({ type: 'transferCargo', fromVesselId: cv.id, toVesselId: pt.id, moduleId: id, count: 1 })}
+                          >
+                            → {pt.name.split(' ')[0]}
+                          </button>
+                        )
+                      })}
                     </div>
                   ))
                 )}
@@ -2305,12 +2640,12 @@ export default function FlightScreen({ onBuilder }: Props) {
                     <div><b>{W('Maden', 'Ore')} {cv.cargo.ore.toFixed(1)} t</b><small>{W("Dünya'ya götür, inince satılır", 'Take it to Earth; it sells on landing')}</small></div>
                   </div>
                 )}
-                {inCargo.length > 1 && (
+                {onOuterSurface && inCargo.length > 1 && (
                   <button
                     className="hud-btn cargo-all"
-                    onClick={() => run({ type: 'deployModules', vesselId: cv.id }, (v) => deployModules(sim, v))}
+                    onClick={() => run({ type: 'deployModules', vesselId: cv.id, quadrant: cq }, (v) => deployModules(sim, v, undefined, cq))}
                   >
-                    {W('Hepsini indir ve kur', 'Unload and build all')}
+                    {W('Hepsini çeyreğe kur', 'Unload all to quadrant')}
                   </button>
                 )}
               </div>
@@ -2318,6 +2653,36 @@ export default function FlightScreen({ onBuilder }: Props) {
           </section>
         )
       })()}
+
+      {showDrone && !hud.loot && (
+        <DroneWindow
+          gs={curSim.gs}
+          curSim={curSim}
+          myActor={hud.myId}
+          active={activeVessel(curSim.gs)}
+          initialSite={droneSite}
+          onClose={() => {
+            setShowDrone(false)
+            setDroneSite(null)
+          }}
+          onSwitch={switchTo}
+          onToast={toast}
+          onRefresh={() => setHud(snapshot())}
+        />
+      )}
+
+      {showFleet && (
+        <FleetWindow
+          gs={curSim.gs}
+          curSim={curSim}
+          myActor={hud.myId}
+          active={activeVessel(curSim.gs)}
+          onClose={() => setShowFleet(false)}
+          onSwitch={switchTo}
+          onToast={toast}
+          onRefresh={() => setHud(snapshot())}
+        />
+      )}
 
       {confirmDel && (
         <div className="dialog-backdrop" role="presentation" onClick={() => setConfirmDel(null)}>
@@ -2401,19 +2766,31 @@ export default function FlightScreen({ onBuilder }: Props) {
         <div className="toast">🚀 Fırlatma hazırlanıyor…</div>
       )}
 
-      {!confirmDel && !wreck && !(hud.isMp && hud.mpWinnerId) && !(hud.mpEliminated && spectating) && (lost || (noVesselReady && !hud.has && !(hud.isMp && isMpPendingLaunch()))) && (
+      {!confirmDel && !wreck && !showDrone && !(hud.isMp && hud.mpWinnerId) && !(hud.mpEliminated && spectating) && (lost || (noVesselReady && !hud.has && !(hud.isMp && isMpPendingLaunch()))) && (
         <div className="dialog-backdrop">
           <section className="dialog">
             <h2>{hud.mpEliminated ? 'Elendin — Üssün Yok Edildi' : lost ? 'Araç kaybedildi' : 'Aktif araç yok'}</h2>
             <p>
               {hud.mpEliminated
                 ? 'Tüm kolonilerin veya Dünya ana üssün düşman saldırısında imha edildi. Savaşı izleyebilir ya da lobiye dönebilirsin.'
-                : lost ?? `Kontrol edilecek bir araç seç ya da montaj binasında yeni roket kur. Dünya üssün şu an +${fmt(hud.passivePerHr)} ₡/sa pasif gelir üretiyor!`}
+                : lost ?? `Kontrol edilecek bir araç seç ya da montaj binasında yeni roket kur. Dünya üssün şu an +${fmt(hud.passivePerMin)} ₡/dk pasif gelir üretiyor!`}
             </p>
             <div className="row">
               {!hud.mpEliminated && (
                 <>
                   <button className="button button-primary" onClick={quickLaunch}>🚀 Tasarımı Fırlat</button>
+                  {!hud.loot && (
+                    <button
+                      className="button button-secondary"
+                      onClick={() => {
+                        setLost(null)
+                        setDroneSite(null)
+                        setShowDrone(true)
+                      }}
+                    >
+                      🛸 Rampadan Dron Fırlat
+                    </button>
+                  )}
                   <button className="button button-secondary" onClick={onBuilder}>Montaj binası</button>
                   <button className="button button-secondary" onClick={() => setPanel('base')}>Üsler</button>
                 </>

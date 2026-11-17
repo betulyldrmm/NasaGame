@@ -10,14 +10,16 @@ import {
   COLONY_STATION_ID,
   emptyBase,
   ensureSiteHp,
-  isBodyColonized,
+  isQuadrantColonized,
+  QUADRANTS,
+  quadrantCenterAngle,
+  quadrantOfAngle,
   STARTER_EARTH_SITES,
   syncModules,
   tickBase,
   WARFARE_STARTER_EARTH_SITES,
 } from '../game/base'
-import { COMBAT_PRESETS,
-  LOOT_PRESETS, DEFAULT_DESIGN, partDef } from '../game/data'
+import { COMBAT_PRESETS, DEFAULT_DESIGN, LOOT_PRESETS, OUTPOST_INCOME_PER_MIN, partDef } from '../game/data'
 import { INITIAL_TECH } from '../game/tech'
 import type {
   Base,
@@ -29,12 +31,21 @@ import type {
   MultiplayerPlayer,
   PlanetCapture,
   Vessel,
+  WarfareGoal,
 } from '../game/types'
 import { vesselStats } from '../game/vessel'
 import { BODIES, type BodyId, solarFlux } from '../nasa/bodies'
-import { applyImpactDamage, isWarfareMode, stepWarfareRules } from './combat'
+import {
+  applyImpactDamage,
+  getActorQuadrantBase,
+  getPlayerQuadrantColonies,
+  isLootMode,
+  isWarfareMode,
+  setActorQuadrantBase,
+  stepWarfareRules,
+} from './combat'
 import type { Fx } from './world'
-import { ensureLootSetup, LOOT_START_MONEY } from './loot'
+import { ensureLootSetup, findOutpost, LOOT_START_MONEY } from './loot'
 import { bodyAbsState, elementsFromState, len } from './orbit'
 import {
   type Controls,
@@ -55,7 +66,7 @@ export const PLAYER_COLORS = ['#38d9e8', '#fb7185', '#4ade80', '#fbbf24', '#c084
 const CAPTURE_NEUTRALIZE_SEC = 5
 
 export interface FxEventLike {
-  kind: 'boom' | 'whale' | 'tower' | 'beam' | 'hit' | 'shield' | 'muzzle'
+  kind: 'boom' | 'whale' | 'tower' | 'beam' | 'hit' | 'shield' | 'muzzle' | 'shockwave' | 'debrisBurst' | 'smokePlume'
   bodyId: BodyId
   x: number
   y: number
@@ -81,11 +92,12 @@ export function playerPadAngle(gs: GameState, ownerId?: string): number {
   return padAngleForSlot(p?.slot ?? 0, gs.mp.config.mode ?? 'colony-race')
 }
 
-export function makeStarterEarthBase(slot: number, ownerId?: string, mode: MultiplayerMode = 'colony-race'): Base {
+export function makeStarterEarthBase(slot: number, ownerId?: string, mode: MultiplayerMode = 'colony-race', isLoot = false): Base {
   const b = emptyBase(padAngleForSlot(slot, mode), ownerId)
-  b.sites = mode === 'orbital-warfare' ? [...WARFARE_STARTER_EARTH_SITES] : [...STARTER_EARTH_SITES]
+  b.quadrant = 0
+  b.sites = mode === 'orbital-warfare' || isLoot ? [...WARFARE_STARTER_EARTH_SITES] : [...STARTER_EARTH_SITES]
   syncModules(b)
-  if (mode === 'orbital-warfare') ensureSiteHp(b)
+  if (mode === 'orbital-warfare' || isLoot) ensureSiteHp(b)
   return b
 }
 
@@ -96,7 +108,9 @@ export function createMultiplayerPlayer(
   color: string,
   startingMoney: number,
   mode: MultiplayerMode = 'colony-race',
+  isLoot = mode === 'loot-raid',
 ): MultiplayerPlayer {
+  const earthBase = makeStarterEarthBase(slot, id, mode, isLoot)
   return {
     id,
     username,
@@ -113,8 +127,9 @@ export function createMultiplayerPlayer(
     score: 0,
     coloniesDestroyed: 0,
     eliminated: false,
-    earthBase: makeStarterEarthBase(slot, id, mode),
-    ...(mode === 'orbital-warfare' ? { colonies: {} } : {}),
+    earthBase,
+    quadrantColonies: { earth: [earthBase, undefined, undefined, undefined] },
+    ...(mode === 'orbital-warfare' || mode === 'loot-raid' ? { colonies: {} } : {}),
   }
 }
 
@@ -126,27 +141,38 @@ export function newMultiplayerGame(
 ): GameState {
   const mode: MultiplayerMode =
     config.mode === 'orbital-warfare' ? 'orbital-warfare' : config.mode === 'loot-raid' ? 'loot-raid' : 'colony-race'
+  const warfareGoal: WarfareGoal =
+    config.warfareGoal === 'score15' ||
+    config.warfareGoal === 'score30' ||
+    config.warfareGoal === 'endless' ||
+    config.warfareGoal === 'raid'
+      ? config.warfareGoal
+      : mode === 'loot-raid'
+        ? 'raid'
+        : 'siege'
+  const isLoot = mode === 'loot-raid' || (mode === 'orbital-warfare' && warfareGoal === 'raid')
   const cfg: MultiplayerConfig = {
     mode,
-    warfareGoal: config.warfareGoal ?? 'siege',
+    warfareGoal,
     lootGoal: config.lootGoal ?? 60,
     targetPlanets: config.targetPlanets ?? 4,
-    startingMoney: config.startingMoney ?? (mode === 'orbital-warfare' ? 100_000 : mode === 'loot-raid' ? LOOT_START_MONEY : 50_000),
-    passiveBonusPerPlanet: config.passiveBonusPerPlanet ?? 12_000,
+    startingMoney: config.startingMoney ?? (isLoot ? LOOT_START_MONEY : mode === 'orbital-warfare' ? 100_000 : 50_000),
+    passiveBonusPerPlanet: config.passiveBonusPerPlanet ?? 4_000,
     allowAutoWarp: config.allowAutoWarp ?? true,
   }
   const players: Record<string, MultiplayerPlayer> = {}
   const playerMeta: Record<string, { id: string; username: string; color: string }> = {}
   for (const p of playersList) {
-    players[p.id] = createMultiplayerPlayer(p.id, p.username, p.slot, p.color, cfg.startingMoney, mode)
+    players[p.id] = createMultiplayerPlayer(p.id, p.username, p.slot, p.color, cfg.startingMoney, mode, isLoot)
     playerMeta[p.id] = { id: p.id, username: p.username, color: p.color }
   }
   if (!players[hostId]) {
     const col = PLAYER_COLORS[0]!
-    players[hostId] = createMultiplayerPlayer(hostId, hostId, 0, col, cfg.startingMoney, mode)
+    players[hostId] = createMultiplayerPlayer(hostId, hostId, 0, col, cfg.startingMoney, mode, isLoot)
     playerMeta[hostId] = { id: hostId, username: hostId, color: col }
   }
   const captures: Partial<Record<BodyId, PlanetCapture>> = {}
+  const quadrantCaptures: Partial<Record<BodyId, (PlanetCapture | undefined)[]>> = {}
   for (const id of CONQUERABLE_BODIES) {
     captures[id] = {
       bodyId: id,
@@ -156,17 +182,25 @@ export function newMultiplayerGame(
       capturerId: null,
       phase: 'idle',
     }
+    quadrantCaptures[id] = QUADRANTS.map((q) => ({
+      bodyId: id,
+      quadrant: q,
+      ownerId: null,
+      flagAngle: quadrantCenterAngle(q),
+      progress: 0,
+      capturerId: null,
+      phase: 'idle' as const,
+    }))
   }
-  const earth = makeStarterEarthBase(0, hostId, mode)
+  const earth = makeStarterEarthBase(0, hostId, mode, isLoot)
   const initialDesign = (
-    mode === 'orbital-warfare' ? COMBAT_PRESETS[0]!.design : mode === 'loot-raid' ? LOOT_PRESETS[0]!.design : DEFAULT_DESIGN
+    isLoot ? LOOT_PRESETS[0]!.design : mode === 'orbital-warfare' ? COMBAT_PRESETS[0]!.design : DEFAULT_DESIGN
   ).map((p) => ({ ...p }))
-  const welcomeText =
-    mode === 'loot-raid'
-      ? '🏴‍☠️ Yağma başladı! Kaynak sahalarından sandık topla, üssüne taşı, gemini ve üssünü geliştir, rakiplerini yağmala!'
-      : mode === 'orbital-warfare'
+  const welcomeText = isLoot
+    ? '🏴‍☠️ Uzay Yağması başladı! Arenada ganimet sandığı topla, üssünü Sv 5\'e kadar geliştir, rakipleri yağmala!'
+    : mode === 'orbital-warfare'
       ? '⚔️ Uzay Savaşı başladı! Roketine silahlar ekle, rakiplerle çarpış ve düşman kolonilerini yok et!'
-      : '🚀 Koloni yarışı başladı! Gezegenlere in, kargodan Uzay İstasyonu kur; en çok koloni kuran kazanır.'
+      : '🚀 Koloni yarışı başladı! Gezegenlerin 4 çeyreğine Uzay İstasyonu kur; gezegen kontrolü için yarış!'
   const game: GameState = {
     time: 0,
     tick: 0,
@@ -178,6 +212,7 @@ export function newMultiplayerGame(
     activeId: null,
     nextId: 1,
     bases: { earth },
+    quadrantBases: { earth: [earth, undefined, undefined, undefined] },
     missionsDone: [],
     techDone: [INITIAL_TECH],
     design: initialDesign,
@@ -192,6 +227,7 @@ export function newMultiplayerGame(
       config: cfg,
       players,
       captures,
+      quadrantCaptures,
       warpInfo: {
         warpIdx: 0,
         warp: 1,
@@ -211,7 +247,7 @@ export function addMultiplayerPlayer(gs: GameState, id: string, username: string
   if (!gs.mp) return
   if (gs.mp.players[id]) return
   const mode = gs.mp.config.mode ?? 'colony-race'
-  gs.mp.players[id] = createMultiplayerPlayer(id, username, slot, color, gs.mp.config.startingMoney, mode)
+  gs.mp.players[id] = createMultiplayerPlayer(id, username, slot, color, gs.mp.config.startingMoney, mode, isLootMode(gs))
   gs.players = { ...(gs.players ?? {}), [id]: { id, username, color } }
   pushMpFeed(gs, `🛰️ ${username} göreve katıldı.`, color)
 }
@@ -285,36 +321,46 @@ export function vesselTargetBody(gs: GameState, v: Vessel): BodyId {
   return (gs.targetBody ?? 'moon') as BodyId
 }
 
-export function playerPassiveIncomePerHour(gs: GameState, playerId: string): number {
+export function playerPassiveIncomePerMin(gs: GameState, playerId: string): number {
   if (!gs.mp) return 0
   const p = gs.mp.players[playerId]
   if (!p) return 0
+  if (isLootMode(gs)) {
+    return findOutpost(gs, p.id) ? (OUTPOST_INCOME_PER_MIN[p.outpostLevel ?? 1] ?? 3000) : 0
+  }
   const earthFlux = solarFlux(len(bodyAbsState('earth', gs.time).r))
-  let sum = p.earthBase && !p.earthBase.destroyed ? baseReport(p.earthBase, earthFlux, 1).incomePerHour : 0
+  let sum = 0
+  for (const item of getPlayerQuadrantColonies(p, 'earth')) {
+    if (!item.base.destroyed) sum += baseReport(item.base, earthFlux, 1).incomePerMin
+  }
   if (isWarfareMode(gs)) {
     for (const bodyId of CONQUERABLE_BODIES) {
-      const colony = p.colonies?.[bodyId]
-      if (!colony || colony.destroyed) continue
       const b = BODIES[bodyId]
       const flux = solarFlux(len(bodyAbsState(bodyId, gs.time).r))
-      if (isBodyColonized(colony, flux)) {
-        sum += gs.mp.config.passiveBonusPerPlanet * Math.max(1, b.incomeMult * 0.5)
+      for (const item of getPlayerQuadrantColonies(p, bodyId)) {
+        if (item.base.destroyed) continue
+        if (isQuadrantColonized(item.base, flux)) {
+          sum += gs.mp.config.passiveBonusPerPlanet * 0.4 * Math.max(1, b.incomeMult * 0.5)
+        }
+        sum += baseReport(item.base, flux, b.incomeMult).incomePerMin
       }
-      sum += baseReport(colony, flux, b.incomeMult).incomePerHour
     }
     return sum
   }
   for (const bodyId of CONQUERABLE_BODIES) {
-    const cap = gs.mp.captures[bodyId]
-    if (cap?.ownerId !== playerId) continue
     const b = BODIES[bodyId]
-    const colony = gs.bases[bodyId]
     const flux = solarFlux(len(bodyAbsState(bodyId, gs.time).r))
-    if (isBodyColonized(colony, flux)) {
-      sum += gs.mp.config.passiveBonusPerPlanet * Math.max(1, b.incomeMult * 0.5)
-    }
-    if (colony) {
-      sum += baseReport(colony, flux, b.incomeMult).incomePerHour
+    const qCaps = gs.mp.quadrantCaptures?.[bodyId]
+    for (const q of QUADRANTS) {
+      const qCap = qCaps?.[q] ?? (q === 0 ? gs.mp.captures[bodyId] : undefined)
+      if (qCap?.ownerId !== playerId) continue
+      const colony = getActorQuadrantBase(gs, bodyId, playerId, q)
+      if (isQuadrantColonized(colony, flux)) {
+        sum += gs.mp.config.passiveBonusPerPlanet * 0.4 * Math.max(1, b.incomeMult * 0.5)
+      }
+      if (colony) {
+        sum += baseReport(colony, flux, b.incomeMult).incomePerMin
+      }
     }
   }
   return sum
@@ -322,43 +368,57 @@ export function playerPassiveIncomePerHour(gs: GameState, playerId: string): num
 
 export function stepMultiplayerIncome(gs: GameState, incomeDt: number) {
   if (!gs.mp) return
-  const hours = incomeDt / 3600
+  const minutes = incomeDt / 60
+  if (isLootMode(gs)) {
+    for (const p of Object.values(gs.mp.players)) {
+      if (!findOutpost(gs, p.id)) continue
+      const rate = OUTPOST_INCOME_PER_MIN[p.outpostLevel ?? 1] ?? 3000
+      p.money += rate * minutes
+    }
+    if (gs.ownerId && gs.mp.players[gs.ownerId]) gs.money = gs.mp.players[gs.ownerId]!.money
+    return
+  }
   const earthFlux = solarFlux(len(bodyAbsState('earth', gs.time).r))
   for (const p of Object.values(gs.mp.players)) {
-    if (p.earthBase && !p.earthBase.destroyed) {
-      p.money += tickBase(p.earthBase, earthFlux, incomeDt, 1, false)
+    for (const item of getPlayerQuadrantColonies(p, 'earth')) {
+      if (!item.base.destroyed) {
+        p.money += tickBase(item.base, earthFlux, incomeDt, 1, item.quadrant !== 0)
+      }
     }
   }
   if (isWarfareMode(gs)) {
     for (const p of Object.values(gs.mp.players)) {
-      if (!p.colonies) continue
       for (const bodyId of CONQUERABLE_BODIES) {
-        const colony = p.colonies[bodyId]
-        if (!colony || colony.destroyed) continue
         const b = BODIES[bodyId]
         const flux = solarFlux(len(bodyAbsState(bodyId, gs.time).r))
-        if (isBodyColonized(colony, flux)) {
-          p.money += gs.mp.config.passiveBonusPerPlanet * Math.max(1, b.incomeMult * 0.5) * hours
+        for (const item of getPlayerQuadrantColonies(p, bodyId)) {
+          if (item.base.destroyed) continue
+          if (isQuadrantColonized(item.base, flux)) {
+            p.money += gs.mp.config.passiveBonusPerPlanet * 0.4 * Math.max(1, b.incomeMult * 0.5) * minutes
+          }
+          p.money += tickBase(item.base, flux, incomeDt, b.incomeMult, true)
         }
-        p.money += tickBase(colony, flux, incomeDt, b.incomeMult, true)
       }
     }
     if (gs.ownerId && gs.mp.players[gs.ownerId]) gs.money = gs.mp.players[gs.ownerId]!.money
     return
   }
   for (const bodyId of CONQUERABLE_BODIES) {
-    const cap = gs.mp.captures[bodyId]
-    if (!cap?.ownerId) continue
-    const owner = gs.mp.players[cap.ownerId]
-    if (!owner) continue
     const b = BODIES[bodyId]
-    const colony = gs.bases[bodyId]
     const flux = solarFlux(len(bodyAbsState(bodyId, gs.time).r))
-    if (isBodyColonized(colony, flux)) {
-      owner.money += gs.mp.config.passiveBonusPerPlanet * Math.max(1, b.incomeMult * 0.5) * hours
-    }
-    if (colony) {
-      owner.money += tickBase(colony, flux, incomeDt, b.incomeMult, true)
+    const qCaps = gs.mp.quadrantCaptures?.[bodyId]
+    for (const q of QUADRANTS) {
+      const qCap = qCaps?.[q] ?? (q === 0 ? gs.mp.captures[bodyId] : undefined)
+      if (!qCap?.ownerId) continue
+      const owner = gs.mp.players[qCap.ownerId]
+      if (!owner) continue
+      const colony = getActorQuadrantBase(gs, bodyId, owner.id, q)
+      if (isQuadrantColonized(colony, flux)) {
+        owner.money += gs.mp.config.passiveBonusPerPlanet * 0.4 * Math.max(1, b.incomeMult * 0.5) * minutes
+      }
+      if (colony) {
+        owner.money += tickBase(colony, flux, incomeDt, b.incomeMult, true)
+      }
     }
   }
   if (gs.ownerId && gs.mp.players[gs.ownerId]) gs.money = gs.mp.players[gs.ownerId]!.money
@@ -555,9 +615,175 @@ export function stepPlanetCaptures(gs: GameState, realDt: number, events: GameEv
   }
 
   const counts: Record<string, number> = {}
+  const qStore = (mp.quadrantCaptures ??= {})
   for (const bodyId of CONQUERABLE_BODIES) {
     const body = BODIES[bodyId]
-    const cap = (mp.captures[bodyId] ??= {
+    const qArr = (qStore[bodyId] ??= QUADRANTS.map((q) =>
+      q === 0 && mp.captures[bodyId]
+        ? { ...mp.captures[bodyId]!, flagAngle: mp.captures[bodyId]!.flagAngle }
+        : {
+            bodyId,
+            ownerId: null,
+            flagAngle: quadrantCenterAngle(q),
+            progress: 0,
+            capturerId: null,
+            phase: 'idle' as const,
+          },
+    ))
+
+    const bounty = 4000 + Math.round(body.incomeMult * 1800)
+    const flux = solarFlux(len(bodyAbsState(bodyId, gs.time).r))
+
+    // Gemileri indikleri çeyreğe göre ayır (her çeyrek bağımsız ele geçirilir)
+    const landedByQuad: [Map<string, Vessel[]>, Map<string, Vessel[]>, Map<string, Vessel[]>, Map<string, Vessel[]>] = [
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+    ]
+    for (const v of gs.vessels) {
+      if (v.bodyId !== bodyId || !v.landed || v.debris || v.station || !v.ownerId) continue
+      if (!vesselStats(v.parts).hasCommand) continue
+      const q = quadrantOfAngle(Math.atan2(v.pos.y, v.pos.x))
+      const map = landedByQuad[q]
+      const arr = map.get(v.ownerId) ?? []
+      arr.push(v)
+      map.set(v.ownerId, arr)
+    }
+
+    const qOwners: Record<string, number> = {}
+    for (const q of QUADRANTS) {
+      const cap = (qArr[q] ??= {
+        bodyId,
+        ownerId: null,
+        flagAngle: quadrantCenterAngle(q),
+        progress: 0,
+        capturerId: null,
+        phase: 'idle',
+      })
+      const landedByOwner = landedByQuad[q]
+      const activeOwners = [...landedByOwner.keys()]
+      const base = getActorQuadrantBase(gs, bodyId, '', q)
+      const colonized = isQuadrantColonized(base, flux)
+      const hasStation = (base?.modules[COLONY_STATION_ID] ?? 0) > 0
+
+      if (!cap.ownerId) {
+        const hasAnyModule = !!(hasStation || base?.sites?.some(Boolean))
+        const settler =
+          base?.ownerId && hasAnyModule && mp.players[base.ownerId]
+            ? base.ownerId
+            : (activeOwners.length === 1 ? activeOwners[0]! : null)
+        const rivalsAtSite = settler ? activeOwners.filter((id) => id !== settler) : activeOwners
+        if (colonized && settler && rivalsAtSite.length === 0) {
+          if (base) {
+            base.ownerId = settler
+            setActorQuadrantBase(gs, bodyId, settler, base, q)
+          }
+          cap.ownerId = settler
+          cap.flagAngle = base?.siteAngle ?? (landedByOwner.get(settler)?.[0] ? Math.atan2(landedByOwner.get(settler)![0]!.pos.y, landedByOwner.get(settler)![0]!.pos.x) : quadrantCenterAngle(q))
+          cap.progress = 1
+          cap.capturerId = null
+          cap.phase = 'captured'
+          const payBounty = cap.lastRewardedId !== settler ? bounty : 0
+          cap.lastRewardedId = settler
+          const p = mp.players[settler]
+          if (p) {
+            p.captures += 1
+            p.money += payBounty
+            if (gs.ownerId === p.id) gs.money = p.money
+          }
+          const rewardTxt = payBounty > 0 ? ` (+${payBounty.toLocaleString('tr-TR')} ₡)` : ''
+          const msg = `🛰️ ${p?.username ?? settler}, ${body.name} Q${q + 1} çeyreğine Uzay İstasyonu kurarak kolonileştirdi${rewardTxt}!`
+          pushMpFeed(gs, msg, p?.color)
+          events.push({ type: 'capture', bodyId, ownerId: settler, previousOwnerId: null, text: msg })
+        } else if (activeOwners.length > 1) {
+          cap.phase = 'contested'
+          cap.capturerId = null
+          cap.progress = 0
+        } else if (activeOwners.length === 1) {
+          const who = activeOwners[0]!
+          cap.capturerId = who
+          cap.phase = 'claiming'
+          cap.progress = hasStation ? 0.65 : 0.25
+        } else {
+          cap.phase = 'idle'
+          cap.progress = 0
+          cap.capturerId = null
+        }
+      } else if (!hasStation) {
+        cap.ownerId = null
+        cap.phase = 'idle'
+        cap.progress = 0
+        cap.capturerId = null
+      } else {
+        const ownerShips = landedByOwner.get(cap.ownerId) ?? []
+        const rivals = activeOwners.filter((id) => id !== cap.ownerId)
+
+        if (ownerShips.length > 0) {
+          if (rivals.length > 0) {
+            cap.phase = 'contested'
+          } else {
+            cap.phase = 'captured'
+            cap.progress = 1
+            cap.capturerId = null
+          }
+        } else if (rivals.length === 1) {
+          const challenger = rivals[0]!
+          const prevOwner = cap.ownerId
+          if (cap.capturerId !== challenger) {
+            cap.capturerId = challenger
+            cap.progress = 1
+            cap.phase = 'neutralizing'
+          }
+          cap.phase = 'neutralizing'
+          cap.progress = Math.max(0, cap.progress - realDt / CAPTURE_NEUTRALIZE_SEC)
+          if (cap.progress <= 0) {
+            if (base?.sites) {
+              for (let i = 0; i < base.sites.length; i += 1) {
+                if (base.sites[i] === COLONY_STATION_ID) base.sites[i] = null
+              }
+              syncModules(base)
+              base.ownerId = challenger
+            }
+            const raidBounty = cap.lastRewardedId !== challenger ? Math.round(bounty * 0.4) : 0
+            if (raidBounty > 0) cap.lastRewardedId = challenger
+            cap.ownerId = null
+            cap.capturerId = challenger
+            cap.progress = 0.25
+            cap.phase = 'claiming'
+            const winner = mp.players[challenger]
+            const loser = mp.players[prevOwner]
+            if (winner) {
+              winner.money += raidBounty
+              if (gs.ownerId === winner.id) gs.money = winner.money
+            }
+            const rewardTxt = raidBounty > 0 ? ` (+${raidBounty.toLocaleString('tr-TR')} ₡)` : ''
+            const msg = `💥 ${winner?.username ?? challenger}, ${loser?.username ?? prevOwner} oyuncusundan ${body.name} Q${q + 1} çeyreğini devraldı${rewardTxt}.`
+            pushMpFeed(gs, msg, winner?.color)
+            events.push({ type: 'capture', bodyId, ownerId: null, previousOwnerId: prevOwner, text: msg })
+          }
+        } else if (rivals.length > 1) {
+          cap.phase = 'contested'
+        } else {
+          cap.phase = 'captured'
+          cap.progress = 1
+          cap.capturerId = null
+        }
+      }
+
+      if (cap.ownerId) qOwners[cap.ownerId] = (qOwners[cap.ownerId] ?? 0) + 1
+    }
+
+    // Gezegen özeti (`mp.captures[bodyId]`): en çok çeyreğe sahip olan oyuncu gezegeni yönetir
+    const sorted = Object.entries(qOwners).sort((a, b) => b[1] - a[1])
+    const q0 = qArr[0]!
+    let summaryOwner: string | null = null
+    if (sorted.length === 1) {
+      summaryOwner = sorted[0]![0]
+    } else if (sorted.length > 1) {
+      summaryOwner = sorted[0]![1] > sorted[1]![1] ? sorted[0]![0] : q0.ownerId && qOwners[q0.ownerId] === sorted[0]![1] ? q0.ownerId : null
+    }
+    const summaryCap = (mp.captures[bodyId] ??= {
       bodyId,
       ownerId: null,
       flagAngle: Math.PI / 2,
@@ -565,127 +791,12 @@ export function stepPlanetCaptures(gs: GameState, realDt: number, events: GameEv
       capturerId: null,
       phase: 'idle',
     })
-
-    const landedByOwner = new Map<string, Vessel[]>()
-    for (const v of gs.vessels) {
-      if (v.bodyId !== bodyId || !v.landed || v.debris || v.station || !v.ownerId) continue
-      if (!vesselStats(v.parts).hasCommand) continue
-      const arr = landedByOwner.get(v.ownerId) ?? []
-      arr.push(v)
-      landedByOwner.set(v.ownerId, arr)
-    }
-
-    const activeOwners = [...landedByOwner.keys()]
-    const bounty = 5000 + Math.round(body.incomeMult * 2000)
-    const base = gs.bases[bodyId]
-    const flux = solarFlux(len(bodyAbsState(bodyId, gs.time).r))
-    const colonized = isBodyColonized(base, flux)
-    const hasStation = (base?.modules[COLONY_STATION_ID] ?? 0) > 0
-
-    if (!cap.ownerId) {
-      const hasAnyModule = !!(hasStation || base?.sites?.some(Boolean))
-      const settler =
-        base?.ownerId && hasAnyModule && mp.players[base.ownerId]
-          ? base.ownerId
-          : (activeOwners.length === 1 ? activeOwners[0]! : null)
-      const rivalsAtSite = settler ? activeOwners.filter((id) => id !== settler) : activeOwners
-      if (colonized && settler && rivalsAtSite.length === 0) {
-        if (base) base.ownerId = settler
-        cap.ownerId = settler
-        cap.flagAngle = base?.siteAngle ?? (landedByOwner.get(settler)?.[0] ? Math.atan2(landedByOwner.get(settler)![0]!.pos.y, landedByOwner.get(settler)![0]!.pos.x) : Math.PI / 2)
-        cap.progress = 1
-        cap.capturerId = null
-        cap.phase = 'captured'
-        const payBounty = cap.lastRewardedId !== settler ? bounty : 0
-        cap.lastRewardedId = settler
-        const p = mp.players[settler]
-        if (p) {
-          p.captures += 1
-          p.money += payBounty
-          if (gs.ownerId === p.id) gs.money = p.money
-        }
-        const rewardTxt = payBounty > 0 ? ` (+${payBounty.toLocaleString('tr-TR')} ₡)` : ''
-        const msg = `🛰️ ${p?.username ?? settler}, ${body.name} yüzeyine Uzay İstasyonu kurarak kolonileştirdi${rewardTxt}!`
-        pushMpFeed(gs, msg, p?.color)
-        events.push({ type: 'capture', bodyId, ownerId: settler, previousOwnerId: null, text: msg })
-      } else if (activeOwners.length > 1) {
-        cap.phase = 'contested'
-        cap.capturerId = null
-        cap.progress = 0
-      } else if (activeOwners.length === 1) {
-        // İniş yapıldı: henüz çalışan bir Uzay İstasyonu yok; üs kurulumuna hazır.
-        const who = activeOwners[0]!
-        cap.capturerId = who
-        cap.phase = 'claiming'
-        cap.progress = hasStation ? 0.65 : 0.25
-      } else {
-        cap.phase = 'idle'
-        cap.progress = 0
-        cap.capturerId = null
-      }
-    } else if (!hasStation) {
-      cap.ownerId = null
-      cap.phase = 'idle'
-      cap.progress = 0
-      cap.capturerId = null
-    } else {
-      const ownerShips = landedByOwner.get(cap.ownerId) ?? []
-      const rivals = activeOwners.filter((id) => id !== cap.ownerId)
-
-      if (ownerShips.length > 0) {
-        if (rivals.length > 0) {
-          cap.phase = 'contested'
-        } else {
-          cap.phase = 'captured'
-          cap.progress = 1
-          cap.capturerId = null
-        }
-      } else if (rivals.length === 1) {
-        // Savunucusu yok → rakip Uzay İstasyonu'nu devre dışı bırakıyor (5 sn)!
-        const challenger = rivals[0]!
-        const prevOwner = cap.ownerId
-        if (cap.capturerId !== challenger) {
-          cap.capturerId = challenger
-          cap.progress = 1
-          cap.phase = 'neutralizing'
-        }
-        cap.phase = 'neutralizing'
-        cap.progress = Math.max(0, cap.progress - realDt / CAPTURE_NEUTRALIZE_SEC)
-        if (cap.progress <= 0) {
-          if (base?.sites) {
-            for (let i = 0; i < base.sites.length; i += 1) {
-              if (base.sites[i] === COLONY_STATION_ID) base.sites[i] = null
-            }
-            syncModules(base)
-            base.ownerId = challenger
-          }
-          const raidBounty = cap.lastRewardedId !== challenger ? Math.round(bounty * 0.4) : 0
-          if (raidBounty > 0) cap.lastRewardedId = challenger
-          cap.ownerId = null
-          cap.capturerId = challenger
-          cap.progress = 0.25
-          cap.phase = 'claiming'
-          const winner = mp.players[challenger]
-          const loser = mp.players[prevOwner]
-          if (winner) {
-            winner.money += raidBounty
-            if (gs.ownerId === winner.id) gs.money = winner.money
-          }
-          const rewardTxt = raidBounty > 0 ? ` (+${raidBounty.toLocaleString('tr-TR')} ₡)` : ''
-          const msg = `💥 ${winner?.username ?? challenger}, ${loser?.username ?? prevOwner} oyuncusundan ${body.name} kolonisini devraldı${rewardTxt}.`
-          pushMpFeed(gs, msg, winner?.color)
-          events.push({ type: 'capture', bodyId, ownerId: null, previousOwnerId: prevOwner, text: msg })
-        }
-      } else if (rivals.length > 1) {
-        cap.phase = 'contested'
-      } else {
-        cap.phase = 'captured'
-        cap.progress = 1
-        cap.capturerId = null
-      }
-    }
-
-    if (cap.ownerId) counts[cap.ownerId] = (counts[cap.ownerId] ?? 0) + 1
+    summaryCap.ownerId = summaryOwner
+    summaryCap.flagAngle = q0.flagAngle
+    summaryCap.progress = q0.progress
+    summaryCap.capturerId = q0.capturerId
+    summaryCap.phase = sorted.length > 1 && !summaryOwner ? 'contested' : q0.ownerId || !summaryOwner ? q0.phase : 'captured'
+    if (summaryOwner) counts[summaryOwner] = (counts[summaryOwner] ?? 0) + 1
   }
 
   for (const p of Object.values(mp.players)) {

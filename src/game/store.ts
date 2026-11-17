@@ -110,11 +110,12 @@ export function normalizeGameState(raw: unknown): GameState {
     missionsDone: Array.isArray(gs.missionsDone) ? [...gs.missionsDone] : [],
     techDone: [INITIAL_TECH],
     designCargo: gs.designCargo ? { ...gs.designCargo } : {},
+    designDroneCargo: gs.designDroneCargo ? { ...gs.designDroneCargo } : {},
     targetBody,
     shipSlots: Array.from({ length: SHIP_SLOT_COUNT }, (_, i) => {
       const slot = Array.isArray(gs.shipSlots) ? gs.shipSlots[i] ?? null : null
       if (!slot || !Array.isArray(slot.design)) return null
-      return { ...slot, design: sanitizeParts(slot.design) }
+      return { ...slot, design: sanitizeParts(slot.design), ...(slot.droneCargo ? { droneCargo: { ...slot.droneCargo } } : {}) }
     }),
   }
   merged.vessels = merged.vessels
@@ -135,7 +136,7 @@ export function normalizeGameState(raw: unknown): GameState {
   }
   const now = Date.now()
   if (typeof gs.lastSavedAt === 'number' && now - gs.lastSavedAt > 5000) {
-    const elapsedSec = Math.min(8 * 3600, (now - gs.lastSavedAt) / 1000)
+    const elapsedSec = Math.min(2 * 3600, (now - gs.lastSavedAt) / 1000)
     const gained = tickBasesOnly(merged, elapsedSec)
     if (gained >= 1) {
       offlineGain = { money: gained, seconds: elapsedSec }
