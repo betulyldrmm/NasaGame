@@ -47,6 +47,12 @@ interface Props {
   onLeave: () => void
 }
 
+/**
+ * Dokunmatik kontroller (sanal çubuk, ATEŞ, BOOST) şimdilik kapalı: oyun önce PC'de geliştiriliyor.
+ * Mobile geçerken bunu `true` yap.
+ */
+const TOUCH_CONTROLS = false
+
 const fmt = (n: number) => Math.round(n).toLocaleString('tr-TR')
 
 function Bar({ value, max, color, label }: { value: number; max: number; color: string; label: string }) {
@@ -133,11 +139,11 @@ function HoldButton({ flag, className, children }: { flag: MutableRefObject<bool
 }
 
 export default function ArcadeHud({ info, players, feed, myId, pingMs, input, onCmd, onLeave }: Props) {
-  const [touch, setTouch] = useState(() => typeof window !== 'undefined' && !!window.matchMedia?.('(pointer: coarse)').matches)
+  const [touch, setTouch] = useState(() => TOUCH_CONTROLS && typeof window !== 'undefined' && !!window.matchMedia?.('(pointer: coarse)').matches)
   const [hangar, setHangar] = useState(false)
   const [hint, setHint] = useState(true)
   useEffect(() => {
-    const onTouch = () => setTouch(true)
+    const onTouch = () => setTouch(TOUCH_CONTROLS)
     window.addEventListener('touchstart', onTouch, { once: true })
     const t = window.setTimeout(() => setHint(false), 12_000)
     return () => {
