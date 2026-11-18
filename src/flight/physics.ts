@@ -6,7 +6,7 @@ import { BODIES, type BodyDef, type BodyId, solarFlux } from '../nasa/bodies'
 import { quadrantCenterAngle, quadrantOfAngle, QUADRANT_SHORT, type QuadrantId } from '../game/base'
 import { partDef } from '../game/data'
 import type { AutopilotMode, SasMode, Vessel } from '../game/types'
-import { activeEngines, arcade, ARCADE_DRAG, fuelGroups, runEngines, vesselStats, type VesselStats } from '../game/vessel'
+import { activeEngines, arcade, arcadeDrag, fuelGroups, momentOfInertia, runEngines, vesselStats, type VesselStats } from '../game/vessel'
 import { bodyAbsState, elementsFromState, len, propagate, wrapPi } from './orbit'
 
 export interface FollowLeaderRef {
@@ -51,26 +51,48 @@ export interface Controls {
   move?: { x: number; y: number }
   /** Arcade boost: dolu olduğu sürece itkiyi katlar */
   boost?: boolean
+  /** Arcade otomatik fren: gemi hız vektörünün tersine döner ve durana kadar yumuşakça iter */
+  brake?: boolean
 }
+
+/** Arcade dönme torku (kN·m): açısal ivme = tork / dönme ataleti. */
+export const ARCADE_TORQUE = 700
+/** Fren: bu hızın altında gemi durmuş sayılır ve kalan hız yavaşça söner (m/s). */
+export const BRAKE_STOP_SPEED = 0.6
 
 /** Arcade boost: itki çarpanı, harcama ve dolum hızları (birim/s, depo 0..1). */
 export const BOOST_MULT = 2.3
 const BOOST_DRAIN = 0.55
 const BOOST_REGEN = 0.2
 /** Arcade "tutunma": hızın burun eksenine dik bileşeni bu oranda söner (1/s). */
-const ARCADE_GRIP = 1.4
+const ARCADE_GRIP = 0.5
 
 /** Yön çubuğunu hedef burun açısına ve gaza çevirir; çubuk boştaysa gaz kesilir. */
 export function arcadeSteer(v: Vessel, ctrl: Controls | null): number | null {
-  if (!ctrl?.move) return null
-  const mag = Math.min(1, Math.hypot(ctrl.move.x, ctrl.move.y))
+  if (!ctrl) return null
+  const mag = ctrl.move ? Math.min(1, Math.hypot(ctrl.move.x, ctrl.move.y)) : 0
   if (mag < 0.12) {
     v.throttle = 0
+    if (ctrl.brake) return brakeSteer(v)
     return null
   }
+  if (!ctrl.move) return null
   const target = Math.atan2(ctrl.move.y, ctrl.move.x)
   const align = Math.cos(wrapPi(target - v.angle))
   v.throttle = align > 0.35 ? mag * Math.min(1, (align - 0.35) / 0.5) : 0
+  return target
+}
+
+/**
+ * Otomatik fren manevrası: burnu hız vektörünün tersine çevir, hizalanınca it. İtki hız azaldıkça
+ * kısılır, böylece gemi taşmadan yumuşakça durur. Kalan çok küçük hız sürtünmeyle söner.
+ */
+function brakeSteer(v: Vessel): number | null {
+  const speed = Math.hypot(v.vel.x, v.vel.y)
+  if (speed < BRAKE_STOP_SPEED) return null
+  const target = Math.atan2(-v.vel.y, -v.vel.x)
+  const align = Math.cos(wrapPi(target - v.angle))
+  v.throttle = align > 0.93 ? Math.min(1, speed / 25) : 0
   return target
 }
 
@@ -188,6 +210,25 @@ export function rotateVessel(
   const autoMaxAcc = 1.65 * Math.max(0.7, massScale) * rcsBoost * agile
   const maxManualVel = 1.15 * (v.rcsOn && st.rcs > 0 ? 1.2 : 1) * (arcade.on ? 1.9 : 1)
   const maxAutoVel = 1.65 * (arcade.on ? 1.9 : 1)
+
+  if (arcade.on) {
+    // Arcade: gerçek dönme ataleti. Açısal ivme = tork / atalet; ağır gemi geç hızlanır, geç durur.
+    const I = momentOfInertia(v.parts, st)
+    const acc = Math.max(0.2, Math.min(10, (ARCADE_TORQUE * rcsBoost) / I))
+    const maxVel = Math.min(3.6, 0.8 + acc * 0.55)
+    const target = forcedTarget ?? (ctrl && ctrl.rotate !== 0 ? null : sasTarget(v, v.sas))
+    let want = 0
+    if (forcedTarget === null && ctrl && ctrl.rotate !== 0) want = -Math.sign(ctrl.rotate) * maxVel
+    else if (target !== null) {
+      // Zaman-optimal yaklaşım: hedefe kalan açıda tam frenle durabileceği en yüksek açısal hız.
+      const err = wrapPi(target - v.angle)
+      want = Math.sign(err) * Math.min(maxVel, Math.sqrt(2 * acc * Math.abs(err)) * 0.9)
+    }
+    const dv = want - v.angVel
+    v.angVel += Math.max(-acc * dt, Math.min(acc * dt, dv))
+    v.angle = wrapPi(v.angle + v.angVel * dt)
+    return
+  }
 
   if (forcedTarget === null && ctrl && ctrl.rotate !== 0) {
     const mdt = dt * manualScale
@@ -912,8 +953,13 @@ export function stepPhysics(
   v.vel = { x: v.vel.x + ax * dt, y: v.vel.y + ay * dt }
   if (arcade.on) {
     // Uzay sürtünmesi: motor kesilince gemi yavaşça durur, azami hız itkiyle sınırlanır.
-    const k = Math.exp(-ARCADE_DRAG * dt)
+    const k = Math.exp(-arcadeDrag(Math.hypot(v.vel.x, v.vel.y)) * dt)
     v.vel = { x: v.vel.x * k, y: v.vel.y * k }
+    // Fren tamamlanırken kalan küçük hız yumuşakça söner (ani sıfırlama yok).
+    if (ctrl?.brake && Math.hypot(v.vel.x, v.vel.y) < BRAKE_STOP_SPEED * 2) {
+      const kb = Math.exp(-2 * dt)
+      v.vel = { x: v.vel.x * kb, y: v.vel.y * kb }
+    }
     if (st.hasCommand) {
       // Tutunma: yana kayma söner, gemi burnunun baktığı yöne gider.
       const side = { x: -Math.sin(v.angle), y: Math.cos(v.angle) }

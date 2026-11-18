@@ -301,7 +301,7 @@ function lootSnapshot(gs: GameState, v: Vessel | null, myId: string, clock: numb
   }
 }
 
-function arcadeSnapshot(gs: GameState, v: Vessel | null, myId: string, clock: number): ArcadeInfo | null {
+function arcadeSnapshot(gs: GameState, v: Vessel | null, myId: string, clock: number, brake: boolean): ArcadeInfo | null {
   const base = lootSnapshot(gs, v, myId, clock)
   if (!base) return null
   const me = gs.mp!.players[myId]
@@ -331,8 +331,13 @@ function arcadeSnapshot(gs: GameState, v: Vessel | null, myId: string, clock: nu
     money: me?.money ?? 0,
     myLooted: me?.looted ?? 0,
     leaderId: lootLeaderId(gs),
+    brake,
+    speed: ship ? Math.hypot(ship.vel.x, ship.vel.y) : 0,
   }
 }
+
+/** Fren durumu HUD'a modül değişkeniyle taşınır (snapshot bileşen dışında). */
+let arcadeBrakeOn = false
 
 function snapshot(): Hud {
   const curSim = getActiveSim()
@@ -470,7 +475,7 @@ function snapshot(): Hud {
     mpNearestEnemyColony,
     isWarfare,
     loot: lootSnapshot(gs, v, myId, curSim.clock ?? 0),
-    arcade: arcadeSnapshot(gs, v, myId, curSim.clock ?? 0),
+    arcade: arcadeSnapshot(gs, v, myId, curSim.clock ?? 0, arcadeBrakeOn),
     warfareGoal,
     mpEliminated: Boolean(meMp?.eliminated),
     hp: 0,
@@ -693,6 +698,8 @@ export default function FlightScreen({ onBuilder }: Props) {
   const arcadeMove = useRef<{ x: number; y: number } | null>(null)
   const arcadeFire = useRef(false)
   const arcadeBoost = useRef(false)
+  /** Otomatik fren açık mı (X tuşu / HUD düğmesi); hareket girdisi gelince ya da gemi durunca kapanır */
+  const arcadeBrake = useRef(false)
   const arcadeInput = useRef({ move: arcadeMove, fire: arcadeFire, boost: arcadeBoost }).current
   const flightFrame = useRef<FlightFrame>({ cam: null, hits: [] })
   const mapFrame = useRef<MapFrame>({ vessels: [], bodies: [] })
@@ -1019,6 +1026,7 @@ export default function FlightScreen({ onBuilder }: Props) {
       if (isLootMode(curSim.gs)) {
         // Arcade: hareket/ateş/boost döngüde okunur; burada yalnızca E (kargoyu bırak) ve silah seçimi.
         if (k === 'e' && v) runCommand({ type: 'jettisonCargo', vesselId: v.id })
+        if (k === 'x') arcadeBrake.current = !arcadeBrake.current
         if (!(k >= '1' && k <= '9')) return
       }
       if (k >= '1' && k <= '9') {
@@ -1193,6 +1201,9 @@ export default function FlightScreen({ onBuilder }: Props) {
         const ky = (k.has('w') || k.has('ArrowUp') ? 1 : 0) - (k.has('s') || k.has('ArrowDown') ? 1 : 0)
         const kl = Math.hypot(kx, ky)
         move = arcadeMove.current ?? (kl > 0 ? { x: kx / kl, y: ky / kl } : { x: 0, y: 0 })
+        // Fren: oyuncu yön verirse ya da gemi tamamen durursa kendiliğinden kapanır.
+        if (arcadeBrake.current && (Math.hypot(move.x, move.y) > 0.12 || !v || Math.hypot(v.vel.x, v.vel.y) < 0.12)) arcadeBrake.current = false
+        arcadeBrakeOn = arcadeBrake.current
         // Kamera: hıza göre hafifçe uzaklaşan otomatik yakınlaştırma (ekran boyuna göre).
         const spd = v ? Math.hypot(v.vel.x, v.vel.y) : 0
         const zt = Math.max(1.1, Math.min(3, Math.min(view.w, view.h) / 290)) / (1 + spd / 320)
@@ -1208,6 +1219,7 @@ export default function FlightScreen({ onBuilder }: Props) {
         aimDist,
         move,
         boost: arcadeBoost.current || k.has('Shift'),
+        brake: arcadeBrake.current,
       } : {
         rotate: (k.has('d') || k.has('ArrowRight') ? 1 : 0) - (k.has('a') || k.has('ArrowLeft') ? 1 : 0),
         tx: (k.has('l') ? 1 : 0) - (k.has('j') ? 1 : 0),
@@ -1494,6 +1506,7 @@ export default function FlightScreen({ onBuilder }: Props) {
           pingMs={mp.pingMs}
           input={arcadeInput}
           onCmd={hudCmd}
+          onBrake={() => { arcadeBrake.current = !arcadeBrake.current }}
           onLeave={() => { resetViewCache(); leaveMpRoom(false) }}
         />
       )}

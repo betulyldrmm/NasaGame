@@ -1102,4 +1102,8 @@ export const EN: Record<string, string> = {
   'Lobiye dön': 'Back to lobby',
   'Üssüne taşıdığın ganimet / hedef': 'Loot delivered to your base / goal',
   'Boost': 'Boost',
+  '🛑 Dur': '🛑 Stop',
+  '🛑 Fren açık': '🛑 Braking',
+  'Otomatik fren: gemi ters yöne dönüp durana kadar iter (X)': 'Auto-brake: the ship turns retrograde and burns until it stops (X)',
+  'WASD: hareket · Fare: nişan · Sol tık: ateş · Shift: boost · X: otomatik fren · E: kargoyu bırak': 'WASD: move · Mouse: aim · Left click: fire · Shift: boost · X: auto-brake · E: drop cargo',
 }

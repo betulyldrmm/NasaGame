@@ -28,6 +28,8 @@ export interface ArcadeInfo {
   money: number
   myLooted: number
   leaderId: string | null
+  brake: boolean
+  speed: number
 }
 
 export interface ArcadeInput {
@@ -44,6 +46,7 @@ interface Props {
   pingMs: number | null
   input: ArcadeInput
   onCmd: (cmd: GameCommand) => void
+  onBrake: () => void
   onLeave: () => void
 }
 
@@ -138,7 +141,7 @@ function HoldButton({ flag, className, children }: { flag: MutableRefObject<bool
   )
 }
 
-export default function ArcadeHud({ info, players, feed, myId, pingMs, input, onCmd, onLeave }: Props) {
+export default function ArcadeHud({ info, players, feed, myId, pingMs, input, onCmd, onBrake, onLeave }: Props) {
   const [touch, setTouch] = useState(() => TOUCH_CONTROLS && typeof window !== 'undefined' && !!window.matchMedia?.('(pointer: coarse)').matches)
   const [hangar, setHangar] = useState(false)
   const [hint, setHint] = useState(true)
@@ -215,6 +218,16 @@ export default function ArcadeHud({ info, players, feed, myId, pingMs, input, on
 
       {/* Sağ alt: eylemler */}
       <div className="ax-actions">
+        {info.hasShip && (
+          <button
+            type="button"
+            className={`ax-chip ax-brake${info.brake ? ' is-on' : ''}`}
+            title="Otomatik fren: gemi ters yöne dönüp durana kadar iter (X)"
+            onClick={onBrake}
+          >
+            {info.brake ? '🛑 Fren açık' : '🛑 Dur'} · {info.speed.toFixed(0)} m/s
+          </button>
+        )}
         {info.nearHome && info.upgradeCost !== null && (
           <button type="button" className="ax-chip" disabled={info.money < info.upgradeCost} onClick={() => onCmd({ type: 'upgradeOutpost' })}>
             🏗️ Üs Sv.{info.level + 1} · ₡{fmt(info.upgradeCost)}
@@ -235,7 +248,7 @@ export default function ArcadeHud({ info, players, feed, myId, pingMs, input, on
           </div>
         </>
       ) : (
-        hint && <div className="ax-hint">WASD: hareket · Fare: nişan · Sol tık: ateş · Shift: boost · E: kargoyu bırak</div>
+        hint && <div className="ax-hint">WASD: hareket · Fare: nişan · Sol tık: ateş · Shift: boost · X: otomatik fren · E: kargoyu bırak</div>
       )}
 
       {/* Yeniden doğma */}

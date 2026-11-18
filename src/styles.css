@@ -1291,7 +1291,7 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .ax-center-note .is-bad { color: #fca5a5; animation: ax-blink .8s infinite alternate; }
 .ax-center-note .is-good { color: #86efac; }
 @keyframes ax-blink { to { opacity: .45 } }
-.ax-actions { position: absolute; right: max(12px, env(safe-area-inset-right)); bottom: calc(max(12px, env(safe-area-inset-bottom)) + 170px); display: grid; gap: 6px; justify-items: end; }
+.ax-actions { position: absolute; right: max(12px, env(safe-area-inset-right)); bottom: calc(max(16px, env(safe-area-inset-bottom)) + 8px); display: grid; gap: 6px; justify-items: end; }
 .ax-chip { padding: 8px 12px; border-radius: 12px; border: 1px solid rgba(251,191,36,.5); background: rgba(30,27,15,.85); color: #fde68a; font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }
 .ax-chip:disabled { opacity: .45; cursor: default; }
 .ax-hint { position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%); font-size: 12px; padding: 5px 12px; border-radius: 10px; background: rgba(15,23,42,.7); color: #cbd5e1; white-space: nowrap; }
@@ -1328,8 +1328,11 @@ body:has(.ax-root) .corner-settings { display: none; }
   .ax-board { display: none; }
   .ax-feed { top: 118px; max-width: 58vw; }
   .ax-center-note { font-size: 13px; top: 30%; }
-  .ax-actions { bottom: calc(max(12px, env(safe-area-inset-bottom)) + 150px); }
+  .ax-actions { bottom: calc(max(12px, env(safe-area-inset-bottom)) + 8px); }
   .mp-join-row { grid-template-columns: 1fr 1fr; }
   .mp-join-row > :last-child { grid-column: 1 / -1; }
   .mp-shell .topbar { flex-wrap: wrap; gap: 8px; }
 }
+
+.ax-chip.ax-brake { border-color: rgba(248,113,113,.55); color: #fecaca; background: rgba(40,15,15,.85); }
+.ax-chip.ax-brake.is-on { background: #b91c1c; color: #fff; box-shadow: 0 0 14px rgba(248,113,113,.55); }

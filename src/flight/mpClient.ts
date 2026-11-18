@@ -18,7 +18,7 @@ import type {
 } from '../game/types'
 import { INITIAL_TECH } from '../game/tech'
 import { isLootMode, isWarfareMode } from './combat'
-import { arcade, ARCADE_DRAG } from '../game/vessel'
+import { arcade, arcadeDrag } from '../game/vessel'
 import { effectiveAutopilot, stepPhysics, stepRails, type Controls } from './physics'
 import {
   addMultiplayerPlayer,
@@ -981,7 +981,7 @@ function stepClientExtrapolation(dtReal: number) {
         for (let i = 0; i < n; i += 1) {
           const r = Math.hypot(v.pos.x, v.pos.y)
           if (lootMode) {
-            const k = Math.exp(-ARCADE_DRAG * h)
+            const k = Math.exp(-arcadeDrag(Math.hypot(v.vel.x, v.vel.y)) * h)
             v.vel = { x: v.vel.x * k, y: v.vel.y * k }
           } else if (body && r > 1) {
             const gFactor = -(body.mu / (r * r * r))
@@ -1373,6 +1373,7 @@ export function sendMpControls(ctrl: Controls) {
     ...(ctrl.aimDist !== undefined ? { aimDist: Math.round(ctrl.aimDist) } : {}),
     ...(ctrl.move ? { move: { x: Math.round(ctrl.move.x * 100) / 100, y: Math.round(ctrl.move.y * 100) / 100 } } : {}),
     ...(ctrl.boost ? { boost: true } : {}),
+    ...(ctrl.brake ? { brake: true } : {}),
   }
   const own = ownActive(clientSim?.gs)
   const withAngle = own && !own.landed && effectiveAutopilot(own) === 'off'
@@ -1384,6 +1385,7 @@ export function sendMpControls(ctrl: Controls) {
     ctrl.weaponKey !== lastSentCtrl.weaponKey ||
     (ctrl.fireGroup ?? 0) !== (lastSentCtrl.fireGroup ?? 0) ||
     Boolean(ctrl.boost) !== Boolean(lastSentCtrl.boost) ||
+    Boolean(ctrl.brake) !== Boolean(lastSentCtrl.brake) ||
     Boolean(ctrl.move) !== Boolean(lastSentCtrl.move) ||
     (!!ctrl.move && !!lastSentCtrl.move && Math.hypot(ctrl.move.x - lastSentCtrl.move.x, ctrl.move.y - lastSentCtrl.move.y) > 0.12)
   const activeCtrl = ctrl.rotate !== 0 || ctrl.tx !== 0 || ctrl.ty !== 0 || (!!ctrl.move && Math.hypot(ctrl.move.x, ctrl.move.y) > 0.12)

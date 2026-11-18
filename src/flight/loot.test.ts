@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { LOOT_PRESETS, OUTPOST_INCOME_PER_MIN, OUTPOST_MAX_LEVEL, OUTPOST_UPGRADE_COST, PARTS, outpostDesign, partDef, partMaxHp } from '../game/data'
 import type { GameEvent, PartInst, Vessel } from '../game/types'
-import { arcade, freshParts, isConnected, partAlive, runEngines, vesselStats } from '../game/vessel'
+import { arcade, freshParts, momentOfInertia, isConnected, partAlive, runEngines, vesselStats } from '../game/vessel'
 import { applyVesselDamage, BREAKOFF_RATIO, dropLoot, isLootMode, isWarfareMode, LOOT_BOUNTY, LOOT_VALUE_PER_TON } from './combat'
 import { ARENA_RADIUS, arenaCenter, findLootShip, findOutpost, LOOT_START_MONEY, outpostPos, TURRET_RANGE, arcadeAutoAim, lootShipCost, RESPAWN_SEC } from './loot'
 import { buildCompactSnapshot, hydrateCompactSnapshot } from './mpClient'
@@ -70,8 +70,11 @@ describe('Yağma modu: kurulum, arcade uçuş ve ganimet döngüsü', () => {
     const fast = Math.hypot(v.vel.x, v.vel.y)
     expect(fast).toBeGreaterThan(40)
     v.throttle = 0
+    // Düşük sürtünme: gemi ataletle uzun süre süzülür ama yavaşça yavaşlar.
     for (let i = 0; i < 400; i += 1) stepWorld(sim, 0.05, new Map())
-    expect(Math.hypot(v.vel.x, v.vel.y)).toBeLessThan(fast * 0.3)
+    const coast = Math.hypot(v.vel.x, v.vel.y)
+    expect(coast).toBeLessThan(fast * 0.75)
+    expect(coast).toBeGreaterThan(fast * 0.3)
     expect(sim.warpIdx).toBe(0)
     expect(dispatchCommand(sim, { type: 'setAutopilot', vesselId: v.id, mode: 'orbit' }, 'p1').error).toBeTruthy()
     arcade.on = false
@@ -411,5 +414,55 @@ describe('Arcade kontrol, yeniden doğma, hangar ve lider ödülü', () => {
     applyVesselDamage(sim.gs, b, b.pos.x, b.pos.y, 5, { ...dmgOpts(sim, [], 'p1'), splash: 60 })
     expect(sim.gs.mp!.players.p1!.money).toBeGreaterThanOrEqual(money + LOOT_BOUNTY)
     arcade.on = false
+  })
+})
+
+describe('Otomatik fren ve dönme ataleti', () => {
+  it('fren: gemi ters yöne döner, hızı kademeli azalır ve ani sıfırlama olmadan durur', () => {
+    const sim = makeLootSim()
+    const v = launch(sim, 'p1')
+    v.spawnShieldUntil = 0
+    v.vel = { x: 90, y: 0 }
+    v.angle = 0
+    const ctrl = new Map([['p1', { rotate: 0, tx: 0, ty: 0, move: { x: 0, y: 0 }, brake: true }]])
+    const speeds: number[] = []
+    let turnedBack = false
+    for (let i = 0; i < 600; i += 1) {
+      stepWorld(sim, 0.05, ctrl)
+      speeds.push(Math.hypot(v.vel.x, v.vel.y))
+      if (Math.cos(v.angle - Math.PI) > 0.95) turnedBack = true
+    }
+    expect(turnedBack).toBe(true)
+    expect(speeds.at(-1)!).toBeLessThan(0.6)
+    // Hiçbir adımda hız bir anda büyük ölçüde düşmez (yumuşak manevra)
+    for (let i = 1; i < speeds.length; i += 1) expect(speeds[i - 1]! - speeds[i]!).toBeLessThan(3)
+    // Gemi ters yöne geri hızlanmaz (taşma yok)
+    expect(v.vel.x).toBeGreaterThan(-1)
+    arcade.on = false
+  })
+
+  it('ağır gemi hafif gemiden daha yavaş döner', () => {
+    const turnTime = (presetIdx: number) => {
+      const sim = makeLootSim()
+      const v = launch(sim, 'p1', presetIdx)
+      v.angle = 0
+      const ctrl = new Map([['p1', { rotate: 0, tx: 0, ty: 0, move: { x: -1, y: 0.001 } }]])
+      for (let i = 0; i < 400; i += 1) {
+        stepWorld(sim, 0.05, ctrl)
+        if (Math.cos(v.angle - Math.PI) > 0.98) {
+          arcade.on = false
+          return i * 0.05
+        }
+      }
+      arcade.on = false
+      return 99
+    }
+    const light = turnTime(0)
+    const heavy = turnTime(2)
+    const I0 = momentOfInertia(LOOT_PRESETS[0]!.design, vesselStats(LOOT_PRESETS[0]!.design))
+    const I2 = momentOfInertia(LOOT_PRESETS[2]!.design, vesselStats(LOOT_PRESETS[2]!.design))
+    expect(I2).toBeGreaterThan(I0 * 1.5)
+    expect(light).toBeLessThan(3)
+    expect(heavy).toBeGreaterThan(light * 1.3)
   })
 })

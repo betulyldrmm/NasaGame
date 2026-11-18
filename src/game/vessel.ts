@@ -12,7 +12,30 @@ const key = (x: number, y: number) => x * 1000 + y
  */
 export const arcade = { on: false }
 export const ARCADE_FUEL_FACTOR = 4
-export const ARCADE_DRAG = 0.085
+export const ARCADE_DRAG = 0.03
+/** Bu hızın üstünde sürtünme artar (yumuşak hız sınırı, m/s). */
+export const ARCADE_VMAX = 260
+
+/** Arcade uzay sürtünmesi katsayısı: düşük hızda hafif (atalet hissedilir), sınırın üstünde sertleşir. */
+export function arcadeDrag(speed: number): number {
+  return ARCADE_DRAG + Math.max(0, speed - ARCADE_VMAX) * 0.01
+}
+
+/**
+ * Dönme ataleti (t·m²): her parçanın kendi ataleti + kütle merkezine uzaklığının karesi × kütlesi.
+ * Ağır ve uzun gemiler yavaş döner; kanatlara konan ağır parçalar da dönüşü ağırlaştırır.
+ */
+export function momentOfInertia(parts: PartInst[], st: { comX: number; comY: number }): number {
+  let I = 0
+  for (const p of parts) {
+    const d = partDef(p.def)
+    const m = d.mass + (d.kind === 'tank' && partAlive(p) ? (p.fuel ?? d.fuel ?? 0) : 0)
+    const dx = p.x + d.w / 2 - st.comX
+    const dy = p.y + d.h / 2 - st.comY
+    I += m * (dx * dx + dy * dy) + (m * (d.w * d.w + d.h * d.h)) / 12
+  }
+  return Math.max(1, I)
+}
 
 /** Parça çalışır durumda mı? Canı 0'a inen parça gövdede iskelet olarak kalır ama işlev görmez. */
 export function partAlive(p: PartInst): boolean {
